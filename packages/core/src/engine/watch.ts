@@ -460,8 +460,8 @@ export class SessionWatch {
         transcriber = new Transcriber(this.#history, info);
         yield { cursor: this.#cursor({ entry: 0 }), event: { type: "stream:reset" } };
       }
-      // The queue first; the end of the catch-up states it again if it changed meanwhile.
-      hold(transcriber.queue(this.#view));
+      // The queue and the compaction state first; the end of the catch-up states them again if they changed meanwhile.
+      hold(transcriber.standing(this.#view));
       // History, a page at a time, outside the commit chain: live readers wait for none of it.
       for await (const page of transcriber.replay(this.#newest)) {
         hold(page);

@@ -273,6 +273,7 @@ session.events({ from?, signal? })              // AsyncIterable<{ cursor, event
 session.approve([{ toolCallId, approved, comment? }])  // one commit: all of the batch, or none
 session.reply({ toolCallId, token, text, isError? })  // { outcome: "applied" | "already_replied" }
 session.abort()
+session.compact({ instructions? })              // resolves once admitted; the stream shows it go
 session.configure({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval? })  // one commit; null puts back the agent's
 session.settings()                              // { model, thinkingLevel, maxTurns?, tools, requiresApproval? }
 session.delete()                                // with its child sessions
@@ -466,8 +467,8 @@ function returning one, and may be async (keys usually live in a database). pi-d
 beforehand and hands pi-durable the newest result:
 
 - It resolves when the instance opens, before anything runs, so a run resumed after a restart or an
-  idle close runs on the credentials of now; again before every `submit`, `approve` and `resume`;
-  and on `instance.refreshModels()`.
+  idle close runs on the credentials of now; again before every `submit`, `approve`, `compact` and
+  `resume`; and on `instance.refreshModels()`.
 - A key the user adds or removes while the instance is open: build the `Models` with a pi-ai
   `CredentialStore` that reads the app's table (as the example does), and there is nothing to do:
   pi-ai resolves credentials at every request, so the next request uses the new key, or fails with
@@ -505,7 +506,7 @@ Harness, releases its lease (so another process can take the scope) and lets it 
 end, a reader's end, any change to pi-durable's task graph):
 
 - no call of the runtime's under way on the instance (`open`, `createSession`, `listSessions`,
-  `submit`, `withdraw`, `approve`, `abort`, `resume`);
+  `submit`, `withdraw`, `approve`, `abort`, `compact`, `resume`);
 - no event reader attached to any of its sessions;
 - `harness.wake()` is not `active`: no task can run now or is running, so no run is going (a run's
   generation or tool calls, queued inputs it will take, a compaction);
@@ -638,6 +639,28 @@ and change nothing.
 `configure` on a child session rejects with `SessionOwnedError`: its delegate chose what it runs with.
 The wire's `createSession` call takes none of these: what a session runs with is the app's to choose.
 
+## Compacting a session
+
+pi-durable compacts a session on its own when its context nears the model's window (its `compaction`
+settings, in `settings`). `session.compact({ instructions? })` asks for one now: it admits pi-durable's
+manual compaction and resolves once it is admitted. The compaction summarizes the session's older
+messages, keeping the newest ones verbatim, into what the model reads from then on; the thread keeps
+them. It runs while the session keeps working, and its summary lands at once when the session is
+idle, else at the run's next boundary. `instructions` is added to the summarization prompt, to say what
+the summary should keep.
+
+```ts
+await session.compact({ instructions: "Keep every decision the user made." });
+```
+
+The stream shows it as it goes, from `pi.live`: `compaction:start` (`reason: "manual"`, or
+`threshold` and `overflow` for pi-durable's own), then `session:compacted` with the summary and
+`compaction:end`. A compaction whose summary fails (the model's error, after pi-durable's retries) ends
+with `compaction:end` and its `error`, and the model reads the messages as they were; the view keeps
+the failure until a later compaction succeeds. A compaction runs on the scope's models, resolved again
+before `compact` as before `submit`. A child session refuses it with `SessionOwnedError`: what its
+sub-agent reads is its delegate's call's.
+
 ## Delegates
 
 A delegate hands a task to a sub-agent, which runs in a child session of the caller's, in the same
@@ -694,8 +717,8 @@ A child session is followed, decided in and aborted like any session, under its 
 - A call the sub-agent's policy gates waits in the child: approve it with the child session's
   `approve()`. The parent shows no question, and its `approve()` refuses the delegate's call. The
   child's `settings()` lists the sub-agent's tools.
-- Only its delegate submits to it: the child's `submit()`, `configure()` and `delete()` reject with
-  `SessionOwnedError` (`session_owned`). `listSessions()` leaves it out.
+- Only its delegate submits to it: the child's `submit()`, `configure()`, `compact()` and `delete()`
+  reject with `SessionOwnedError` (`session_owned`). `listSessions()` leaves it out.
 - Aborting the parent aborts the child, through pi-durable's ownership. Aborting the child ends its
   run, and the parent's call returns an error result.
 - Deleting the parent deletes its child sessions in the same commit: their readers end, their calls
@@ -820,8 +843,8 @@ Each session's stream is derived from committed state by one transcriber, with o
 history and for each new commit: the entries (`pi.user`, `pi.assistant`, `pi.tool-result`,
 `pi.compaction`), the `pi.live` document and the runtime's approval record. Stored facts (messages, tool
 calls, results, decisions, run ends) come from entries and documents; what only `pi.live` shows (a
-streaming reply, drafts, running output, a retry wait, a parked question) is superseded by the
-stored events that follow it.
+streaming reply, drafts, running output, a retry wait, a parked question, a compaction going on or
+the newest one's failure) is superseded by the stored events that follow it.
 
 ### Cursors
 
@@ -838,11 +861,11 @@ also carries that log's place (`epoch`, `seq`). Resuming from a cursor:
    committed after the position are sent; then the current in-flight state is sent as events the
    reducer applies idempotently: the run going on, the question of each call waiting for approval,
    each decision of a call that left its wait, each deferred call's wait for its reply, running
-   output, a retry wait, the reply streamed so
-   far as one delta, drafted calls. The reader then joins the live log where it continues. The
-   last step runs in the session's commit chain, so no commit lands between the catch-up and the
-   log. The folded view equals that of a client connected all along; the events need not be the
-   same ones.
+   output, a retry wait, the reply streamed so far as one delta, drafted calls, and the compaction
+   going on or the newest one's failure (`compaction:start` or `compaction:end`). The reader then
+   joins the live log where it continues. The last step runs in the session's commit chain, so no
+   commit lands between the catch-up and the log. The folded view equals that of a client connected
+   all along; the events need not be the same ones.
 3. `stream:reset` and a full replay only for a cursor storage cannot honour (it names an entry the
    session does not hold, as after a restore from an older backup). A string that is not a cursor
    of this session rejects with `InvalidCursorError`.
@@ -860,9 +883,9 @@ it.
 ### What is held in memory
 
 - A session's stream (its observer, transcriber and log) exists only while it is needed: a reader
-  is iterating, a call (`submit`, `approve`, `abort`, `withdraw`) is under way, or the session has
-  work (a run, or queued input). A session with no reader and no run holds nothing; its stream closes and the
-  next reader or call opens it again from committed state.
+  is iterating, a call (`submit`, `approve`, `abort`, `withdraw`, `compact`) is under way, or the
+  session has work (a run, or queued input). A session with no reader and no run holds nothing; its
+  stream closes and the next reader or call opens it again from committed state.
 - While it exists, the log holds the events since the current run's `run:start`, plus the previous
   run's events only while an attached reader has not read them yet. The transcriber holds the
   current run's open calls and questions. So what is held is bounded by the run, not by the

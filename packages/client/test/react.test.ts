@@ -30,11 +30,13 @@ describe("useMotokoSession", () => {
     void handle!.withdraw("5");
     void handle!.decide([{ toolCallId: "t-1", approved: false, comment: "No" }]);
     void handle!.abort();
-    expect(socket.sent.slice(-4).map((call) => [call.method, call.params])).toEqual([
+    void handle!.compact();
+    expect(socket.sent.slice(-5).map((call) => [call.method, call.params])).toEqual([
       ["submit", { sessionId: "7", text: "Go", requestId: "r-1" }],
       ["withdraw", { sessionId: "7", submissionId: "5" }],
       ["approve", { sessionId: "7", decisions: [{ toolCallId: "t-1", approved: false, comment: "No" }] }],
       ["abort", { sessionId: "7" }],
+      ["compact", { sessionId: "7" }],
     ]);
   });
 });

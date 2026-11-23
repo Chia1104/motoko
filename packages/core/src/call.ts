@@ -49,6 +49,10 @@ const handlers: {
     return null;
   },
   withdraw: (instance, { sessionId, submissionId }) => instance.session(sessionId).withdraw(submissionId),
+  compact: async (instance, { sessionId, instructions }) => {
+    await instance.session(sessionId).compact(instructions === undefined ? {} : { instructions });
+    return null;
+  },
   deleteSession: async (instance, { sessionId }) => {
     await instance.session(sessionId).delete();
     return null;

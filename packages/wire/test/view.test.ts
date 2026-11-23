@@ -207,6 +207,22 @@ describe("a deferred call", () => {
   });
 });
 
+describe("a compaction", () => {
+  it("shows while it goes on, then nothing, or why it failed until one succeeds; whatever it ran alongside", () => {
+    const start: AgentWireEvent = { type: "compaction:start", reason: "manual" };
+    const compacted: AgentWireEvent = { type: "session:compacted", messageId: "5", summary: "Earlier.", at: 4 };
+    const failed: AgentWireEvent = { type: "compaction:end", error: "Summarization failed: overloaded" };
+    expect(foldEvents([start]).compaction).toEqual({ status: "running", reason: "manual" });
+    expect(foldEvents([start, compacted, { type: "compaction:end" }]).compaction).toBeUndefined();
+    const view = foldEvents([start, failed]);
+    expect(view.compaction).toEqual({ status: "failed", error: "Summarization failed: overloaded" });
+    // A run neither starts nor ends it, and a resumed stream that states it again changes nothing.
+    expect(foldEvents([...live, failed], view)).toEqual(foldEvents(live, view));
+    expect(foldEvents([start, compacted, { type: "compaction:end" }], view).compaction).toBeUndefined();
+    expect(() => agentWireEventSchema.parse({ type: "compaction:start", reason: "bored" })).toThrow();
+  });
+});
+
 describe("delegateOf", () => {
   it("names the child session a delegate's call runs, from its start through its end", () => {
     const start: AgentWireEvent = {

@@ -91,6 +91,16 @@ export const callSchemas = {
   },
   abort: { params: z.object({ sessionId: sessionIdSchema }), result: z.null(), writes: true },
   /**
+   * Summarizes the session's older messages into what the model reads from then on, with `instructions` for what the
+   * summary should keep; the thread keeps the messages. Answered once the compaction is admitted: the stream shows it
+   * go (`compaction:start`, `session:compacted`, `compaction:end`).
+   */
+  compact: {
+    params: z.object({ sessionId: sessionIdSchema, instructions: z.string().optional() }),
+    result: z.null(),
+    writes: true,
+  },
+  /**
    * Takes back an input still waiting for a run, by the `submissionId` its `submit` gave: `withdrawn`, or
    * `already_placed` when a run took it first, or `settled` when it was answered or dropped already. An ask's input
    * cannot be withdrawn: its asker waits for its answer (`invalid_request`).
@@ -124,8 +134,8 @@ export const callErrorCodeSchema = z.enum([
   /** `submit` with `whenBusy: "reject"` while a run is going. */
   "session_busy",
   /**
-   * `submit`, `withdraw` or `deleteSession` of a child session: only its delegate submits to it, and it goes with its
-   * parent.
+   * `submit`, `withdraw`, `compact` or `deleteSession` of a child session: only its delegate submits to it, and it goes
+   * with its parent.
    */
   "session_owned",
   /** A decision for a call that is not waiting for one; no decision of the batch was applied. */

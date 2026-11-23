@@ -255,6 +255,11 @@ export interface WithdrawResult {
   readonly outcome: "withdrawn" | "already_placed" | "settled";
 }
 
+export interface CompactOptions {
+  /** What the summary should keep, added to pi-durable's summarization prompt. */
+  readonly instructions?: string;
+}
+
 export interface EventsOptions {
   /** Resume after this cursor; omitted, the stream replays from its start. */
   readonly from?: Cursor | string;
@@ -265,7 +270,7 @@ export interface EventsOptions {
 /**
  * One session: a pi-durable conversation of an agent instance. A child session, the one a delegate's call runs its
  * sub-agent in, is followed, decided in and aborted like any other, under its sub-agent's tools and policy; only its
- * delegate submits to it, so `submit`, `withdraw`, `configure` and `delete` reject with `SessionOwnedError`.
+ * delegate submits to it, so `submit`, `withdraw`, `configure`, `compact` and `delete` reject with `SessionOwnedError`.
  */
 export interface AgentSession {
   readonly id: string;
@@ -295,6 +300,13 @@ export interface AgentSession {
   reply(input: ReplyInput): Promise<ReplyResult>;
   /** Stops the run; what it produced so far is kept, ending as aborted. */
   abort(): Promise<void>;
+  /**
+   * Summarizes the session's older messages into what the model reads from then on; the thread keeps them. Resolves
+   * once the compaction is admitted. It runs while the session keeps working, and its summary lands at once when the
+   * session is idle, else at the run's next boundary. The stream shows `compaction:start`, then `session:compacted`
+   * and `compaction:end`, or `compaction:end` with an `error`.
+   */
+  compact(options?: CompactOptions): Promise<void>;
   /**
    * Changes which tools the session may use and which of its calls wait for approval, in one commit. A tool change
    * applies from the run's next model request; an approval change to calls that reach the gate after it, while a
@@ -1013,6 +1025,20 @@ class Instance implements AgentInstance {
     });
   }
 
+  compact(sessionId: string, options: CompactOptions | undefined): Promise<void> {
+    return this.#lifecycle.run(async (opened) => {
+      const { harness } = opened;
+      const conversation = await this.#conversation(opened, sessionId);
+      // A child's context is its delegate's call's work: the app compacts the sessions it made.
+      this.#refuseOwned(opened, sessionId);
+      await this.#withWatch(opened, conversation, async () => {
+        // The summary is a model request, made on the scope's models of now.
+        await opened.models?.refresh();
+        await this.#armedFor(harness, () => conversation.compact(options?.instructions, context));
+      });
+    });
+  }
+
   withdraw(sessionId: string, submissionId: string): Promise<WithdrawResult> {
     return this.#lifecycle.run(async (opened) => {
       const { harness } = opened;
@@ -1155,6 +1181,10 @@ class Session implements AgentSession {
 
   abort(): Promise<void> {
     return this.#instance.abort(this.id);
+  }
+
+  compact(options?: CompactOptions): Promise<void> {
+    return this.#instance.compact(this.id, options);
   }
 
   withdraw(submissionId: string): Promise<WithdrawResult> {

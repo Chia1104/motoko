@@ -40,6 +40,7 @@ export type {
   AgentRuntimeOptions,
   AgentRuntimePortsOption,
   AgentSession,
+  CompactOptions,
   EventsOptions,
   InstanceReport,
   AgentRuntimeInspection,

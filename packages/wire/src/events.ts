@@ -35,6 +35,13 @@ export const runEndReasonSchema = z.enum(["done", "aborted", "error", "interrupt
 export type RunEndReason = z.infer<typeof runEndReasonSchema>;
 
 /**
+ * What started a compaction: `manual` (the app asked for it), `threshold` (the context neared the model's window) or
+ * `overflow` (a request overflowed it).
+ */
+export const compactionReasonSchema = z.enum(["manual", "threshold", "overflow"]);
+export type CompactionReason = z.infer<typeof compactionReasonSchema>;
+
+/**
  * An input waiting for a run: `steer` (submitted with `whenBusy: "steer"`) joins the run going on after its current
  * tool round, `queue` starts a run once the run going on has answered.
  */
@@ -148,6 +155,13 @@ export const agentWireEventSchema = z.discriminatedUnion("type", [
   }),
   /** The wait is over: the request was sent again, or its run ended. */
   z.object({ type: z.literal("retry:end") }),
+  /** A compaction is going on: older messages are being summarized. `session:compacted` follows once it succeeds. */
+  z.object({ type: z.literal("compaction:start"), reason: compactionReasonSchema }),
+  /**
+   * No compaction is going on any more. `error`: the newest one failed, and the model reads the messages as they were;
+   * a client may show it until a later compaction succeeds.
+   */
+  z.object({ type: z.literal("compaction:end"), error: z.string().optional() }),
   /** A summary took the place of older messages in what the model reads; the thread keeps them. */
   z.object({
     type: z.literal("session:compacted"),

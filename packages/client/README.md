@@ -118,6 +118,7 @@ client.withdraw(sessionId, submissionId): Promise<{ outcome }>  // withdrawn · 
 client.approve(sessionId, decisions: ApprovalDecision[]): Promise<ApprovalOutcome[]>
 client.reply(sessionId, { toolCallId, token, text, isError? }): Promise<{ outcome }>  // applied · already_replied
 client.abort(sessionId): Promise<void>
+client.compact(sessionId, instructions?): Promise<void>  // view.compaction: running, or why it failed
 client.deleteSession(sessionId): Promise<void>
 client.close(): void                                // pending calls reject; the follows stop
 interface MotokoSessionState {
@@ -134,6 +135,7 @@ useMotokoSession(client: MotokoClient, sessionId: string): MotokoSessionState & 
   withdraw(submissionId): Promise<{ outcome }>     // an input waiting in view.queued
   decide(decisions: ApprovalDecision[]): Promise<ApprovalOutcome[]>
   abort(): Promise<void>
+  compact(instructions?): Promise<void>
 }
 ```
 

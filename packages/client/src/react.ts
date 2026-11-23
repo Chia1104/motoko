@@ -24,6 +24,8 @@ export interface MotokoSessionHandle extends MotokoSessionState {
   withdraw(submissionId: string): Promise<WithdrawResult>;
   decide(decisions: readonly ApprovalDecision[]): Promise<ApprovalOutcome[]>;
   abort(): Promise<void>;
+  /** Summarizes the session's older messages; `view.compaction` shows it going on, or why it failed. */
+  compact(instructions?: string): Promise<void>;
 }
 
 /**
@@ -45,5 +47,6 @@ export function useMotokoSession(client: MotokoClient, sessionId: string): Motok
   );
   const withdraw = useCallback((submissionId: string) => client.withdraw(sessionId, submissionId), [client, sessionId]);
   const abort = useCallback(() => client.abort(sessionId), [client, sessionId]);
-  return { ...state, submit, withdraw, decide, abort };
+  const compact = useCallback((instructions?: string) => client.compact(sessionId, instructions), [client, sessionId]);
+  return { ...state, submit, withdraw, decide, abort, compact };
 }

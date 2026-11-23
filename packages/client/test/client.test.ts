@@ -370,6 +370,15 @@ describe("motokoClient", () => {
     transport.last("abort").resolve(null);
     await expect(aborted).resolves.toBeUndefined();
 
+    const compacted = client.compact("7", "Keep the decisions.");
+    expect(transport.last("compact").params).toEqual({ sessionId: "7", instructions: "Keep the decisions." });
+    transport.last("compact").resolve(null);
+    await expect(compacted).resolves.toBeUndefined();
+    const bare = client.compact("7");
+    expect(transport.last("compact").params).toEqual({ sessionId: "7" });
+    transport.last("compact").resolve(null);
+    await bare;
+
     const deleted = client.deleteSession("7");
     expect(transport.last("deleteSession").params).toEqual({ sessionId: "7" });
     transport.last("deleteSession").resolve(null);

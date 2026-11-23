@@ -111,6 +111,11 @@ export interface MotokoClient {
    */
   reply(sessionId: string, input: ReplyInput): Promise<ReplyResult>;
   abort(sessionId: string): Promise<void>;
+  /**
+   * Summarizes the session's older messages into what the model reads from then on, as `instructions` asks; the thread
+   * keeps them. Resolves once the compaction is admitted; the view's `compaction` shows it going on, or why it failed.
+   */
+  compact(sessionId: string, instructions?: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   /** Leaves the transport: pending calls reject with `connection_closed`, and the follows stop. */
   close(): void;
@@ -195,6 +200,10 @@ class TransportClient implements MotokoClient {
 
   async abort(sessionId: string): Promise<void> {
     await this.#call("abort", { sessionId });
+  }
+
+  async compact(sessionId: string, instructions?: string): Promise<void> {
+    await this.#call("compact", { sessionId, ...(instructions !== undefined && { instructions }) });
   }
 
   async deleteSession(sessionId: string): Promise<void> {

@@ -26,10 +26,10 @@ import type { Calls } from "./calls.ts";
 /**
  * Turns committed conversation state into wire events. Stored facts (messages, tool calls, results,
  * decisions, run ends) come from entries and documents; what only `pi.live` shows (a streaming
- * reply, drafts, running output, a retry wait, a parked question) is superseded by the stored events
- * that follow it. One set of rules serves the live stream (`commit` as each commit lands), a
- * catch-up from storage (`replay` of a stretch of history), and a resumed client (`catchUp`: the
- * in-flight state as events the reducer applies idempotently).
+ * reply, drafts, running output, a retry wait, a parked question, a compaction going on) is
+ * superseded by the stored events that follow it. One set of rules serves the live stream (`commit`
+ * as each commit lands), a catch-up from storage (`replay` of a stretch of history), and a resumed
+ * client (`catchUp`: the in-flight state as events the reducer applies idempotently).
  *
  * A run starts at an input and takes every input placed into it after one of its tool rounds (a steer) or with that
  * input; the inputs still waiting for a run go out as the queue, whole, whenever it changes.
@@ -88,6 +88,7 @@ export interface History {
 }
 
 type RunEnd = AgentWireEventOf<"run:end">;
+type Compaction = AgentWireEventOf<"compaction:start" | "compaction:end">;
 type Batch = { event: AgentWireEvent; run: CursorPosition["run"] }[];
 type Block = AssistantMessage["content"][number];
 
@@ -151,6 +152,17 @@ function failureOf({ reason, detail }: RunEnding): RunEnd {
     default:
       return { type: "run:end", reason: "error", code: reason, ...extra };
   }
+}
+
+/**
+ * What a client is shown of the compactions in `live`: the one going on (the first, in task order), else the newest
+ * one's failure, which pi-durable keeps until a compaction succeeds, else none.
+ */
+function compactionOf(live: LiveState | undefined): Compaction {
+  const running = live?.compactions?.[0];
+  if (running !== undefined) return { type: "compaction:start", reason: running.trigger };
+  const failure = live?.compactionFailure;
+  return failure === undefined ? { type: "compaction:end" } : { type: "compaction:end", error: clip(failure.error) };
 }
 
 const UNFINISHED = new Set(["aborted", "abandoned", "interrupted"]);
@@ -286,6 +298,11 @@ const EMPTY_QUEUE = "[]";
 /** Stands for "unknown": a resumed client may hold any queue, so the catch-up states it. */
 const UNKNOWN_QUEUE = "\0unknown";
 
+/** The compaction state a client holds before any compaction event: none. */
+const NO_COMPACTION = JSON.stringify({ type: "compaction:end" } satisfies Compaction);
+/** Stands for "unknown": a resumed client may hold any compaction state, so the catch-up states it. */
+const UNKNOWN_COMPACTION = "\0unknown";
+
 export class Transcriber {
   readonly #history: History;
   readonly #info: (toolName: string) => ToolInfo;
@@ -320,6 +337,8 @@ export class Transcriber {
   #over: RunEnd | null | undefined;
   /** The queue the client holds, as JSON. */
   #queue = EMPTY_QUEUE;
+  /** The compaction state the client holds, as the JSON of the event that stated it. */
+  #compaction = NO_COMPACTION;
 
   constructor(history: History, info: (toolName: string) => ToolInfo) {
     this.#history = history;
@@ -344,6 +363,7 @@ export class Transcriber {
     }
     this.#at(newest);
     this.#queueState(view);
+    this.#compactionState(live);
   }
 
   /**
@@ -353,8 +373,10 @@ export class Transcriber {
    */
   async restore({ entry, run }: Position): Promise<boolean> {
     if (entry > 0 && (await this.#history.entry(entry)) === undefined) return false;
-    // A client may hold queued inputs a run took or that were withdrawn since it left: the catch-up states the queue.
+    // A client may hold queued inputs a run took or that were withdrawn since it left, or a compaction that is over:
+    // the catch-up states both.
     this.#queue = UNKNOWN_QUEUE;
+    this.#compaction = UNKNOWN_COMPACTION;
     if (run === undefined || (run !== "*" && run > entry)) {
       this.#at(entry);
       // Inside the user entry that starts the run: the run has begun, nothing of it is read yet.
@@ -371,11 +393,15 @@ export class Transcriber {
   }
 
   /**
-   * The queue as `view` holds it, if the client may hold another: what a catch-up states first, so a resumed client
-   * drops inputs that left the queue while it was away before history replays (which never changes the queue).
+   * The queue and the compaction state as `view` holds them, where the client may hold others: what a catch-up states
+   * first, so a resumed client drops inputs that left the queue, and a compaction that ended, while it was away before
+   * history replays (which changes neither). The same for every client from the same cursor, whenever it resumes.
    */
-  queue(view: ConversationView | undefined): readonly Transcribed[] {
-    return this.#collect(() => this.#queueState(view));
+  standing(view: ConversationView | undefined): readonly Transcribed[] {
+    return this.#collect(() => {
+      this.#queueState(view);
+      this.#compactionState(view === undefined ? undefined : liveOf(view));
+    });
   }
 
   /**
@@ -403,6 +429,8 @@ export class Transcriber {
     return this.#collect(() => {
       this.#entries(rest, decisions, endings);
       this.#at(to);
+      // Before the in-flight state, which may end the run: a run's end stays its last event.
+      this.#compactionState(live);
       this.#resync(live, decisions, calls);
       this.#queueState(view);
     });
@@ -439,6 +467,7 @@ export class Transcriber {
       if (answering(now) !== undefined) this.#stream(now);
       this.#slots(before?.tools, now?.tools, decisions, calls);
       this.#queueState(next);
+      this.#compactionState(now);
       // A run's end last, so it stays the run's last event.
       if (answering(now) === undefined && this.#inRun) this.#endRun(decisions, failure);
       this.#at(newestOf(next));
@@ -816,6 +845,15 @@ export class Transcriber {
       ...(output !== undefined && { output }),
       ...(details !== undefined && { details }),
     });
+  }
+
+  /** The compaction going on in `live`, or the newest one's failure, when the client holds another. */
+  #compactionState(live: LiveState | undefined) {
+    const event = compactionOf(live);
+    const key = JSON.stringify(event);
+    if (key === this.#compaction) return;
+    this.#compaction = key;
+    this.#emit(event);
   }
 
   #retryState(live: LiveState | undefined) {

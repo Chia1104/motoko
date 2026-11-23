@@ -56,6 +56,8 @@ export class SessionClient {
 | `approval:resolved`        | `toolCallId`, `approved`, `comment?`                                              | The decision.                                                                            |
 | `reply:wait`               | `toolCallId`, `until?`                                                            | A deferred call is parked until its reply comes, or its deadline `until` passes.         |
 | `retry:wait` / `retry:end` | `error`, `at` /                                                                   | A model request failed and waits to be retried / the wait is over.                       |
+| `compaction:start`         | `reason` (`manual`/`threshold`/`overflow`)                                        | A compaction is going on: older messages are being summarized.                           |
+| `compaction:end`           | `error?`                                                                          | No compaction goes on any more; `error`: the newest one failed.                          |
 | `session:compacted`        | `messageId`, `summary`, `at?`                                                     | A summary replaced older messages in what the model reads.                               |
 | `queue`                    | `items: [{ submissionId, text, whenBusy }]`                                       | The inputs waiting for a run, all of them, whenever that changes.                        |
 | `run:end`                  | `reason` (`done`/`aborted`/`error`/`interrupted`), `code?`, `error?`              | The run ended; `code` is the engine's reason.                                            |
@@ -83,6 +85,18 @@ it cannot continue exactly states the queue first, as it is then, since inputs a
 may have left it meanwhile.
 A client that does not know `queue` skips it and folds every other event as before.
 
+### Compactions
+
+A compaction summarizes a session's older messages into what the model reads from then on; the thread
+keeps them. One starts when the app asks (`compact`, `reason: "manual"`), when the context nears the
+model's window (`threshold`), or when a request overflows it (`overflow`), and it may run while the
+session is idle or alongside a run. `compaction:start` says one is going on, and is sent again when
+another, of another `reason`, goes on instead. `compaction:end` says none goes on any more: after a
+summary (whose `session:compacted` comes first when the session is idle, else at the run's next
+boundary), or with the newest one's `error` when it failed, which pi-durable keeps until a later
+compaction succeeds. A compaction that finds nothing to summarize sends no `session:compacted`, and
+leaves an earlier failure standing. Both come from `pi.live`, so a stream that replays the session shows only the compaction state as it is now.
+
 ### Cursors
 
 A cursor names a position in committed state, so it outlives the process that handed it out:
@@ -100,10 +114,10 @@ A cursor names a position in committed state, so it outlives the process that ha
 `encodeCursor` and `decodeCursor` convert between the string and a `CursorPosition`; clients treat
 cursors as opaque. Resuming from a cursor whose log place the server still holds yields exactly the
 events after it, no duplicates and no gaps. Any other cursor (after a restart, from another process
-on the same storage, or once its run has left the log) yields the queue as it is (a `queue` event), the
-events of what was committed after `entry`, then the current in-flight state (see below), then the
-live stream; no `stream:reset`, no
-replay of the session. The resumed events need not be the ones a connected client got, but they fold
+on the same storage, or once its run has left the log) yields the queue and the compaction state as
+they are (a `queue` event, then `compaction:start` or `compaction:end`), the events of what was
+committed after `entry`, then the current in-flight state (see below), then the live stream; no
+`stream:reset`, no replay of the session. The resumed events need not be the ones a connected client got, but they fold
 into the same view. Only a cursor naming an entry the session's storage does not hold gets
 `stream:reset` and a full replay.
 
@@ -111,8 +125,9 @@ into the same view. Only a cursor naming an entry the session's storage does not
 
 `AgentSessionView` holds `items` (user and assistant messages, tool calls with their status and
 approval, compaction notes, notices for runs that did not finish), `pendingApprovals` (tool call
-ids), `status` (`idle`, `running`, `awaiting_approval`), `retrying`, and `queued`, the inputs
-waiting for a run, absent while none waits. A user message that steered its run has `steer: true`.
+ids), `status` (`idle`, `running`, `awaiting_approval`), `retrying`, `queued`, the inputs
+waiting for a run, absent while none waits, and `compaction`, `{ status: "running", reason }` while a
+compaction goes on or `{ status: "failed", error }` after one failed, absent otherwise. A user message that steered its run has `steer: true`.
 Every event that names an item upserts it.
 
 A tool call's `status` is `drafting`, `running`, `awaiting_approval`, `awaiting_reply` or how it ended
@@ -125,8 +140,8 @@ A resumed stream sends in-flight state again rather than replaying it, and the r
 a client may already hold idempotently: a stored message or call it has, `approval:request` for a
 call still waiting (and none for a call that ended or was decided), `reply:wait` for a call still
 parked on its reply, `tool:update` only for a call still running, the reply streamed so far as
-`assistant:start` and one delta, `retry:wait` or `retry:end`, `queue`, and `run:end` only while the
-view shows a run.
+`assistant:start` and one delta, `retry:wait` or `retry:end`, `queue`, `compaction:start` or
+`compaction:end`, and `run:end` only while the view shows a run.
 
 ### Following a delegate's child
 
@@ -163,6 +178,7 @@ adds what only it has, such as following several sessions on one socket.
 | `approve`       | `sessionId`, `decisions: [{ toolCallId, approved, comment? }]` | `[{ toolCallId, outcome }]` | yes      |
 | `reply`         | `sessionId`, `toolCallId`, `token`, `text`, `isError?`         | `{ outcome }`               | yes      |
 | `abort`         | `sessionId`                                                    | `null`                      | yes      |
+| `compact`       | `sessionId`, `instructions?`                                   | `null`                      | yes      |
 | `withdraw`      | `sessionId`, `submissionId`                                    | `{ outcome }`               | yes      |
 | `deleteSession` | `sessionId`                                                    | `null`                      | yes      |
 
@@ -170,6 +186,8 @@ adds what only it has, such as following several sessions on one socket.
 its `submissionId` is what `withdraw` takes back while the input waits. `withdraw`'s `outcome` is
 `withdrawn`, `already_placed` when a run took the input first, or `settled` when it was answered,
 withdrawn or dropped already, so it may be sent again. `abort` drops every input waiting too.
+`compact` asks for a compaction, with `instructions` for what its summary should keep, and is answered
+once it is admitted; the stream shows it go (see Compactions).
 
 `submit`'s `replyTo` makes the submission an ask: the asked instance delivers the answer of the run it
 starts to that reply address (`replyAddressSchema`: `{ scope, sessionId, toolCallId, token }`), as a
@@ -191,7 +209,7 @@ A call that fails answers a `CallError`, `{ code, message }` (`callErrorSchema`)
 | `invalid_request`      | A call that does not parse, or core's `InvalidRequestError` (a refused `replyTo`, or a `withdraw` of an ask's input or of one the session does not hold). |
 | `session_not_found`    | Core's `SessionNotFoundError`; also the end of a follow whose session was deleted.                                                                        |
 | `session_busy`         | Core's `SessionBusyError`: `submit` with `whenBusy: "reject"` while a run is going.                                                                       |
-| `session_owned`        | Core's `SessionOwnedError`: `submit`, `withdraw` or `deleteSession` of a child session.                                                                   |
+| `session_owned`        | Core's `SessionOwnedError`: `submit`, `withdraw`, `compact` or `deleteSession` of a child session.                                                        |
 | `approval_not_pending` | Core's `ApprovalNotPendingError`; no decision of the batch was applied.                                                                                   |
 | `reply_not_pending`    | Core's `ReplyNotPendingError`: no such call waits for this reply, or its token is wrong.                                                                  |
 | `invalid_cursor`       | A cursor of another session, or core's `InvalidCursorError`.                                                                                              |
@@ -244,7 +262,7 @@ feature this milestone does not have.
 | both    | `approval:resolved`                  | **kept** in chia's shape; solyx's `auto` dropped                                                                | The runtime has no auto-approval mode yet.                                                                                                                                                                                                                                              |
 | solyx   | `retry:wait`, `retry:end`            | **kept**, `at` added to `retry:wait`                                                                            | Generic, from `pi.live`.                                                                                                                                                                                                                                                                |
 | both    | `session:compacted` / `compacted`    | **merged** under chia's name, with solyx's `messageId` and `at`; chia's `tokensBefore` dropped                  | pi-durable writes compaction entries on its own; the entry does not record a token count.                                                                                                                                                                                               |
-| solyx   | `compaction:start`, `compaction:end` | **dropped**                                                                                                     | Compaction policy is out of scope; can return from `pi.live.compactions` without breaking clients.                                                                                                                                                                                      |
+| solyx   | `compaction:start`, `compaction:end` | **kept**, from `pi.live.compactions` and `compactionFailure`; `compaction:end` carries the failure's `error`    | A client shows a compaction going on, and why one failed (see Compactions).                                                                                                                                                                                                             |
 | chia    | `session:rewound`                    | **dropped**                                                                                                     | Navigation and forks are not in the runtime.                                                                                                                                                                                                                                            |
 | chia    | `state:changed`                      | **dropped**                                                                                                     | Synced agent state is out of scope.                                                                                                                                                                                                                                                     |
 | chia    | `error`                              | **merged** into `run:end` (`reason: "error"`, `code`, `error`)                                                  | In pi-durable a failure ends the run; chia's classified `AgentErrorKind` is replaced by pi's own reason code.                                                                                                                                                                           |
