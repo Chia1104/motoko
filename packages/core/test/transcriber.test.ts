@@ -401,6 +401,25 @@ describe("a run that no entry the stream reads starts", () => {
     await expectEveryResumeFolds(s, live.sent);
   });
 
+  it("ends with no_credentials when its failed reply found no credential for the provider", async () => {
+    const { s, live, input } = await opened();
+    await live.commit(async (tx, pi) => {
+      pi.run = { taskId: TASK, inputs: [await input(tx)], turns: 0 };
+    });
+    await live.commit(async (tx, pi) => {
+      await s.reply(tx, { ...reply([], "error"), errorMessage: "Provider is not configured: keyed" });
+      delete pi.run;
+    });
+
+    expect(events(live.sent).at(-1)).toEqual({
+      type: "run:end",
+      reason: "error",
+      code: "no_credentials",
+      error: "Provider is not configured: keyed",
+    });
+    await expectEveryResumeFolds(s, live.sent);
+  });
+
   it("starts before its first reply too, when the commit that starts it stores that reply", async () => {
     const { s, live, input } = await opened();
     let asked: EntryId | undefined;

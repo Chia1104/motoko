@@ -125,6 +125,15 @@ function usageOf(message: AssistantMessage): Usage | undefined {
   };
 }
 
+/**
+ * The code of a run a model error ended. pi-ai stores no code on a failed reply, only its text, and this text is the
+ * only trace that the request found no credential for its provider (`Models.applyAuth`). Pinned by "a user's key
+ * changing while the instance is open" in `test/access.test.ts`, and for a reply alone by "ends with no_credentials
+ * when its failed reply found no credential for the provider" in `test/transcriber.test.ts`.
+ */
+const modelErrorCode = (error: string | undefined) =>
+  error?.startsWith("Provider is not configured: ") === true ? "no_credentials" : "model_error";
+
 /** How a reply ends its run; `undefined` while the run goes on to run its tools. */
 function runEndOf(message: AssistantMessage): RunEnd | undefined {
   switch (message.stopReason) {
@@ -136,7 +145,7 @@ function runEndOf(message: AssistantMessage): RunEnd | undefined {
       return {
         type: "run:end",
         reason: "error",
-        code: "model_error",
+        code: modelErrorCode(message.errorMessage),
         ...(message.errorMessage !== undefined && { error: clip(message.errorMessage) }),
       };
     case "aborted":
@@ -156,6 +165,8 @@ function failureOf({ reason, detail }: RunEnding): RunEnd {
     case "interrupted":
     case "restart_limit":
       return { type: "run:end", reason: "interrupted", code: reason, ...extra };
+    case "model_error":
+      return { type: "run:end", reason: "error", code: modelErrorCode(detail), ...extra };
     default:
       return { type: "run:end", reason: "error", code: reason, ...extra };
   }

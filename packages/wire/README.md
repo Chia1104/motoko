@@ -191,9 +191,10 @@ withdrawn or dropped already, so it may be sent again. `abort` drops every input
 once it is admitted; the stream shows it go (see Compactions).
 
 `continue` starts a run on the session's context as it is, without a new message: it carries on a run
-that ended without an answer, such as one at its turn limit (`run:end` with `code: "turn_limit"`),
-from where it stopped. Inputs the failed run left waiting join it, so its first `user` event is
-theirs; otherwise it shows `run:start` and the model's reply, with no `user` event. It is refused
+that ended without an answer, such as one at its turn limit (`run:end` with `code: "turn_limit"`) or
+one whose model request found no credentials (`code: "no_credentials"`, once the app holds the key
+again), from where it stopped. Inputs the failed run left waiting join it, so its first `user` event
+is theirs; otherwise it shows `run:start` and the model's reply, with no `user` event. It is refused
 while a run is going (`session_busy`), and a context with nothing to answer ends its run at once
 (`run:end` with `code: "nothing_to_answer"`). Its `requestId`, like `submit`'s, makes a retry return
 the first continue.

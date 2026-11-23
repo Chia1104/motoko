@@ -472,10 +472,11 @@ beforehand and hands pi-durable the newest result:
   `compact` and `resume`; and on `instance.refreshModels()`.
 - A key the user adds or removes while the instance is open: build the `Models` with a pi-ai
   `CredentialStore` that reads the app's table (as the example does), and there is nothing to do:
-  pi-ai resolves credentials at every request, so the next request uses the new key, or fails with
-  the provider's "not configured" error once it is gone. A change that needs another `Models` (a
-  provider registered only when the user has a key) reaches the next `submit`, `approve` or
-  `resume` on its own; call `refreshModels()` to reach a run already going at its next request.
+  pi-ai resolves credentials at every request, so the next request uses the new key, or, once it is
+  gone, fails with the provider's "not configured" error and ends its run with `run:end`
+  `code: "no_credentials"`. A change that needs another `Models` (a provider registered only when
+  the user has a key) reaches the next `submit`, `approve` or `resume` on its own; call
+  `refreshModels()` to reach a run already going at its next request.
 - A throw or rejection is reported as `models_failed` and held: every model request of the instance
   then fails with `ModelsUnavailableError`, which ends the run it serves (`run:end` with
   `reason: "error"`, `code: "faulted"` and the error's message, which names no cause; pi-durable
@@ -485,6 +486,12 @@ beforehand and hands pi-durable the newest result:
 - A run resumed after a restart whose credentials can no longer be resolved (the user deleted their
   keys, or the lookup fails) ends that way: with an error the client sees, its committed state
   kept, and nothing sent on anyone else's credentials. A later input runs once the lookup succeeds.
+
+**A key the app holds for a while.** The app keeps the caller's key where its `CredentialStore`
+reads it, such as in server memory for a while. A run that finds none, after the key expired or the
+server restarted, ends `no_credentials` with its committed state kept, so the client can tell it
+from other failures and ask the user for the key. Once the app holds the key again,
+`session.continue()` carries the run on and answers the user's message.
 
 **`portsFor({ scope, sessionId, toolCallId, toolName, signal })`** returns one tool call's ports,
 and may be async. It runs **per call**, right before the call executes: after its approval, if it

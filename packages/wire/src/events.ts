@@ -177,7 +177,10 @@ export const agentWireEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("run:end"),
     reason: runEndReasonSchema,
-    /** The engine's code for a run that did not finish, such as `model_error` or `no_model`. */
+    /**
+     * The engine's code for a run that did not finish, such as `model_error`, `no_model`, or `no_credentials` (the
+     * model request found no credential for its provider).
+     */
     code: z.string().optional(),
     /** A message for the operator, when the engine gave one. */
     error: z.string().optional(),
