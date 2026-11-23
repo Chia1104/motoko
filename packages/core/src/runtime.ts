@@ -115,6 +115,12 @@ interface AgentRuntimeCommonOptions<Ports> {
    */
   readonly settings?: HarnessOptions["settings"];
   /**
+   * The telemetry of one instance, from its scope: pi-durable's `HarnessOptions.telemetry` (a pi-telemetry
+   * `TelemetryContext`), which receives its content-free `pi.durable.*` spans and metrics. Called each time the
+   * instance opens. Default: pi-durable's, which records nothing.
+   */
+  readonly telemetryFor?: (scope: StorageScope) => NonNullable<HarnessOptions["telemetry"]>;
+  /**
    * How the runtime reaches a reply address: an ask's run ended, so its answer goes to the asker's instance, through
    * the app's way to reach that instance's home (the local runtime's `session.reply`, a client of the cluster, a
    * Durable Object's stub). Resolve once the reply was delivered or refused for good (map `reply_not_pending` and
@@ -540,10 +546,12 @@ class Instance implements AgentInstance {
       const own = extensions.get(this.agent.kind)!;
       const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
       const appSettings = this.#options.settings;
+      const telemetry = this.#options.telemetryFor?.(this.scope);
       const { wake } = host;
       harness = await Harness.open(
         storage,
         {
+          ...(telemetry !== undefined && { telemetry }),
           // SAFETY: the options hold exactly one of `models` and `modelsFor`.
           models: models?.get ?? (this.#options.models as HarnessOptions["models"]),
           registry,

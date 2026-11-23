@@ -256,6 +256,7 @@ createAgentRuntime({
   ports | portsFor,        // exactly one: one ports object, or ports per tool call
   closeIdleAfterMs?,       // close an instance idle this long; default never
   settings?,               // pi-durable's settings; the runtime sets `extensions`
+  telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
   deliverReply?,           // (reply, signal) => Promise<void>: how an ask's answer reaches its asker
 }): AgentRuntime
 runtime.get(agent, name): AgentInstance       // lazily opened, one per scope per runtime
@@ -311,6 +312,12 @@ type InstanceReport =
 `reply_failed` is an ask whose reply `deliverReply` failed to deliver: it is tried again unless
 `gaveUp`. It is also reported, with `gaveUp` and `attempt: 0`, for an ask whose request was first
 submitted without a reply address, whose run's answer therefore reaches no one.
+
+`telemetryFor(scope)` gives an instance its pi-telemetry `TelemetryContext`, which the runtime hands
+to pi-durable's `HarnessOptions.telemetry` each time the instance opens. It then receives pi-durable's
+content-free spans and metrics (`pi.durable.submit`, `pi.durable.phase`, ...) for that instance alone,
+so an app can tag them with the scope or send each caller's to its own exporter. A throw fails the
+open. The app imports pi-telemetry itself; core depends on none of it.
 
 ## Calls
 
