@@ -1,0 +1,60 @@
+packages:
+  - packages/*
+
+catalogMode: prefer
+
+# The default catalog holds the Vite+ toolchain: `overrides` and `vp upgrade` both target it.
+catalog:
+  "@electric-sql/pglite": ^0.5.17
+  "@types/node": ^26.6.6
+  "@types/pg": ^8.23.1
+  mysql2: ^3.24.6
+  pg: ^8.23.1
+  typescript: ^7.0.2
+  vite: npm:@voidzero-dev/vite-plus-core@8.3.8000
+  vite-plus: 1.7.0
+  # The vitest Vite+ ships, named for @cloudflare/vitest-plugin's peer, so one copy runs the tests.
+  vitest: 5.1.0
+  zod: 4.6.7
+
+catalogs:
+  # The Agents SDK supports one pi minor at a time; 0.34 supports pi ~1.6.0.
+  cloudflare:
+    "@cloudflare/vitest-plugin": 1.9.0
+    "@cloudflare/workers-types": 5.20261121.1
+    agents: 0.34.0
+  drizzle:
+    drizzle-kit: 1.0.0-rc.6
+    drizzle-orm: 1.0.0-rc.6
+  lint:
+    "@chiastack/oxlint": ^1.1.0
+  # @chia1104/motoko-client/react's. pi and the Agents SDK take React as an optional peer, so the root installs it
+  # too: every package then resolves the one instance of them that resolved it, not a second one beside it.
+  react:
+    "@types/react": 19.3.0
+    "@types/react-dom": 19.3.0
+    react: 19.3.1
+    react-dom: 19.3.1
+  pi:
+    "@earendil-works/chord": ~1.6.0
+    "@earendil-works/pi-ai": ~1.6.0
+    "@earendil-works/pi-durable": ~1.6.0
+    "@earendil-works/pi-schema": ~1.6.0
+
+# pi-ai's Google SDK and protobufjs only print notices from their install scripts, as does core-js-pure (through
+# the Agents SDK's mail parser). workerd's and esbuild's check the platform binary they run.
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false
+  core-js-pure: false
+  esbuild: true
+  workerd: true
+
+# Newer than pnpm's release-age policy allows by default; pinned on purpose.
+minimumReleaseAgeExclude:
+  - drizzle-kit@1.0.0-rc.6
+  - drizzle-orm@1.0.0-rc.6
+
+# Every `vite` in the graph is the Vite+ core, so one copy of Vite+ runs the tests and builds.
+overrides:
+  vite@*: "catalog:"

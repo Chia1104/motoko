@@ -1,0 +1,60 @@
+{
+  "name": "@chia1104/motoko-core",
+  "version": "0.1.0",
+  "description": "Motoko's runtime: agent definitions, the host contract and createAgentRuntime, on pi-durable.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "@chia1104/motoko-source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./store": {
+      "@chia1104/motoko-source": "./src/store/index.ts",
+      "types": "./dist/store/index.d.ts",
+      "default": "./dist/store/index.js"
+    },
+    "./store/testing": {
+      "@chia1104/motoko-source": "./src/store/testing.ts",
+      "types": "./dist/store/testing.d.ts",
+      "default": "./dist/store/testing.js"
+    },
+    "./sqlite": {
+      "@chia1104/motoko-source": "./src/sqlite.ts",
+      "types": "./dist/sqlite.d.ts",
+      "default": "./dist/sqlite.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@chia1104/motoko-wire": "workspace:*",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "~1.6.0",
+    "@earendil-works/pi-ai": "~1.6.0",
+    "@earendil-works/pi-durable": "~1.6.0",
+    "@earendil-works/pi-schema": "~1.6.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@earendil-works/pi-schema": "catalog:pi",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "@chia1104/motoko-store-mysql",
+  "version": "0.1.0",
+  "description": "Motoko's MySQL storage and lease on Drizzle: many agent instances in one database, on pi-durable's Storage contract.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "motoko-store-mysql": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./schema": {
+      "@chia1104/motoko-source": "./src/schema.ts",
+      "types": "./dist/schema.d.mts",
+      "default": "./dist/schema.mjs"
+    },
+    "./migrations/*": "./migrations/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "check:package": "node scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@chia1104/motoko-core": "workspace:*",
+    "drizzle-orm": "catalog:drizzle"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "mysql2": "^3"
+  },
+  "devDependencies": {
+    "@chia1104/motoko-node": "workspace:*",
+    "@chia1104/motoko-wire": "workspace:*",
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@types/node": "catalog:",
+    "drizzle-kit": "catalog:drizzle",
+    "mysql2": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "zod": "catalog:"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    // These examples, and @chia1104/motoko-client as they import it, as a browser sees them: the DOM's globals, not the
+    // Workers runtime's.
+    "lib": ["es2023", "es2024.string", "dom", "dom.iterable"],
+    "types": [],
+    "jsx": "react-jsx"
+  },
+  "include": ["."]
+}

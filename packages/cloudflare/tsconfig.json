@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The Workers runtime's globals and `cloudflare:workers`, as a Durable Object sees them.
+    "types": ["@cloudflare/workers-types"]
+  },
+  // The browser examples are checked with the DOM's globals, by their own tsconfig.json.
+  "include": ["src", "test", "examples/*.ts", "*.ts"]
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    // The examples, and the client as they import it, as a browser sees them: the DOM's globals.
+    "lib": ["es2023", "es2024.string", "dom", "dom.iterable"],
+    "types": [],
+    "jsx": "react-jsx"
+  },
+  "include": ["."]
+}

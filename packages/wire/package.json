@@ -1,0 +1,34 @@
+{
+  "name": "@chia1104/motoko-wire",
+  "version": "0.1.0",
+  "description": "Motoko's client contract: wire events, cursors, the session view reducer, the call protocol and the socket protocol's frames.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./socket": {
+      "@chia1104/motoko-source": "./src/socket.ts",
+      "types": "./dist/socket.d.ts",
+      "default": "./dist/socket.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

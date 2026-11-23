@@ -1,0 +1,49 @@
+{
+  "name": "@chia1104/motoko-cloudflare",
+  "version": "0.1.0",
+  "description": "Motoko in a Cloudflare Durable Object: an Agents SDK capability on the object's SQLite and alarm, serving its WebSockets.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@chia1104/motoko-core": "workspace:*",
+    "@chia1104/motoko-wire": "workspace:*",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "~1.6.0",
+    "@earendil-works/pi-ai": "~1.6.0",
+    "@earendil-works/pi-durable": "~1.6.0",
+    "@earendil-works/pi-schema": "~1.6.0",
+    "agents": ">=0.34.0 <0.35.0"
+  },
+  "devDependencies": {
+    "@chia1104/motoko-client": "workspace:*",
+    "@cloudflare/vitest-plugin": "catalog:cloudflare",
+    "@cloudflare/workers-types": "catalog:cloudflare",
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@earendil-works/pi-schema": "catalog:pi",
+    "@types/react": "catalog:react",
+    "agents": "catalog:cloudflare",
+    "react": "catalog:react",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  }
+}

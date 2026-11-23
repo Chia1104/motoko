@@ -1,0 +1,2402 @@
+{
+  "type": "base",
+  "version": "10",
+  "dialect": "postgres",
+  "id": "e8852baf-7cd8-48e9-8c81-2041cad6c648",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "footprints": [
+    {
+      "statementType": "create_schema",
+      "statementTarget": [
+        "schema",
+        "agent_runtime"
+      ],
+      "writes": [
+        "s|sch|agent_runtime",
+        "n|sch|agent_runtime",
+        "e|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "conversations"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.conversations",
+        "n|tbl|agent_runtime.conversations",
+        "e|tbl|agent_runtime.conversations",
+        "n|rel|agent_runtime.conversations",
+        "n|type|agent_runtime.conversations",
+        "n|rel|agent_runtime.conversations_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "document_revisions"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.document_revisions",
+        "n|tbl|agent_runtime.document_revisions",
+        "e|tbl|agent_runtime.document_revisions",
+        "n|rel|agent_runtime.document_revisions",
+        "n|type|agent_runtime.document_revisions",
+        "n|rel|agent_runtime.document_revisions_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "documents"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.documents",
+        "n|tbl|agent_runtime.documents",
+        "e|tbl|agent_runtime.documents",
+        "n|rel|agent_runtime.documents",
+        "n|type|agent_runtime.documents",
+        "n|rel|agent_runtime.documents_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "entries"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.entries",
+        "n|tbl|agent_runtime.entries",
+        "e|tbl|agent_runtime.entries",
+        "n|rel|agent_runtime.entries",
+        "n|type|agent_runtime.entries",
+        "n|rel|agent_runtime.entries_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "record_ids"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.record_ids",
+        "n|tbl|agent_runtime.record_ids",
+        "e|tbl|agent_runtime.record_ids",
+        "n|rel|agent_runtime.record_ids",
+        "n|type|agent_runtime.record_ids",
+        "n|rel|agent_runtime.record_ids_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "scopes"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.scopes",
+        "n|tbl|agent_runtime.scopes",
+        "e|tbl|agent_runtime.scopes",
+        "n|rel|agent_runtime.scopes",
+        "n|type|agent_runtime.scopes",
+        "n|rel|agent_runtime.scopes_pkey",
+        "n|rel|agent_runtime.scopes_kind_name"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "submissions"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.submissions",
+        "n|tbl|agent_runtime.submissions",
+        "e|tbl|agent_runtime.submissions",
+        "n|rel|agent_runtime.submissions",
+        "n|type|agent_runtime.submissions",
+        "n|rel|agent_runtime.submissions_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "tasks"
+      ],
+      "writes": [
+        "s|tbl|agent_runtime.tasks",
+        "n|tbl|agent_runtime.tasks",
+        "e|tbl|agent_runtime.tasks",
+        "n|rel|agent_runtime.tasks",
+        "n|type|agent_runtime.tasks",
+        "n|rel|agent_runtime.tasks_pkey"
+      ],
+      "reads": [
+        "n|sch|agent_runtime"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "conversations",
+        "conversations_by_owner_conversation"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.conversations_by_owner_conversation",
+        "n|idx|agent_runtime.conversations_by_owner_conversation",
+        "e|idx|agent_runtime.conversations_by_owner_conversation",
+        "n|rel|agent_runtime.conversations_by_owner_conversation"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.conversations",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.conversations.scope_id",
+        "n|col|agent_runtime.conversations.owner_conversation_id",
+        "n|col|agent_runtime.conversations.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "conversations",
+        "conversations_by_owner_task"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.conversations_by_owner_task",
+        "n|idx|agent_runtime.conversations_by_owner_task",
+        "e|idx|agent_runtime.conversations_by_owner_task",
+        "n|rel|agent_runtime.conversations_by_owner_task"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.conversations",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.conversations.scope_id",
+        "n|col|agent_runtime.conversations.owner_task_id",
+        "n|col|agent_runtime.conversations.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "document_revisions",
+        "document_revisions_by_kind"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.document_revisions_by_kind",
+        "n|idx|agent_runtime.document_revisions_by_kind",
+        "e|idx|agent_runtime.document_revisions_by_kind",
+        "n|rel|agent_runtime.document_revisions_by_kind"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.document_revisions",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.document_revisions.scope_id",
+        "n|col|agent_runtime.document_revisions.document_id",
+        "n|col|agent_runtime.document_revisions.kind",
+        "n|col|agent_runtime.document_revisions.seq"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "documents",
+        "documents_by_address"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.documents_by_address",
+        "n|idx|agent_runtime.documents_by_address",
+        "e|idx|agent_runtime.documents_by_address",
+        "n|rel|agent_runtime.documents_by_address"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.documents",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.documents.scope_id",
+        "n|col|agent_runtime.documents.kind",
+        "n|col|agent_runtime.documents.scope_kind",
+        "n|col|agent_runtime.documents.owner_id",
+        "n|col|agent_runtime.documents.family",
+        "n|col|agent_runtime.documents.key_value",
+        "n|col|agent_runtime.documents.created_at"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "documents",
+        "documents_by_scope"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.documents_by_scope",
+        "n|idx|agent_runtime.documents_by_scope",
+        "e|idx|agent_runtime.documents_by_scope",
+        "n|rel|agent_runtime.documents_by_scope"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.documents",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.documents.scope_id",
+        "n|col|agent_runtime.documents.scope_kind",
+        "n|col|agent_runtime.documents.owner_id",
+        "n|col|agent_runtime.documents.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "documents",
+        "documents_by_scope_kind"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.documents_by_scope_kind",
+        "n|idx|agent_runtime.documents_by_scope_kind",
+        "e|idx|agent_runtime.documents_by_scope_kind",
+        "n|rel|agent_runtime.documents_by_scope_kind"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.documents",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.documents.scope_id",
+        "n|col|agent_runtime.documents.scope_kind",
+        "n|col|agent_runtime.documents.owner_id",
+        "n|col|agent_runtime.documents.kind",
+        "n|col|agent_runtime.documents.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "entries",
+        "entries_by_conversation"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.entries_by_conversation",
+        "n|idx|agent_runtime.entries_by_conversation",
+        "e|idx|agent_runtime.entries_by_conversation",
+        "n|rel|agent_runtime.entries_by_conversation"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.entries",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.entries.scope_id",
+        "n|col|agent_runtime.entries.conversation_id",
+        "n|col|agent_runtime.entries.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "entries",
+        "entry_heads_by_conversation"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.entry_heads_by_conversation",
+        "n|idx|agent_runtime.entry_heads_by_conversation",
+        "e|idx|agent_runtime.entry_heads_by_conversation",
+        "n|rel|agent_runtime.entry_heads_by_conversation"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.entries",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.entries.scope_id",
+        "n|col|agent_runtime.entries.conversation_id",
+        "n|col|agent_runtime.entries.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "scopes",
+        "scopes_unfinished"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.scopes_unfinished",
+        "n|idx|agent_runtime.scopes_unfinished",
+        "e|idx|agent_runtime.scopes_unfinished",
+        "n|rel|agent_runtime.scopes_unfinished"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "submissions",
+        "submissions_by_request"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.submissions_by_request",
+        "n|idx|agent_runtime.submissions_by_request",
+        "e|idx|agent_runtime.submissions_by_request",
+        "n|rel|agent_runtime.submissions_by_request"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.submissions",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.submissions.scope_id",
+        "n|col|agent_runtime.submissions.conversation_id",
+        "n|col|agent_runtime.submissions.request_id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "submissions",
+        "submissions_by_conversation"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.submissions_by_conversation",
+        "n|idx|agent_runtime.submissions_by_conversation",
+        "e|idx|agent_runtime.submissions_by_conversation",
+        "n|rel|agent_runtime.submissions_by_conversation"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.submissions",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.submissions.scope_id",
+        "n|col|agent_runtime.submissions.conversation_id",
+        "n|col|agent_runtime.submissions.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "submissions",
+        "submissions_by_status"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.submissions_by_status",
+        "n|idx|agent_runtime.submissions_by_status",
+        "e|idx|agent_runtime.submissions_by_status",
+        "n|rel|agent_runtime.submissions_by_status"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.submissions",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.submissions.scope_id",
+        "n|col|agent_runtime.submissions.status",
+        "n|col|agent_runtime.submissions.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "tasks",
+        "tasks_by_status"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.tasks_by_status",
+        "n|idx|agent_runtime.tasks_by_status",
+        "e|idx|agent_runtime.tasks_by_status",
+        "n|rel|agent_runtime.tasks_by_status"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.tasks.status",
+        "n|col|agent_runtime.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "tasks",
+        "tasks_by_conversation"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.tasks_by_conversation",
+        "n|idx|agent_runtime.tasks_by_conversation",
+        "e|idx|agent_runtime.tasks_by_conversation",
+        "n|rel|agent_runtime.tasks_by_conversation"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.tasks.conversation_id",
+        "n|col|agent_runtime.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "tasks",
+        "tasks_by_kind"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.tasks_by_kind",
+        "n|idx|agent_runtime.tasks_by_kind",
+        "e|idx|agent_runtime.tasks_by_kind",
+        "n|rel|agent_runtime.tasks_by_kind"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.tasks.kind",
+        "n|col|agent_runtime.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "tasks",
+        "tasks_by_abort_requested"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.tasks_by_abort_requested",
+        "n|idx|agent_runtime.tasks_by_abort_requested",
+        "e|idx|agent_runtime.tasks_by_abort_requested",
+        "n|rel|agent_runtime.tasks_by_abort_requested"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.tasks.abort_requested",
+        "n|col|agent_runtime.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "agent_runtime",
+        "tasks",
+        "tasks_by_background"
+      ],
+      "writes": [
+        "s|idx|agent_runtime.tasks_by_background",
+        "n|idx|agent_runtime.tasks_by_background",
+        "e|idx|agent_runtime.tasks_by_background",
+        "n|rel|agent_runtime.tasks_by_background"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.tasks.background",
+        "n|col|agent_runtime.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "conversations"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.conversations.conversations_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.conversations.conversations_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.conversations.conversations_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.conversations.conversations_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.conversations",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.conversations.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "document_revisions"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.document_revisions.document_revisions_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.document_revisions.document_revisions_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.document_revisions.document_revisions_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.document_revisions.document_revisions_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.document_revisions",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.document_revisions.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "documents"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.documents.documents_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.documents.documents_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.documents.documents_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.documents.documents_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.documents",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.documents.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "entries"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.entries.entries_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.entries.entries_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.entries.entries_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.entries.entries_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.entries",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.entries.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "record_ids"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.record_ids.record_ids_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.record_ids.record_ids_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.record_ids.record_ids_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.record_ids.record_ids_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.record_ids",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.record_ids.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "submissions"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.submissions.submissions_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.submissions.submissions_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.submissions.submissions_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.submissions.submissions_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.submissions",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.submissions.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "agent_runtime",
+        "tasks"
+      ],
+      "writes": [
+        "s|fk|agent_runtime.tasks.tasks_scope_id_scopes_scope_id_fkey",
+        "n|fk|agent_runtime.tasks.tasks_scope_id_scopes_scope_id_fkey",
+        "e|fk|agent_runtime.tasks.tasks_scope_id_scopes_scope_id_fkey",
+        "n|con|agent_runtime.tasks.tasks_scope_id_scopes_scope_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|agent_runtime.tasks",
+        "n|sch|agent_runtime",
+        "n|tbl|agent_runtime.scopes",
+        "n|sch|agent_runtime",
+        "n|col|agent_runtime.tasks.scope_id",
+        "n|col|agent_runtime.scopes.scope_id",
+        "e|uniqueness|agent_runtime.scopes.scope_id"
+      ]
+    }
+  ],
+  "ddl": [
+    {
+      "name": "agent_runtime",
+      "entityType": "schemas"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "conversations",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "document_revisions",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "documents",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "entries",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "record_ids",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "scopes",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "submissions",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "name": "tasks",
+      "isRlsEnabled": false,
+      "entityType": "tables"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "owner_conversation_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "owner_task_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "parent_conversation_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "parent_at",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "record",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "document_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "seq",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "kind",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "version",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "content",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "kind",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "family",
+      "type": "smallint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "key_value",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "scope_kind",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "owner_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "created_at",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "retired_at",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "record",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "conversation_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "head",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "commit_seq",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "record",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "record_type",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": {
+        "type": "always",
+        "name": "scopes_scope_id_seq",
+        "increment": "1",
+        "startWith": "1",
+        "minValue": "1",
+        "maxValue": "9223372036854775807",
+        "cache": 1,
+        "cycle": false
+      },
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "kind",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "name",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "next_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "2",
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "next_seq",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "lease_token",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "lease_holder",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "lease_expires_at",
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "wake_active",
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "wake_at",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "created_at",
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "conversation_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "request_id",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "status",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "record",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "scope_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "conversation_id",
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "kind",
+      "type": "text COLLATE \"C\"",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "status",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "abort_requested",
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "background",
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "record",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "entityType": "columns"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "conversations_by_owner_conversation",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "owner_conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "conversations_by_owner_task",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "owner_task_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "document_revisions_by_kind",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "document_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "seq",
+          "isExpression": false,
+          "asc": false,
+          "nullsFirst": true,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_by_address",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "family",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "key_value",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": false,
+          "nullsFirst": true,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_by_scope",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_by_scope_kind",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "entries_by_conversation",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "entry_heads_by_conversation",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"head\" IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "scopes_unfinished",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"wake_active\" OR \"wake_at\" IS NOT NULL OR \"lease_holder\" IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_by_request",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "request_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_by_conversation",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_by_status",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_by_status",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_by_conversation",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_by_kind",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_by_abort_requested",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "abort_requested",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_by_background",
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "background",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "entityType": "indexes"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "conversations_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "document_revisions_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "entries_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "record_ids_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_scope_id_scopes_scope_id_fkey",
+      "nameExplicit": false,
+      "columns": [
+        "scope_id"
+      ],
+      "schemaTo": "agent_runtime",
+      "tableTo": "scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "entityType": "fks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "conversations",
+      "name": "conversations_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "document_revisions_pkey",
+      "columns": [
+        "scope_id",
+        "document_id",
+        "seq"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "entries",
+      "name": "entries_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "record_ids_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_pkey",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "scopes_pkey",
+      "columns": [
+        "scope_id"
+      ],
+      "nameExplicit": false,
+      "entityType": "pks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "scopes",
+      "name": "scopes_kind_name",
+      "nameExplicit": true,
+      "columns": [
+        "kind",
+        "name"
+      ],
+      "nullsNotDistinct": false,
+      "entityType": "uniques"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "document_revisions",
+      "name": "document_revisions_kind",
+      "value": "\"kind\" IN ('base', 'delta')",
+      "entityType": "checks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_family",
+      "value": "\"family\" IN (0, 1)",
+      "entityType": "checks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "documents",
+      "name": "documents_scope_kind",
+      "value": "\"scope_kind\" IN ('session', 'conversation', 'task')",
+      "entityType": "checks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "record_ids",
+      "name": "record_ids_record_type",
+      "value": "\"record_type\" IN ('conversation', 'entry', 'task', 'submission', 'document')",
+      "entityType": "checks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "submissions",
+      "name": "submissions_status",
+      "value": "\"status\" IN ('queued', 'placed', 'done', 'unanswered')",
+      "entityType": "checks"
+    },
+    {
+      "schema": "agent_runtime",
+      "table": "tasks",
+      "name": "tasks_status",
+      "value": "\"status\" IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')",
+      "entityType": "checks"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  // The sources alone, with a browser's globals and none of Node's.
+  "compilerOptions": {
+    "lib": ["es2023", "es2024.string", "dom", "dom.iterable"],
+    "types": []
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,74 @@
+{
+  "name": "@chia1104/motoko-store-postgres",
+  "version": "0.1.0",
+  "description": "Motoko's Postgres storage and lease on Drizzle: many agent instances in one database, on pi-durable's Storage contract.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "motoko-store-postgres": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./schema": {
+      "@chia1104/motoko-source": "./src/schema.ts",
+      "types": "./dist/schema.d.mts",
+      "default": "./dist/schema.mjs"
+    },
+    "./pglite": {
+      "@chia1104/motoko-source": "./src/pglite.ts",
+      "types": "./dist/pglite.d.mts",
+      "default": "./dist/pglite.mjs"
+    },
+    "./migrations/*": "./migrations/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "check:package": "node scripts/check-package.mjs",
+    "bench": "node --conditions=@chia1104/motoko-source bench/run.ts"
+  },
+  "dependencies": {
+    "@chia1104/motoko-core": "workspace:*",
+    "drizzle-orm": "catalog:drizzle"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@electric-sql/pglite": ">=0.3",
+    "pg": "^8"
+  },
+  "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@chia1104/motoko-node": "workspace:*",
+    "@chia1104/motoko-wire": "workspace:*",
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@electric-sql/pglite": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "drizzle-kit": "catalog:drizzle",
+    "pg": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "zod": "catalog:"
+  }
+}

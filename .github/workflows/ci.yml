@@ -1,0 +1,67 @@
+# Checks, tests and builds every push to main and every pull request, on the oldest Node the packages
+# support and on the current one.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22.19", "26"]
+    # The stores' real-database cases run on both legs: against these two servers they add seconds, not minutes.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: pw
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: pw
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ppw"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: true
+
+      - run: vp check
+      - run: vp run -r typecheck
+      # The test helpers open their own pools from these URLs, the MySQL one with multipleStatements.
+      - run: vp run -r test
+        env:
+          TEST_DATABASE_URL: postgres://postgres:pw@127.0.0.1:5432/postgres
+          TEST_MYSQL_URL: mysql://root:pw@127.0.0.1:3306
+      - run: vp run -r build
+      # The built packages as an app sees them: exports, entry points and the CLI.
+      - run: vp run @chia1104/motoko-store-postgres#check:package
+      - run: vp run @chia1104/motoko-store-mysql#check:package

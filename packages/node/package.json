@@ -1,0 +1,45 @@
+{
+  "name": "@chia1104/motoko-node",
+  "version": "0.1.0",
+  "description": "Motoko's host for a long-lived Node or Electron process: SQLite storage per scope, an in-process lease, and calls and session events over HTTP and server-sent events.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "@chia1104/motoko-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@chia1104/motoko-core": "workspace:*",
+    "@chia1104/motoko-wire": "workspace:*",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "~1.6.0",
+    "@earendil-works/pi-ai": "~1.6.0",
+    "@earendil-works/pi-durable": "~1.6.0",
+    "@earendil-works/pi-schema": "~1.6.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "catalog:pi",
+    "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-durable": "catalog:pi",
+    "@earendil-works/pi-schema": "catalog:pi",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

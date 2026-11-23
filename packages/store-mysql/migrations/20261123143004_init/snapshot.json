@@ -1,0 +1,1571 @@
+{
+  "version": "6",
+  "dialect": "mysql",
+  "id": "324c26f1-a798-444f-8556-c48b9e09f078",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "name": "agent_runtime_conversations",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_document_revisions",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_documents",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_entries",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_record_ids",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_scopes",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_submissions",
+      "entityType": "tables"
+    },
+    {
+      "name": "agent_runtime_tasks",
+      "entityType": "tables"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "owner_conversation_id",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "owner_task_id",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "parent_conversation_id",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "parent_at",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "record",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "document_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "seq",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "kind",
+      "type": "varchar(5)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "ascii",
+      "collation": "ascii_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "version",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "content",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "kind",
+      "type": "varchar(256)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "family",
+      "type": "smallint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "key_value",
+      "type": "varchar(500)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "scope_kind",
+      "type": "varchar(12)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "ascii",
+      "collation": "ascii_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "owner_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "created_at",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "retired_at",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "record",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "conversation_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "head",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "marker_id",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": {
+        "as": "(if(`head` is null, null, `id`))",
+        "type": "virtual"
+      },
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "commit_seq",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "record",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "record_type",
+      "type": "varchar(12)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "ascii",
+      "collation": "ascii_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": true,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "kind",
+      "type": "varchar(1024)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "name",
+      "type": "varchar(1024)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "scope_key",
+      "type": "binary(32)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": {
+        "as": "unhex(sha2(concat(`kind`, x'00', `name`), 256))",
+        "type": "stored"
+      },
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "next_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": "2",
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "next_seq",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": "1",
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "lease_token",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": "0",
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "lease_holder",
+      "type": "text",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "lease_expires_at",
+      "type": "datetime(3)",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "wake_active",
+      "type": "boolean",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": "false",
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "wake_at",
+      "type": "bigint",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "unfinished",
+      "type": "boolean",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": {
+        "as": "(`wake_active` or `wake_at` is not null or `lease_holder` is not null)",
+        "type": "virtual"
+      },
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "created_at",
+      "type": "datetime(3)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": "(utc_timestamp(3))",
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "commit_nonce",
+      "type": "binary(16)",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "conversation_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "request_id",
+      "type": "varchar(760)",
+      "notNull": false,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "status",
+      "type": "varchar(10)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "ascii",
+      "collation": "ascii_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "record",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "scope_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "conversation_id",
+      "type": "bigint",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "kind",
+      "type": "varchar(760)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_0900_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "status",
+      "type": "varchar(10)",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "ascii",
+      "collation": "ascii_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "abort_requested",
+      "type": "boolean",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "background",
+      "type": "boolean",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": null,
+      "collation": null,
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "record",
+      "type": "longtext",
+      "notNull": true,
+      "autoIncrement": false,
+      "default": null,
+      "onUpdateNow": false,
+      "onUpdateNowFsp": null,
+      "charSet": "utf8mb4",
+      "collation": "utf8mb4_bin",
+      "generated": null,
+      "entityType": "columns"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "document_id",
+        "seq"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id",
+        "id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "PRIMARY",
+      "columns": [
+        "scope_id"
+      ],
+      "entityType": "pks"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "conversations_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "document_revisions_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "entries_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "record_ids_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "submissions_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_scope",
+      "columns": [
+        "scope_id"
+      ],
+      "tableTo": "agent_runtime_scopes",
+      "columnsTo": [
+        "scope_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": true,
+      "entityType": "fks"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "conversations_by_owner_conversation",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "owner_conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_conversations",
+      "name": "conversations_by_owner_task",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "owner_task_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "document_revisions_by_kind",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "document_id",
+          "isExpression": false
+        },
+        {
+          "value": "kind",
+          "isExpression": false
+        },
+        {
+          "value": "seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_by_address",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "kind",
+          "isExpression": false
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false
+        },
+        {
+          "value": "family",
+          "isExpression": false
+        },
+        {
+          "value": "key_value",
+          "isExpression": false
+        },
+        {
+          "value": "created_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_by_scope",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_by_scope_kind",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "scope_kind",
+          "isExpression": false
+        },
+        {
+          "value": "owner_id",
+          "isExpression": false
+        },
+        {
+          "value": "kind",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "entries_by_conversation",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_entries",
+      "name": "entry_heads_by_conversation",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "marker_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "scopes_scope_key",
+      "columns": [
+        {
+          "value": "scope_key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_scopes",
+      "name": "scopes_unfinished",
+      "columns": [
+        {
+          "value": "unfinished",
+          "isExpression": false
+        },
+        {
+          "value": "scope_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "submissions_by_request",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "request_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "submissions_by_conversation",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "submissions_by_status",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_by_status",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_by_conversation",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "conversation_id",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_by_kind",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "kind",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_by_abort_requested",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "abort_requested",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_by_background",
+      "columns": [
+        {
+          "value": "scope_id",
+          "isExpression": false
+        },
+        {
+          "value": "background",
+          "isExpression": false
+        },
+        {
+          "value": "id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "using": null,
+      "algorithm": null,
+      "lock": null,
+      "nameExplicit": true,
+      "entityType": "indexes"
+    },
+    {
+      "table": "agent_runtime_document_revisions",
+      "name": "document_revisions_kind",
+      "value": "`agent_runtime_document_revisions`.`kind` IN ('base', 'delta')",
+      "entityType": "checks"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_family",
+      "value": "`agent_runtime_documents`.`family` IN (0, 1)",
+      "entityType": "checks"
+    },
+    {
+      "table": "agent_runtime_documents",
+      "name": "documents_scope_kind",
+      "value": "`agent_runtime_documents`.`scope_kind` IN ('session', 'conversation', 'task')",
+      "entityType": "checks"
+    },
+    {
+      "table": "agent_runtime_record_ids",
+      "name": "record_ids_record_type",
+      "value": "`agent_runtime_record_ids`.`record_type` IN ('conversation', 'entry', 'task', 'submission', 'document')",
+      "entityType": "checks"
+    },
+    {
+      "table": "agent_runtime_submissions",
+      "name": "submissions_status",
+      "value": "`agent_runtime_submissions`.`status` IN ('queued', 'placed', 'done', 'unanswered')",
+      "entityType": "checks"
+    },
+    {
+      "table": "agent_runtime_tasks",
+      "name": "tasks_status",
+      "value": "`agent_runtime_tasks`.`status` IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')",
+      "entityType": "checks"
+    }
+  ],
+  "renames": []
+}

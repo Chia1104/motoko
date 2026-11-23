@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Node's globals: the tests serve the HTTP transport from Node. tsconfig.src.json checks the sources as a browser
+    // sees them, and examples/tsconfig.json the examples.
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src", "test", "*.ts"]
+}

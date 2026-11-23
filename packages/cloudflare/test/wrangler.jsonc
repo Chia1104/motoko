@@ -1,0 +1,16 @@
+{
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MOTOKO", "class_name": "MotokoTestAgent" },
+      { "name": "CONFORMANCE", "class_name": "MotokoConformanceObject" },
+      { "name": "SOCKETS", "class_name": "MotokoSocketObject" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MotokoTestAgent", "MotokoConformanceObject"] },
+    { "tag": "v2", "new_sqlite_classes": ["MotokoSocketObject"] },
+  ],
+}
