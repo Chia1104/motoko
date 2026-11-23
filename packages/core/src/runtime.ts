@@ -857,7 +857,6 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async () => undefined);
   }
 
-  /** The model a session runs with: `requested`, else the agent's, else the runtime's default. */
   #modelOf(requested: ModelRef | undefined): ModelRef {
     const model = requested ?? this.agent.model ?? this.#options.defaultModel;
     if (model === undefined) {
@@ -994,7 +993,7 @@ class Instance implements AgentInstance {
           try {
             const { requestId } = input;
             const id = await harness.commit(async (tx) => {
-              // Table reads come before the admission's writes.
+              // pi-durable throws `ReadAfterWrite` for a table read after the admission's writes.
               const known = await tx.submissionByRequest(conversation.id, requestId);
               const admitted = await conversation.submit(tx, { type: "continue", requestId });
               // A run that takes inputs a failed run left waiting starts at the first of them, as any run does.

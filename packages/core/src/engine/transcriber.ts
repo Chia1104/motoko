@@ -712,17 +712,16 @@ export class Transcriber {
 
   #read(entry: EntryRecord, decisions: Decisions) {
     const [message] = entry.model ?? [];
+    // A client resuming inside this entry is in its run already.
+    const resumed = this.#inRun && this.#runEntry === entry.id;
 
     if (ContinueEntry.is(entry)) {
-      // A client resuming inside this entry is in its run already.
-      if (!(this.#inRun && this.#runEntry === entry.id)) this.#nextRun(entry, decisions);
+      if (!resumed) this.#nextRun(entry, decisions);
       this.#runContinue = entry.data.submissionId;
       return;
     }
 
     if (isInput(entry) && message?.role === "user") {
-      // A client resuming inside this entry is in its run already.
-      const resumed = this.#inRun && this.#runEntry === entry.id;
       const joined =
         resumed || !this.#inRun || this.#runOver(entry) ? undefined : joinsRun(entry, this.#last, this.#reply);
       if (!resumed && joined === undefined) this.#nextRun(entry, decisions);

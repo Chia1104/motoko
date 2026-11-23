@@ -192,7 +192,6 @@ describe("continuing a run", () => {
     await session.submit({ text: "And note it", requestId: "2" });
     through.open();
     await reader.until((items) => runEnds(items) === 1);
-    // The failed run left it waiting.
     expect(fold(reader.items).queued).toMatchObject([{ text: "And note it" }]);
 
     await session.continue({ requestId: "c-1" });
