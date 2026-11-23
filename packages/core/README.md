@@ -264,7 +264,8 @@ runtime.recover({ concurrency? })             // open the scopes the host lists 
 runtime.inspect(): AgentRuntimeInspection     // what the runtime holds: { open, instances }
 runtime.close()
 instance.state                                // dormant · opening · open · closing · closed · lease_lost · failed
-instance.open() · createSession({ model?, tools?, requiresApproval?, requestId? }) · listSessions() · session(id)
+instance.open() · createSession({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval?, requestId? })
+instance.listSessions() · session(id)
 instance.resume() · refreshModels() · close()
 session.submit({ text, requestId, whenBusy?, replyTo? })  // idempotent on requestId; replyTo makes an ask
 session.withdraw(submissionId)                  // { outcome: "withdrawn" | "already_placed" | "settled" }
@@ -272,8 +273,8 @@ session.events({ from?, signal? })              // AsyncIterable<{ cursor, event
 session.approve([{ toolCallId, approved, comment? }])  // one commit: all of the batch, or none
 session.reply({ toolCallId, token, text, isError? })  // { outcome: "applied" | "already_replied" }
 session.abort()
-session.configure({ tools?, requiresApproval? })       // null puts back the agent's
-session.settings()                              // { tools, requiresApproval? }
+session.configure({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval? })  // one commit; null puts back the agent's
+session.settings()                              // { model, thinkingLevel, maxTurns?, tools, requiresApproval? }
 session.delete()                                // with its child sessions
 ```
 
@@ -596,20 +597,33 @@ const again = await instance.createSession({ requestId });
   stays gone.
 - Without a `requestId`, every call makes a session.
 
-## A session's tools and approval rule
+## What a session runs with
 
-A session may run with less than the whole agent, chosen per session and stored with it, so it holds
-after a restart. `createSession({ tools, requiresApproval })` sets both, `session.configure()` changes
-them in one commit (a field left out keeps its value, `null` puts back the agent's), and
-`session.settings()` reads them back:
+A session's model, thinking level and turn limit, and which of the agent's tools it may use and which
+of its calls wait for approval, are chosen per session and stored with it, so they hold after a
+restart. `createSession()` sets them, `session.configure()` changes any of them in one commit (a field
+left out keeps its value, `null` puts back the agent's), and `session.settings()` reads them back:
 
 ```ts
-// A session that may only read, and asks before every call of it.
-const { id } = await instance.createSession({ tools: ["read_note"], requiresApproval: ["read"] });
-// Later: every tool but delete_note, and write-tier calls run without asking.
-await instance.session(id).configure({ tools: { remove: ["delete_note"] }, requiresApproval: { remove: ["write"] } });
+// A session that may only read, asks before every call of it, and takes at most five tool rounds a run.
+const { id } = await instance.createSession({ tools: ["read_note"], requiresApproval: ["read"], maxTurns: 5 });
+// Later: a bigger model that thinks harder, every tool but delete_note, and write-tier calls run without asking.
+await instance.session(id).configure({
+  model: { provider: "anthropic", modelId: "claude-opus-5" },
+  thinkingLevel: "high",
+  tools: { remove: ["delete_note"] },
+  requiresApproval: { remove: ["write"] },
+});
 ```
 
+- `model` is pi's `ModelRef`; `null` puts back the model a new session gets, the agent's, else the
+  runtime's `defaultModel`, and rejects with a `TypeError` when there is neither. `thinkingLevel` is
+  pi-ai's `ModelThinkingLevel`; `null` puts back pi-durable's default. A change to either applies from
+  the run's next model request.
+- `maxTurns` bounds the tool rounds of one run: the round that reaches it runs its tools, then the run
+  ends without an answer (`run:end` with `reason: "error"`, `code: "turn_limit"` and `error: "1 turn"`
+  or `"N turns"`). It is an integer, 1 or more; anything else rejects with pi-durable's `RangeError`
+  and changes nothing, the other fields of the call included. `null` takes the limit away.
 - `tools` is a list of the agent's tool names, exactly those, or `{ remove }`: every one but those. The
   model is offered only the session's tools, and a call of another one ends with an error result
   without running. It is pi-durable's per-conversation tool selection; a change applies from the
@@ -619,7 +633,10 @@ await instance.session(id).configure({ tools: { remove: ["delete_note"] }, requi
   reaches the gate after the change. A call already waiting keeps waiting, and its decision decides
   it whatever the rule says by then: a declined call never runs, and its question stays visible.
 
-Both reject with a `TypeError` for a tool or tier the agent does not have, and change nothing.
+`tools` and `requiresApproval` reject with a `TypeError` for a tool or tier the agent does not have,
+and change nothing.
+`configure` on a child session rejects with `SessionOwnedError`: its delegate chose what it runs with.
+The wire's `createSession` call takes none of these: what a session runs with is the app's to choose.
 
 ## Delegates
 

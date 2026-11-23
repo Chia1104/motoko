@@ -1,4 +1,5 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import type { ConversationId, Storage } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -84,6 +85,9 @@ function setup(options: { host?: AgentHost; reports?: InstanceReport[] } = {}) {
   return { runtime, faux, ports };
 }
 
+/** What a session runs with when nothing chose otherwise: the runtime's default model, pi's thinking level. */
+const runsWith = { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" };
+
 const toolCall = (name: string, id: string) =>
   fauxAssistantMessage(fauxToolCall(name, { key: "a" }, { id }), { stopReason: "toolUse" });
 
@@ -168,7 +172,11 @@ describe("creating a session by a request ID", () => {
     const instance = runtime.get(agent, "alice");
     const first = await instance.createSession({ requestId: "r-1", tools: ["lookup"], requiresApproval: ["read"] });
     expect(await instance.createSession({ requestId: "r-1", tools: ["remove"], requiresApproval: [] })).toEqual(first);
-    expect(await instance.session(first.id).settings()).toEqual({ tools: ["lookup"], requiresApproval: ["read"] });
+    expect(await instance.session(first.id).settings()).toEqual({
+      ...runsWith,
+      tools: ["lookup"],
+      requiresApproval: ["read"],
+    });
     expect(await instance.listSessions()).toEqual([first]);
   });
 
@@ -192,7 +200,7 @@ describe("a session's tools", () => {
     const instance = runtime.get(agent, "t");
     const { id } = await instance.createSession({ tools: ["lookup"] });
     const session = instance.session(id);
-    expect(await session.settings()).toEqual({ tools: ["lookup"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["lookup"] });
 
     faux.setResponses([toolCall("remove", "rm-1"), fauxAssistantMessage("Done.")]);
     await session.submit({ text: "Delete a", requestId: "1" });
@@ -208,11 +216,11 @@ describe("a session's tools", () => {
     const { runtime } = setup();
     const instance = runtime.get(agent, "t");
     const session = instance.session((await instance.createSession()).id);
-    expect(await session.settings()).toEqual({ tools: ["remove", "lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
     await session.configure({ tools: { remove: ["remove"] } });
-    expect(await session.settings()).toEqual({ tools: ["lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["lookup", "wait"] });
     await session.configure({ tools: null });
-    expect(await session.settings()).toEqual({ tools: ["remove", "lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
   });
 
   it("refuses a tool the agent does not have, and changes nothing", async () => {
@@ -222,7 +230,7 @@ describe("a session's tools", () => {
     expect(await instance.listSessions()).toEqual([]);
     const session = instance.session((await instance.createSession()).id);
     await expect(session.configure({ tools: { remove: ["clock"] } })).rejects.toBeInstanceOf(TypeError);
-    expect(await session.settings()).toEqual({ tools: ["remove", "lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
   });
 });
 
@@ -256,7 +264,7 @@ describe("a session's approval rule", () => {
 
     // Back to the agent's policy: `write` waits again.
     await session.configure({ requiresApproval: null });
-    expect(await session.settings()).toEqual({ tools: ["remove", "lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
     faux.setResponses([toolCall("remove", "rm-2"), fauxAssistantMessage("Done.")]);
     await session.submit({ text: "Delete a", requestId: "2" });
     await readUntil(session, (event) => event.type === "approval:request" && event.toolCallId === "rm-2");
@@ -286,7 +294,7 @@ describe("a session's approval rule", () => {
     await expect(instance.createSession({ requiresApproval: ["admin"] })).rejects.toBeInstanceOf(TypeError);
     const session = instance.session((await instance.createSession()).id);
     await expect(session.configure({ requiresApproval: { remove: ["admin"] } })).rejects.toBeInstanceOf(TypeError);
-    expect(await session.settings()).toEqual({ tools: ["remove", "lookup", "wait"] });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
   });
 
   it("decides a batch whole: one call not waiting applies none of it", async () => {
@@ -308,6 +316,94 @@ describe("a session's approval rule", () => {
     ]);
     await readUntil(session, isRunEnd);
     expect(ports.deleted).toEqual(["a"]);
+  });
+});
+
+describe("what a session runs with", () => {
+  const other = { provider: "faux", modelId: "faux-2" };
+  const allTools = ["remove", "lookup", "wait"];
+
+  /** A runtime with two models, the first its default, and a reply that records which model it came from. */
+  function twoModels(options: { defaultModel?: boolean } = {}) {
+    const { faux, models, model } = fauxModels({ models: [{ id: "faux-1" }, { id: "faux-2" }] });
+    runtime = createAgentRuntime({
+      agents: [agent],
+      host: memoryHost(),
+      models,
+      ports: { deleted: [] },
+      ...(options.defaultModel !== false && { defaultModel: model }),
+    });
+    const asked: string[] = [];
+    const answer =
+      (text: string): FauxResponseStep =>
+      (_context, _options, _state, requested) => {
+        asked.push(requested.id);
+        return fauxAssistantMessage(text);
+      };
+    return { instance: runtime.get(agent, "m"), faux, asked, answer };
+  }
+
+  it("takes a model, a thinking level and a turn limit when made, and reads them back", async () => {
+    const { instance } = twoModels();
+    const { id } = await instance.createSession({ model: other, thinkingLevel: "high", maxTurns: 3 });
+    expect(await instance.session(id).settings()).toEqual({
+      model: other,
+      thinkingLevel: "high",
+      maxTurns: 3,
+      tools: allTools,
+    });
+  });
+
+  it("changes them with configure, and null puts back what a new session gets", async () => {
+    const { instance, faux, asked, answer } = twoModels();
+    const session = instance.session((await instance.createSession()).id);
+    await session.configure({ model: other, thinkingLevel: "low", maxTurns: 2 });
+    expect(await session.settings()).toEqual({ model: other, thinkingLevel: "low", maxTurns: 2, tools: allTools });
+    faux.setResponses([answer("On two.")]);
+    await session.submit({ text: "Hi", requestId: "1" });
+    await readUntil(session, isRunEnd);
+
+    await session.configure({ model: null, thinkingLevel: null, maxTurns: null });
+    expect(await session.settings()).toEqual({ ...runsWith, tools: allTools });
+    faux.setResponses([answer("On one.")]);
+    await session.submit({ text: "Hi again", requestId: "2" });
+    await readUntil(session, (_event, items) => items.filter((item) => isRunEnd(item.event)).length === 2);
+    expect(asked).toEqual(["faux-2", "faux-1"]);
+  });
+
+  it("refuses `model: null` when neither the agent nor the runtime has a model to put back", async () => {
+    const { instance } = twoModels({ defaultModel: false });
+    const session = instance.session((await instance.createSession({ model: other })).id);
+    await expect(session.configure({ model: null })).rejects.toBeInstanceOf(TypeError);
+    expect((await session.settings()).model).toEqual(other);
+  });
+
+  it("ends a run at its turn limit, once the round that reaches it has run its tools", async () => {
+    const { runtime, faux } = setup();
+    const instance = runtime.get(agent, "l");
+    const session = instance.session((await instance.createSession({ maxTurns: 1 })).id);
+    faux.setResponses([toolCall("lookup", "l-1"), toolCall("lookup", "l-2"), fauxAssistantMessage("Done.")]);
+    await session.submit({ text: "Look a up twice", requestId: "1" });
+    const items = await readUntil(session, isRunEnd);
+    expect(items.filter((item) => item.event.type === "tool:end").map((item) => item.event)).toMatchObject([
+      { toolCallId: "l-1", status: "ok" },
+    ]);
+    expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "error", code: "turn_limit", error: "1 turn" });
+    expect(faux.getPendingResponseCount()).toBe(2);
+  });
+
+  it("refuses a turn limit that is not a whole number 1 or more, and changes nothing", async () => {
+    const { runtime } = setup();
+    const instance = runtime.get(agent, "b");
+    await expect(instance.createSession({ maxTurns: 0 })).rejects.toBeInstanceOf(RangeError);
+    expect(await instance.listSessions()).toEqual([]);
+    const session = instance.session((await instance.createSession()).id);
+    for (const maxTurns of [0, 1.5]) {
+      await expect(
+        session.configure({ maxTurns, thinkingLevel: "high", tools: ["lookup"], requiresApproval: ["read"] }),
+      ).rejects.toBeInstanceOf(RangeError);
+    }
+    expect(await session.settings()).toEqual({ ...runsWith, tools: allTools });
   });
 });
 

@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { configure, ConversationBusy, createRegistry, Harness } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
@@ -182,6 +183,13 @@ export interface SessionInfo {
 export interface SessionOptions {
   /** Default: the agent's model, else the runtime's `defaultModel`. */
   readonly model?: ModelRef;
+  /** How hard the model thinks. Default: pi-durable's. */
+  readonly thinkingLevel?: ModelThinkingLevel;
+  /**
+   * Tool rounds one run takes at most: the round that reaches it runs its tools, then the run ends without an answer
+   * (`turn_limit`). An integer, 1 or more. Default: no limit.
+   */
+  readonly maxTurns?: number;
   /** The agent's tools the session may use. Default: all of them. */
   readonly tools?: ToolSelection;
   /** Which of the session's calls wait for approval. Default: what the agent's policy gates. */
@@ -193,14 +201,25 @@ export interface SessionOptions {
   readonly requestId?: string;
 }
 
-/** A change to what a session runs with: a field left out keeps its value, `null` puts back the agent's. */
+/**
+ * A change to what a session runs with: a field left out keeps its value, `null` puts back the agent's: for `model`,
+ * the model a new session gets (the agent's, else the runtime's `defaultModel`); for `thinkingLevel` and `maxTurns`,
+ * pi-durable's default.
+ */
 export interface SessionChange {
+  readonly model?: ModelRef | null;
+  readonly thinkingLevel?: ModelThinkingLevel | null;
+  readonly maxTurns?: number | null;
   readonly tools?: ToolSelection | null;
   readonly requiresApproval?: ApprovalRule | null;
 }
 
 /** What a session runs with now. */
 export interface SessionSettings {
+  readonly model: ModelRef;
+  readonly thinkingLevel: ModelThinkingLevel;
+  /** Tool rounds one run takes at most; absent, no limit. */
+  readonly maxTurns?: number;
   /** The agent's tools the session may use, in the agent's order. */
   readonly tools: readonly string[];
   /** The session's own approval rule; absent, the agent's policy decides. */
@@ -813,18 +832,23 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async () => undefined);
   }
 
-  createSession(options?: SessionOptions): Promise<SessionInfo> {
-    const model = options?.model ?? this.agent.model ?? this.#options.defaultModel;
+  /** The model a session runs with: `requested`, else the agent's, else the runtime's default. */
+  #modelOf(requested: ModelRef | undefined): ModelRef {
+    const model = requested ?? this.agent.model ?? this.#options.defaultModel;
     if (model === undefined) {
-      return Promise.reject(
-        new TypeError(
-          `No model for a session of \`${this.agent.kind}\`: pass one, or set the agent's or the runtime's default`,
-        ),
+      throw new TypeError(
+        `No model for a session of \`${this.agent.kind}\`: pass one, or set the agent's or the runtime's default`,
       );
     }
+    return { provider: model.provider, modelId: model.modelId };
+  }
+
+  createSession(options?: SessionOptions): Promise<SessionInfo> {
+    let model: ModelRef;
     let tools: string[] | undefined;
     let rule: ReturnType<typeof storedRule> | undefined;
     try {
+      model = this.#modelOf(options?.model);
       if (options?.tools !== undefined) tools = selectedTools(this.agent, options.tools);
       if (options?.requiresApproval !== undefined) rule = storedRule(this.agent, options.requiresApproval);
     } catch (error) {
@@ -843,8 +867,11 @@ class Instance implements AgentInstance {
         }
         const createdAt = Date.now();
         const { id } = await tx.createConversation({ ownership: { kind: "ownerless" } });
+        // pi-durable refuses a `maxTurns` that is not an integer 1 or more with a `RangeError`, failing the commit.
         await configure(tx, id, {
-          model: { provider: model.provider, modelId: model.modelId },
+          model,
+          ...(options?.thinkingLevel !== undefined && { thinkingLevel: options.thinkingLevel }),
+          ...(options?.maxTurns !== undefined && { maxTurns: options.maxTurns }),
           ...(tools !== undefined && this.#toolsChange(opened, tools)),
         });
         doc.sessions[String(id)] = {
@@ -1016,9 +1043,12 @@ class Instance implements AgentInstance {
   }
 
   configure(sessionId: string, change: SessionChange): Promise<void> {
+    let model: ModelRef | undefined;
     let tools: string[] | null | undefined;
     let rule: ReturnType<typeof storedRule> | null | undefined;
     try {
+      // pi-durable's unset model would leave the session with none, so `null` puts back the one a new session gets.
+      if (change.model !== undefined) model = this.#modelOf(change.model ?? undefined);
       if (change.tools !== undefined) tools = change.tools === null ? null : selectedTools(this.agent, change.tools);
       if (change.requiresApproval !== undefined) {
         rule = change.requiresApproval === null ? null : storedRule(this.agent, change.requiresApproval);
@@ -1030,9 +1060,17 @@ class Instance implements AgentInstance {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
-      if (tools === undefined && rule === undefined) return;
+      const agentChange: AgentChange = {
+        ...(model !== undefined && { model }),
+        ...(change.thinkingLevel !== undefined && { thinkingLevel: change.thinkingLevel }),
+        ...(change.maxTurns !== undefined && { maxTurns: change.maxTurns }),
+        ...(tools !== undefined && this.#toolsChange(opened, tools)),
+      };
+      const agentChanges = Object.keys(agentChange).length > 0;
+      if (!agentChanges && rule === undefined) return;
+      // One commit: pi-durable's `RangeError` for a bad `maxTurns` discards the whole change.
       await harness.commit(async (tx) => {
-        if (tools !== undefined) await configure(tx, conversation.id, this.#toolsChange(opened, tools));
+        if (agentChanges) await configure(tx, conversation.id, agentChange);
         if (rule === undefined) return;
         const record = (await tx.doc(SessionsDoc)).sessions[sessionId];
         if (record === undefined) throw new SessionNotFoundError(sessionId);
@@ -1047,9 +1085,14 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async (opened) => {
       const conversation = await this.#conversation(opened, sessionId);
       const agent = await conversation.agent(context);
+      // Every session gets a model when it is made, and `configure` never takes it away.
+      if (agent.model === undefined) throw new Error(`Session ${sessionId} has no model`);
       const offered = new Set(agent.tools.map((tool) => tool.name));
       const rule = ruleOf(opened.sessions, conversation.id);
       return {
+        model: { provider: agent.model.provider, modelId: agent.model.modelId },
+        thinkingLevel: agent.thinkingLevel,
+        ...(agent.maxTurns !== undefined && { maxTurns: agent.maxTurns }),
         tools: this.#agentOf(opened, conversation.id)
           .tools.map((tool) => tool.name)
           .filter((name) => offered.has(name)),
