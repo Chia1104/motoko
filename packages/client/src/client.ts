@@ -6,6 +6,7 @@ export type SessionInfo = CallResult<"createSession">;
 export type CreateSessionOptions = CallParams<"createSession">;
 export type SubmitInput = Omit<CallParams<"submit">, "sessionId">;
 export type SubmitResult = CallResult<"submit">;
+export type ContinueOptions = Omit<CallParams<"continue">, "sessionId">;
 export type ApprovalDecision = CallParams<"approve">["decisions"][number];
 export type ApprovalOutcome = CallResult<"approve">[number];
 export type ReplyInput = Omit<CallParams<"reply">, "sessionId">;
@@ -98,6 +99,12 @@ export interface MotokoClient {
    */
   submit(sessionId: string, input: SubmitInput): Promise<SubmitResult>;
   /**
+   * Carries on a run that ended without an answer, such as one at its turn limit, on the session's context as it is,
+   * without a new message. Only while no run is going (`session_busy`). Idempotent by `requestId`, a fresh one by
+   * default: after `connection_closed`, continue again with the same one.
+   */
+  continue(sessionId: string, options?: Partial<ContinueOptions>): Promise<SubmitResult>;
+  /**
    * Takes back an input still waiting in the queue, by its `submissionId`: `withdrawn`, else `already_placed` (a run
    * took it first) or `settled`. Safe to send again. An ask's input, or one the session does not hold, rejects with
    * `invalid_request`.
@@ -184,6 +191,10 @@ class TransportClient implements MotokoClient {
 
   submit(sessionId: string, input: SubmitInput): Promise<SubmitResult> {
     return this.#call("submit", { sessionId, ...input });
+  }
+
+  continue(sessionId: string, options?: Partial<ContinueOptions>): Promise<SubmitResult> {
+    return this.#call("continue", { sessionId, requestId: options?.requestId ?? crypto.randomUUID() });
   }
 
   withdraw(sessionId: string, submissionId: string): Promise<WithdrawResult> {

@@ -43,7 +43,7 @@ export class SessionClient {
 
 | Event                      | Fields                                                                            | Meaning                                                                                  |
 | -------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `run:start`                |                                                                                   | The agent started working on an input.                                                   |
+| `run:start`                |                                                                                   | The agent started working on an input, or carrying on a run (`continue`).                |
 | `user`                     | `messageId`, `text`, `at?`, `steer?`                                              | A user message as stored; `steer: true` when it joined the run going on.                 |
 | `assistant:start`          | `messageId`                                                                       | A reply began streaming, under a stream id.                                              |
 | `assistant:delta`          | `messageId`, `channel` (`text`/`thinking`), `delta`                               | More of the streaming reply.                                                             |
@@ -106,8 +106,8 @@ A cursor names a position in committed state, so it outlives the process that ha
 ```
 
 - `entry`: the newest stored entry whose events the client has all folded (0 before the first).
-- `run`: the run the client is in, by the entry of the user message that started it; `*` for a run
-  that started without one; `-` between runs.
+- `run`: the run the client is in, by the entry that started it: its user message's, or the marker
+  of the `continue` that started it; `*` for a run that started without one; `-` between runs.
 - `epoch`, `seq`: where the event sits in the server's in-memory log of the current run, present on
   events of that log.
 
@@ -175,6 +175,7 @@ adds what only it has, such as following several sessions on one socket.
 | `createSession` | `requestId?`                                                   | `{ id, createdAt }`         | yes      |
 | `listSessions`  | `{}`                                                           | `[{ id, createdAt }]`       | no       |
 | `submit`        | `sessionId`, `text`, `requestId`, `whenBusy?`, `replyTo?`      | `{ submissionId }`          | yes      |
+| `continue`      | `sessionId`, `requestId`                                       | `{ submissionId }`          | yes      |
 | `approve`       | `sessionId`, `decisions: [{ toolCallId, approved, comment? }]` | `[{ toolCallId, outcome }]` | yes      |
 | `reply`         | `sessionId`, `toolCallId`, `token`, `text`, `isError?`         | `{ outcome }`               | yes      |
 | `abort`         | `sessionId`                                                    | `null`                      | yes      |
@@ -188,6 +189,14 @@ its `submissionId` is what `withdraw` takes back while the input waits. `withdra
 withdrawn or dropped already, so it may be sent again. `abort` drops every input waiting too.
 `compact` asks for a compaction, with `instructions` for what its summary should keep, and is answered
 once it is admitted; the stream shows it go (see Compactions).
+
+`continue` starts a run on the session's context as it is, without a new message: it carries on a run
+that ended without an answer, such as one at its turn limit (`run:end` with `code: "turn_limit"`),
+from where it stopped. Inputs the failed run left waiting join it, so its first `user` event is
+theirs; otherwise it shows `run:start` and the model's reply, with no `user` event. It is refused
+while a run is going (`session_busy`), and a context with nothing to answer ends its run at once
+(`run:end` with `code: "nothing_to_answer"`). Its `requestId`, like `submit`'s, makes a retry return
+the first continue.
 
 `submit`'s `replyTo` makes the submission an ask: the asked instance delivers the answer of the run it
 starts to that reply address (`replyAddressSchema`: `{ scope, sessionId, toolCallId, token }`), as a
@@ -208,8 +217,8 @@ A call that fails answers a `CallError`, `{ code, message }` (`callErrorSchema`)
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `invalid_request`      | A call that does not parse, or core's `InvalidRequestError` (a refused `replyTo`, or a `withdraw` of an ask's input or of one the session does not hold). |
 | `session_not_found`    | Core's `SessionNotFoundError`; also the end of a follow whose session was deleted.                                                                        |
-| `session_busy`         | Core's `SessionBusyError`: `submit` with `whenBusy: "reject"` while a run is going.                                                                       |
-| `session_owned`        | Core's `SessionOwnedError`: `submit`, `withdraw`, `compact` or `deleteSession` of a child session.                                                        |
+| `session_busy`         | Core's `SessionBusyError`: `submit` with `whenBusy: "reject"`, or `continue`, while a run is going.                                                       |
+| `session_owned`        | Core's `SessionOwnedError`: `submit`, `continue`, `withdraw`, `compact` or `deleteSession` of a child session.                                            |
 | `approval_not_pending` | Core's `ApprovalNotPendingError`; no decision of the batch was applied.                                                                                   |
 | `reply_not_pending`    | Core's `ReplyNotPendingError`: no such call waits for this reply, or its token is wrong.                                                                  |
 | `invalid_cursor`       | A cursor of another session, or core's `InvalidCursorError`.                                                                                              |

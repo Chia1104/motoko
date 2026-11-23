@@ -54,7 +54,7 @@ export const queuedInputSchema = z.object({
 export type QueuedInput = z.infer<typeof queuedInputSchema>;
 
 export const agentWireEventSchema = z.discriminatedUnion("type", [
-  /** A run started: the agent is working on an input. */
+  /** A run started: the agent is working on an input, or carrying on a run that ended unanswered (`continue`). */
   z.object({ type: z.literal("run:start") }),
   z.object({
     type: z.literal("user"),

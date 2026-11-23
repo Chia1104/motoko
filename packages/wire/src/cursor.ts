@@ -23,8 +23,9 @@ export interface CursorPosition {
   /** The newest stored entry whose events the client has, all of them; 0 before the first. */
   readonly entry: number;
   /**
-   * The run the client is in: the entry of the user message that started it, or `"*"` for a run
-   * that started without one. Absent while the client sees no run going.
+   * The run the client is in: the entry that started it (its user message's, or the marker of the
+   * `continue` that started it), or `"*"` for a run that started without one. Absent while the client
+   * sees no run going.
    */
   readonly run?: number | "*";
   /** The cursor's place in one server log: the log's `epoch` and the event's sequence number in it. */

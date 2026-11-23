@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { configure, ConversationBusy, createRegistry, Harness } from "@earendil-works/pi-durable";
+import { configure, ConversationBusy, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
   Conversation,
@@ -32,7 +32,7 @@ import { applyReply } from "./engine/replies.ts";
 import type { ReplyInput, ReplyResult } from "./engine/replies.ts";
 import { selectedTools, SessionsDoc, storedRule, withChildren } from "./engine/sessions.ts";
 import type { ApprovalRule, SessionRecord, ToolSelection } from "./engine/sessions.ts";
-import { STEER_ENTRY } from "./engine/transcriber.ts";
+import { ContinueEntry, STEER_ENTRY } from "./engine/transcriber.ts";
 import type { ToolInfo } from "./engine/transcriber.ts";
 import { SessionWatch } from "./engine/watch.ts";
 import {
@@ -247,6 +247,11 @@ export interface SubmitResult {
   readonly submissionId: string;
 }
 
+export interface ContinueInput {
+  /** Idempotency key: continuing with the same one again returns the first continue. */
+  readonly requestId: string;
+}
+
 /**
  * What `withdraw` did: `withdrawn` (it was waiting, and it never reaches the agent), `already_placed` (a run took it
  * first), or `settled` (it was answered, withdrawn already, or dropped with its run).
@@ -270,12 +275,20 @@ export interface EventsOptions {
 /**
  * One session: a pi-durable conversation of an agent instance. A child session, the one a delegate's call runs its
  * sub-agent in, is followed, decided in and aborted like any other, under its sub-agent's tools and policy; only its
- * delegate submits to it, so `submit`, `withdraw`, `configure`, `compact` and `delete` reject with `SessionOwnedError`.
+ * delegate submits to it, so `submit`, `continue`, `withdraw`, `configure`, `compact` and `delete` reject with
+ * `SessionOwnedError`.
  */
 export interface AgentSession {
   readonly id: string;
   /** Admits the input durably and resolves once admitted; the run's progress arrives as events. */
   submit(input: SubmitInput): Promise<SubmitResult>;
+  /**
+   * Starts a run on the session's context as it is, without a new message: it carries on a run that ended without an
+   * answer, such as one that reached its turn limit, from where it stopped. Inputs a failed run left waiting join it.
+   * Only while no run is going: a busy session rejects with `SessionBusyError`. A context with nothing to answer (an
+   * answer ends it) ends the run at once, `nothing_to_answer`. Resolves once admitted, as `submit` does.
+   */
+  continue(input: ContinueInput): Promise<SubmitResult>;
   /**
    * Takes back an input still waiting for a run, by the `submissionId` its `submit` gave. Rejects with
    * `InvalidRequestError` for a submission of another session, or one of an ask: its asker waits for its answer.
@@ -969,6 +982,37 @@ class Instance implements AgentInstance {
     });
   }
 
+  continue(sessionId: string, input: ContinueInput): Promise<SubmitResult> {
+    return this.#lifecycle.run(async (opened) => {
+      const { harness } = opened;
+      const conversation = await this.#conversation(opened, sessionId);
+      this.#refuseOwned(opened, sessionId);
+      return this.#withWatch(opened, conversation, async () => {
+        // The run this starts uses the scope's models of now.
+        await opened.models?.refresh();
+        return this.#armedFor(harness, async () => {
+          try {
+            const { requestId } = input;
+            const id = await harness.commit(async (tx) => {
+              // Table reads come before the admission's writes.
+              const known = await tx.submissionByRequest(conversation.id, requestId);
+              const admitted = await conversation.submit(tx, { type: "continue", requestId });
+              // A run that takes inputs a failed run left waiting starts at the first of them, as any run does.
+              const alone = (await tx.doc(LiveDoc, conversation.id)).run?.inputs.length === 1;
+              if (known === undefined && alone) {
+                await tx.appendEntry(ContinueEntry, conversation.id, { data: { submissionId: admitted } });
+              }
+              return admitted;
+            }, context);
+            return { submissionId: String(id) };
+          } catch (error) {
+            throw error instanceof ConversationBusy ? new SessionBusyError(sessionId) : error;
+          }
+        });
+      });
+    });
+  }
+
   /** Why `submit` refuses an ask, if it does. */
   #refusedAsk(input: SubmitInput): string | undefined {
     if (this.#options.deliverReply === undefined)
@@ -1165,6 +1209,10 @@ class Session implements AgentSession {
 
   submit(input: SubmitInput): Promise<SubmitResult> {
     return this.#instance.submit(this.id, input);
+  }
+
+  continue(input: ContinueInput): Promise<SubmitResult> {
+    return this.#instance.continue(this.id, input);
   }
 
   events(options?: EventsOptions): AsyncIterable<StreamItem> {

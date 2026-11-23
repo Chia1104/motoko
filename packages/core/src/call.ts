@@ -34,6 +34,7 @@ const handlers: {
       ...(whenBusy !== undefined && { whenBusy }),
       ...(replyTo !== undefined && { replyTo }),
     }),
+  continue: (instance, { sessionId, requestId }) => instance.session(sessionId).continue({ requestId }),
   approve: (instance, { sessionId, decisions }) =>
     instance.session(sessionId).approve(
       decisions.map(({ toolCallId, approved, comment }) => ({

@@ -9,6 +9,7 @@ export { motokoClient, MotokoError } from "./client.ts";
 export type {
   ApprovalDecision,
   ApprovalOutcome,
+  ContinueOptions,
   CreateSessionOptions,
   FollowListener,
   MotokoClient,

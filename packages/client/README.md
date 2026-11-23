@@ -114,6 +114,7 @@ client.sessionState(sessionId): MotokoSessionState  // the same object until it 
 client.createSession({ requestId? }?): Promise<SessionInfo>  // { id, createdAt }; requestId: a fresh one by default
 client.listSessions(): Promise<SessionInfo[]>       // oldest first
 client.submit(sessionId, { text, requestId, whenBusy?, replyTo? }): Promise<{ submissionId }>  // whenBusy: queue · steer · reject
+client.continue(sessionId, { requestId? }?): Promise<{ submissionId }>  // carries on a run; requestId: a fresh one by default
 client.withdraw(sessionId, submissionId): Promise<{ outcome }>  // withdrawn · already_placed · settled
 client.approve(sessionId, decisions: ApprovalDecision[]): Promise<ApprovalOutcome[]>
 client.reply(sessionId, { toolCallId, token, text, isError? }): Promise<{ outcome }>  // applied · already_replied
@@ -132,6 +133,7 @@ class MotokoError extends Error { code: MotokoErrorCode | "connection_closed" }
 // @chia1104/motoko-client/react
 useMotokoSession(client: MotokoClient, sessionId: string): MotokoSessionState & {
   submit(text, { requestId?, whenBusy? }?): Promise<{ submissionId }>  // requestId: a fresh one by default
+  continue({ requestId? }?): Promise<{ submissionId }>  // carries on a run that ended without an answer
   withdraw(submissionId): Promise<{ outcome }>     // an input waiting in view.queued
   decide(decisions: ApprovalDecision[]): Promise<ApprovalOutcome[]>
   abort(): Promise<void>

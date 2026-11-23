@@ -850,8 +850,8 @@ describe("inputs placed by a generation", () => {
     };
   }
 
-  async function replayed(entries: readonly EntryRecord[], endings: Endings): Promise<AgentWireEvent[]> {
-    const transcriber = new Transcriber(history(entries, endings), info);
+  async function replayed(entries: readonly EntryRecord[], inputs: Endings["inputs"]): Promise<AgentWireEvent[]> {
+    const transcriber = new Transcriber(history(entries, { inputs, continues: new Map() }), info);
     const sent: Transcribed[] = [];
     for await (const page of transcriber.replay(entries.at(-1)!.id)) sent.push(...page);
     return events(sent);

@@ -339,11 +339,14 @@ describe("a delegate", () => {
     const child = instance.session(await childOf(parent));
 
     await expect(child.submit({ text: "Again", requestId: "2" })).rejects.toBeInstanceOf(SessionOwnedError);
+    await expect(child.continue({ requestId: "c" })).rejects.toBeInstanceOf(SessionOwnedError);
     await expect(child.configure({ tools: null })).rejects.toBeInstanceOf(SessionOwnedError);
     await expect(child.configure({ model: null, maxTurns: 2 })).rejects.toBeInstanceOf(SessionOwnedError);
     await expect(child.delete()).rejects.toBeInstanceOf(SessionOwnedError);
     for (const call of [
       { method: "submit", params: { sessionId: child.id, text: "Again", requestId: "3" } },
+      { method: "continue", params: { sessionId: child.id, requestId: "c" } },
+      { method: "compact", params: { sessionId: child.id } },
       { method: "deleteSession", params: { sessionId: child.id } },
     ] as const) {
       const error = await runCall(instance, call).catch((caught: unknown) => caught);
