@@ -4,6 +4,10 @@ An AI-agent runtime for apps built on pi. Its shape follows the Cloudflare Agent
 instances, sessions, a host that supplies storage and wake-ups, and a typed client event stream.
 pi-durable is the only execution engine.
 
+> [!WARNING]
+> Motoko is experimental and under active development. APIs, wire formats and storage schemas may change
+> without notice between releases, so do not rely on it in production yet.
+
 ## Features
 
 - **One agent definition, any host.** The same definition runs in an Electron process on SQLite, a
