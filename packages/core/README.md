@@ -309,6 +309,9 @@ type InstanceReport =
         | "reopen_failed" | "erase_failed" }
   | { source: "runtime"; scope: StorageScope; error: unknown;
       kind: "ports_failed"; sessionId: string; toolCallId: string; toolName: string }
+  | { source: "runtime"; scope: StorageScope;
+      kind: "task_blocked"; sessionId: string; taskKind: string;
+      reason: "missing_task" | "task_too_old" | "migration_failed" }
   | { source: "runtime"; scope: StorageScope; error: unknown;
       kind: "reply_failed"; sessionId: string; requestId: string;
       to: { scope, sessionId, toolCallId };  // the reply address, without its token
@@ -318,6 +321,13 @@ type InstanceReport =
 `reply_failed` is an ask whose reply `deliverReply` failed to deliver: it is tried again unless
 `gaveUp`. It is also reported, with `gaveUp` and `attempt: 0`, for an ask whose request was first
 submitted without a reply address, whose run's answer therefore reaches no one.
+
+`task_blocked` is a task of the session `sessionId` that this open cannot run: no extension provides
+a definition of `taskKind` (`missing_task`), or the one that does is older than the task
+(`task_too_old`) or cannot migrate its state (`migration_failed`, which pi-durable reports too, with
+the error). It keeps its session busy until an open provides the definition again or the session is
+aborted (see [App extensions](#app-extensions)). Each open reports a task once: one already blocked
+or sleeping when the instance opens, as it opens, and one that becomes blocked while it is open, then.
 
 `telemetryFor(scope)` gives an instance its pi-telemetry `TelemetryContext`, which the runtime hands
 to pi-durable's `HarnessOptions.telemetry` each time the instance opens. It then receives pi-durable's
@@ -926,8 +936,8 @@ const runtime = createAgentRuntime({
   or a task its hook asked for, keep giving that extension, its tools and its tasks under the same
   names: register a tool whose backend is down, and fail in its `execute`. When the instance opens
   without it, a call waiting at the gate for its tool ends with `tool_unavailable`, and a task whose
-  definition is gone stays blocked, the session busy, until the extension is back or the session is
-  aborted.
+  definition is gone is reported to `onReport` as `task_blocked`, with its session and `taskKind`. It
+  stays blocked, the session busy, until the extension is back or the session is aborted.
 - **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
   before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
   throws `SessionBusyError`, and an input that queues starts once they end.

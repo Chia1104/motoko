@@ -3,6 +3,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { configure, ConversationBusy, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
+  BlockedReason,
   Conversation,
   ConversationId,
   HarnessOptions,
@@ -10,6 +11,8 @@ import type {
   Report,
   Storage,
   SubmissionId,
+  TaskGraph,
+  TaskId,
   ToolRegistration,
   Wake,
 } from "@earendil-works/pi-durable";
@@ -77,6 +80,10 @@ export type AgentRuntimeReportKind =
  * runtime's own. `ports_failed` names the tool call whose ports `portsFor` could not resolve; that call
  * ended with an error result. `reply_failed` names an ask of the instance whose reply `deliverReply` failed to
  * deliver (it is tried again unless `gaveUp`), or whose request was first submitted without a reply address.
+ * `task_blocked` names a task of a session that cannot run on this open: no extension provides its definition
+ * (`missing_task`), or the one that does cannot take over its state (`task_too_old`, `migration_failed`). It keeps
+ * its session busy until an open provides the definition again, or the session is aborted. Each open reports a task
+ * once, whether it is blocked when the instance opens or becomes blocked later.
  */
 export type InstanceReport =
   | { readonly source: "pi"; readonly scope: StorageScope; readonly report: Report }
@@ -94,6 +101,14 @@ export type InstanceReport =
       readonly toolCallId: string;
       readonly toolName: string;
       readonly error: unknown;
+    }
+  | {
+      readonly source: "runtime";
+      readonly scope: StorageScope;
+      readonly kind: "task_blocked";
+      readonly sessionId: string;
+      readonly taskKind: string;
+      readonly reason: BlockedReason;
     }
   | ({ readonly source: "runtime"; readonly scope: StorageScope; readonly kind: "reply_failed" } & ReplyFailure);
 
@@ -674,10 +689,37 @@ class Instance implements AgentInstance {
         opened.failed = true;
         if (!detach.signal.aborted) void this.#lifecycle.end("failed");
       });
-      if (this.#options.closeIdleAfterMs !== undefined) {
-        // Every change to the task graph is activity: idleness is measured from the last one.
-        await harness.observeTaskGraph({ advance: () => this.#lifecycle.touch(), end: () => undefined }, context);
-      }
+      // A task no definition of this open can take, reported once: from the graph as it opens, which marks a sleeping
+      // task too (pi-durable commits no wake of one it cannot run), and from each change, such as a failed migration.
+      const blocked = new Set<TaskId>();
+      const reportBlocked = (graph: TaskGraph) => {
+        for (const task of Object.values(graph.tasks)) {
+          if (task.blocked === undefined || blocked.has(task.id)) continue;
+          blocked.add(task.id);
+          const report: InstanceReport = {
+            source: "runtime",
+            scope: this.scope,
+            kind: "task_blocked",
+            sessionId: String(task.conversationId),
+            taskKind: task.kind,
+            reason: task.blocked,
+          };
+          // An observer of the task graph only records: the app's handler runs once the graph's change is adopted.
+          queueMicrotask(() => this.#report(report));
+        }
+      };
+      const graph = await harness.observeTaskGraph(
+        {
+          advance: (call) => {
+            // Every change to the task graph is activity: idleness is measured from the last one.
+            this.#lifecycle.touch();
+            if (call.kind === "value") reportBlocked(call.value);
+          },
+          end: () => undefined,
+        },
+        context,
+      );
+      reportBlocked(graph.value);
       // Follow the sessions that have unfinished work before any of it runs again, so their
       // streams carry the resumed work from its first commit.
       const { tasks } = await harness.inspect(context);
