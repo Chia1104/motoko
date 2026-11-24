@@ -269,7 +269,7 @@ runtime.close()
 instance.state                                // dormant · opening · open · closing · closed · lease_lost · failed
 instance.open() · createSession({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval?, requestId? })
 instance.listSessions() · session(id)
-instance.resume() · refreshModels() · close()
+instance.resume() · refreshModels() · refreshExtensions() · close()
 session.submit({ text, requestId, whenBusy?, replyTo? })  // idempotent on requestId; replyTo makes an ask
 session.continue({ requestId })                 // carries on a run that ended without an answer; idempotent
 session.withdraw(submissionId)                  // { outcome: "withdrawn" | "already_placed" | "settled" }
@@ -938,6 +938,22 @@ const runtime = createAgentRuntime({
   without it, a call waiting at the gate for its tool ends with `tool_unavailable`, and a task whose
   definition is gone is reported to `onReport` as `task_blocked`, with its session and `taskKind`. It
   stays blocked, the session busy, until the extension is back or the session is aborted.
+- **Refreshing.** `instance.refreshExtensions()` calls `extensionsFor` again and puts what it lists in
+  place while the instance stays open, for an app whose tools change, such as an MCP server that
+  connects. An extension of a name already installed replaces the installed one, and a new one is
+  added: the next model request offers their tools, also in a run already under way, and
+  `tool_search` finds their deferred ones. One it no longer lists is no longer selected but stays
+  installed until the instance closes, so a task its hook asked for runs to its end. A call waiting
+  at the gate for a tool the refresh drops ends with `tool_unavailable` (an `error` whose message
+  says `Tool … is not available`): at once when the refresh installs any extension, as pi-durable
+  then asks every waiting call again, else when its decision comes. A call of it that parked on its
+  own work ends so too, when it wakes. Top-level sessions follow the refresh; a delegate's child
+  session keeps the selection it stored when it was made, so a refresh adds nothing to it. A refresh
+  is refused, and changes nothing, for what an open is refused for: a throw of `extensionsFor`, the
+  names above, and pi-durable's own errors, such as two tasks of one name. For pi-durable's, an
+  extension the refresh no longer lists counts too, as it is still installed. Refreshes take effect
+  one at a time, in call order. One called while the instance opens waits for the open; one called
+  while it is not open does nothing, as its next open calls `extensionsFor` anyway.
 - **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
   before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
   throws `SessionBusyError`, and an input that queues starts once they end.

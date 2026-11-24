@@ -8,6 +8,7 @@ import type {
   ConversationId,
   HarnessOptions,
   ModelRef,
+  Registry,
   Report,
   Storage,
   SubmissionId,
@@ -28,7 +29,7 @@ import { ask, askCourier, COURIER_TIMING } from "./engine/asks.ts";
 import type { Courier, CourierTiming, DeliverReply, ReplyFailure } from "./engine/asks.ts";
 import { agentExtensions } from "./engine/bind.ts";
 import { appExtensions } from "./engine/extensions.ts";
-import type { ExtensionsResolver, ToolCatalog } from "./engine/extensions.ts";
+import type { AppExtensions, ExtensionsResolver } from "./engine/extensions.ts";
 import { InstanceLifecycle } from "./engine/lifecycle.ts";
 import type { Clock, InstanceInspection, InstanceState } from "./engine/lifecycle.ts";
 import { ModelAccess } from "./engine/models.ts";
@@ -142,9 +143,10 @@ interface AgentRuntimeCommonOptions<Ports> {
   readonly settings?: HarnessOptions["settings"];
   /**
    * The app's pi-durable extensions for one instance, from its scope: tools, prompt sections, hooks and tasks that
-   * use the app's resources. Called each time the instance opens, before anything of it runs; a throw or rejection
-   * fails the open. Each extension's tools carry the tiers its `tier` gives them, and its `agents` say which agents'
-   * sessions select it: by default the instance's own agent's alone. Default: none.
+   * use the app's resources. Called each time the instance opens, before anything of it runs, and on
+   * `refreshExtensions()`; a throw or rejection fails the open, or the refresh, which then changes nothing. Each
+   * extension's tools carry the tiers its `tier` gives them, and its `agents` say which agents' sessions select it: by
+   * default the instance's own agent's alone. Default: none.
    */
   readonly extensionsFor?: ExtensionsResolver;
   /**
@@ -396,6 +398,15 @@ export interface AgentInstance {
    * them anyway), nor with a static `models`.
    */
   refreshModels(): Promise<void>;
+  /**
+   * With `extensionsFor`: resolves the instance's app extensions again and puts them in place, so the next model
+   * request, also of a run already going, offers their tools. One of a name already installed replaces it, and one no
+   * longer listed is no longer selected but stays installed until the instance closes, so a task it started still
+   * runs. Rejects, and changes nothing, where an open would fail: a `TypeError` for their names. Refreshes take effect
+   * one at a time, in call order. While the instance opens it waits for the open; while it is not open it does nothing
+   * (its next open resolves them anyway).
+   */
+  refreshExtensions(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -458,8 +469,15 @@ interface Opened {
   readonly detach: AbortController;
   /** The agent's tools as this open registered them, by name: what a session's tool selection names. */
   readonly tools: ReadonlyMap<string, ToolRegistration>;
-  /** The tools each agent's sessions run, the app's included, as this open installed them. */
-  readonly catalog: ToolCatalog;
+  /** The registry this open installed every extension in, and installs a refresh's in. */
+  readonly registry: Registry;
+  /**
+   * The app's extensions as this open last resolved them, read at each use: by the gate, `decide`, each session's
+   * stream and rule, and the top-level sessions' selection. `refreshExtensions()` replaces `current` whole.
+   */
+  readonly app: { current: AppExtensions };
+  /** The last refresh of the app's extensions: each waits for the one before it. */
+  refreshing: Promise<void>;
   /** The task that delivers an ask's reply, as this open registered it. */
   readonly courier: Courier;
   /** The sessions record as this open last read it: what each session's stream reads its approval rule from. */
@@ -585,7 +603,7 @@ class Instance implements AgentInstance {
   #toolInfo(opened: Opened, conversationId: ConversationId): (name: string) => ToolInfo {
     return (name) => {
       const agent = this.#agentOf(opened, conversationId);
-      const tool = opened.catalog.tool(agent.kind, name);
+      const tool = opened.app.current.catalog.tool(agent.kind, name);
       return {
         label: tool.label,
         tier: tool.tier ?? UNKNOWN_TIER,
@@ -613,17 +631,17 @@ class Instance implements AgentInstance {
           : new ModelAccess(this.scope, modelsFor, (error) => this.#runtimeReport("models_failed", error));
       await models?.refresh();
       // Resolved before the Harness opens: work it resumes runs with every extension it ran with.
-      const app = appExtensions(this.scope, this.#agents, (await this.#options.extensionsFor?.(this.scope)) ?? []);
+      const app = { current: await this.#appExtensions() };
       const registry = createRegistry();
       const extensions = agentExtensions(this.#agents, {
         scope: this.scope,
         ports: this.#portsOf,
         portsFailed: this.#portsFailed,
-        app,
+        app: () => app.current,
         nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
       });
       for (const extension of extensions.values()) registry.install(extension);
-      for (const extension of app.installed) registry.install(extension);
+      for (const extension of app.current.installed) registry.install(extension);
       // Resolved by name, whichever extensions a conversation selects.
       const { courier, extension: asks } = askCourier({
         deliver: this.#options.deliverReply,
@@ -634,7 +652,6 @@ class Instance implements AgentInstance {
       // SAFETY: an instance's agents include its own.
       const own = extensions.get(this.agent.kind)!;
       const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
-      const selection = app.selectionOf(this.agent.kind, own);
       const appSettings = this.#options.settings;
       const telemetry = this.#options.telemetryFor?.(this.scope);
       const env = this.#options.envFor?.(this.scope);
@@ -651,7 +668,7 @@ class Instance implements AgentInstance {
           // instance's agent, after the app's extensions that select it: no sub-agent's tools or instructions reach it.
           settings: () => ({
             ...(typeof appSettings === "function" ? appSettings() : appSettings),
-            extensions: selection,
+            extensions: app.current.selectionOf(this.agent.kind, own),
           }),
           onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
           ...(wake.kind === "alarm" && {
@@ -671,7 +688,9 @@ class Instance implements AgentInstance {
         models,
         detach,
         tools,
-        catalog: app.catalog,
+        registry,
+        app,
+        refreshing: Promise.resolve(),
         courier,
         sessions: undefined,
         failed: false,
@@ -934,7 +953,7 @@ class Instance implements AgentInstance {
 
   /** `rule` as a session of the instance's agent stores it: tiers its app tools carry count, known once open. */
   #storedRule(opened: Opened, rule: ApprovalRule) {
-    return storedRule(this.agent.kind, opened.catalog.tiers(this.agent.kind), rule);
+    return storedRule(this.agent.kind, opened.app.current.catalog.tiers(this.agent.kind), rule);
   }
 
   open(): Promise<void> {
@@ -1016,6 +1035,39 @@ class Instance implements AgentInstance {
 
   async refreshModels(): Promise<void> {
     await this.#lifecycle.opened?.models?.refresh();
+  }
+
+  async refreshExtensions(): Promise<void> {
+    const { state } = this;
+    if (state !== "open" && state !== "opening") return;
+    await this.#lifecycle.run(async (opened) => {
+      // One at a time, in call order, so the extensions that stay are those the last call resolved.
+      const refresh = opened.refreshing.then(() => this.#refreshExtensions(opened));
+      opened.refreshing = refresh.catch(() => undefined);
+      await refresh;
+    });
+  }
+
+  /** The app's extensions for this instance, as `extensionsFor` gives them now. */
+  async #appExtensions(): Promise<AppExtensions> {
+    return appExtensions(this.scope, this.#agents, (await this.#options.extensionsFor?.(this.scope)) ?? []);
+  }
+
+  /**
+   * Installs the app's extensions as they are now in `opened`'s registry, and has everything read them, or changes
+   * nothing. Nothing is uninstalled: a session made earlier may still select an extension the app no longer lists, and
+   * a task it started still needs its definition.
+   */
+  async #refreshExtensions(opened: Opened): Promise<void> {
+    const app = await this.#appExtensions();
+    const { registry } = opened;
+    // pi-durable's own checks, such as a task name another installed extension has, refuse on a copy first.
+    const trial = createRegistry();
+    for (const extension of [...registry.snapshot().installed(), ...app.installed]) trial.install(extension);
+    // In one step: every change to the registry has pi-durable ask the calls waiting at the gate again, which reads
+    // the new catalog and selection.
+    opened.app.current = app;
+    for (const extension of app.installed) registry.install(extension);
   }
 
   async close(): Promise<void> {
@@ -1127,7 +1179,7 @@ class Instance implements AgentInstance {
         await opened.models?.refresh();
         const rule = ruleOf(opened.sessions, conversation.id);
         const agent = this.#agentOf(opened, conversation.id);
-        const gated = (name: string) => isGated(agent, opened.catalog.tool(agent.kind, name), rule);
+        const gated = (name: string) => isGated(agent, opened.app.current.catalog.tool(agent.kind, name), rule);
         return this.#armedFor(harness, () => decide(harness, conversation.id, gated, decisions));
       });
     });

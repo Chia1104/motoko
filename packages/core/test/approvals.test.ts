@@ -160,11 +160,12 @@ async function conversationOf(
   const { faux, models, model } = fauxModels();
   const deleted: string[] = [];
   const registry = createRegistry();
+  const installed = appOf(agent, app);
   const extensions = agentExtensions(new Map([[agent.kind, agent]]), {
     scope: { kind: agent.kind, name: "a" },
     ports: () => ({ deleted }),
     portsFailed: () => undefined,
-    app: appOf(agent, app),
+    app: () => installed,
     nestedApprovalTimeoutMs,
   });
   for (const extension of [...more, ...app.map(({ extension }) => extension)]) registry.install(extension);
