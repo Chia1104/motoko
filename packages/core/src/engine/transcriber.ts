@@ -314,9 +314,13 @@ const deferred = (slot: ToolSlot, calls: Calls) => startedCall(calls, slot.callI
  */
 export const STEER_ENTRY = "motoko.steer";
 
+/** The kind of the entry an input submitted with metadata is placed as, unless it is a steer: `pi.user` holds no data. */
+export const INPUT_ENTRY = "motoko.input";
+
 /** Whether an entry is an input: a user message the session was given, which starts a run or joins the one going on. */
 export const isInput = (entry: EntryRecord) =>
-  (UserEntry.is(entry) || entry.kind === STEER_ENTRY) && entry.model?.[0]?.role === "user";
+  (UserEntry.is(entry) || entry.kind === INPUT_ENTRY || entry.kind === STEER_ENTRY) &&
+  entry.model?.[0]?.role === "user";
 
 /**
  * The marker a continue writes in the commit that admits it, when its run takes no input: pi-durable's continue places
