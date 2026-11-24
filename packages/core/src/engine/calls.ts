@@ -28,9 +28,13 @@ type CallRecord = {
       /** Epoch ms the reply was delivered: a later one is `already_replied`. */
       repliedAt?: number;
     }
+  | {
+      /** A call of an app extension's tool that parked on its own work, from the commit before its park. */
+      kind: "app";
+    }
 );
 
-/** The calls of a conversation the runtime runs itself, by tool call id. */
+/** The calls of a conversation the runtime runs itself, and those of app tools that parked, by tool call id. */
 export type Calls = Readonly<Record<string, CallRecord>>;
 
 /** The record of call `callId` run by task `taskId`, if that call has started: not an earlier call's of the same id. */
@@ -41,8 +45,9 @@ export function startedCall(calls: Calls, callId: string, taskId: number | undef
 
 /**
  * The record of a conversation's calls that the runtime runs itself and that have started: a delegate's, from the
- * commit that makes its child session, and a deferred call's, from the commit before its `start`. A call listed here
- * has passed its gate, so a call that sleeps while listed is parked on its own work, not waiting for a decision.
+ * commit that makes its child session, and a deferred call's, from the commit before its `start`; and an app tool's
+ * call, from the commit before it parks. A call listed here has passed its gate, so a call that sleeps while listed is
+ * parked on its own work, not waiting for a decision.
  */
 export const CallsDoc = defineDoc<{ calls: Record<string, CallRecord> }>({
   kind: "runtime.calls",

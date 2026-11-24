@@ -24,6 +24,8 @@ import type { ApprovalDecision, ApprovalOutcome } from "./engine/approvals.ts";
 import { ask, askCourier, COURIER_TIMING } from "./engine/asks.ts";
 import type { Courier, CourierTiming, DeliverReply, ReplyFailure } from "./engine/asks.ts";
 import { agentExtensions } from "./engine/bind.ts";
+import { appExtensions } from "./engine/extensions.ts";
+import type { ExtensionsResolver, ToolCatalog } from "./engine/extensions.ts";
 import { InstanceLifecycle } from "./engine/lifecycle.ts";
 import type { Clock, InstanceInspection, InstanceState } from "./engine/lifecycle.ts";
 import { ModelAccess } from "./engine/models.ts";
@@ -112,9 +114,16 @@ interface AgentRuntimeCommonOptions<Ports> {
   readonly closeIdleAfterMs?: number;
   /**
    * pi-durable's `HarnessOptions.settings` (such as `progress`), passed to every instance's Harness, read at each use
-   * as pi-durable reads it. `extensions` is the runtime's: a session selects its own agent's.
+   * as pi-durable reads it. `extensions` is the runtime's: a session selects the app's extensions and its own agent's.
    */
   readonly settings?: HarnessOptions["settings"];
+  /**
+   * The app's pi-durable extensions for one instance, from its scope: tools, prompt sections, hooks and tasks that
+   * use the app's resources. Called each time the instance opens, before anything of it runs; a throw or rejection
+   * fails the open. Each extension's tools carry the tiers its `tier` gives them, and its `agents` say which agents'
+   * sessions select it: by default the instance's own agent's alone. Default: none.
+   */
+  readonly extensionsFor?: ExtensionsResolver;
   /**
    * The telemetry of one instance, from its scope: pi-durable's `HarnessOptions.telemetry` (a pi-telemetry
    * `TelemetryContext`), which receives its content-free `pi.durable.*` spans and metrics. Called each time the
@@ -420,6 +429,8 @@ interface Opened {
   readonly detach: AbortController;
   /** The agent's tools as this open registered them, by name: what a session's tool selection names. */
   readonly tools: ReadonlyMap<string, ToolRegistration>;
+  /** The tools each agent's sessions run, the app's included, as this open installed them. */
+  readonly catalog: ToolCatalog;
   /** The task that delivers an ask's reply, as this open registered it. */
   readonly courier: Courier;
   /** The sessions record as this open last read it: what each session's stream reads its approval rule from. */
@@ -545,11 +556,11 @@ class Instance implements AgentInstance {
   #toolInfo(opened: Opened, conversationId: ConversationId): (name: string) => ToolInfo {
     return (name) => {
       const agent = this.#agentOf(opened, conversationId);
-      const tool = agent.tool(name);
+      const tool = opened.catalog.tool(agent.kind, name);
       return {
-        label: tool?.label ?? name,
-        tier: tool?.tier ?? UNKNOWN_TIER,
-        gated: isGated(agent, name, ruleOf(opened.sessions, conversationId)),
+        label: tool.label,
+        tier: tool.tier ?? UNKNOWN_TIER,
+        gated: isGated(agent, tool, ruleOf(opened.sessions, conversationId)),
       };
     };
   }
@@ -572,13 +583,17 @@ class Instance implements AgentInstance {
           ? undefined
           : new ModelAccess(this.scope, modelsFor, (error) => this.#runtimeReport("models_failed", error));
       await models?.refresh();
+      // Resolved before the Harness opens: work it resumes runs with every extension it ran with.
+      const app = appExtensions(this.scope, this.#agents, (await this.#options.extensionsFor?.(this.scope)) ?? []);
       const registry = createRegistry();
       const extensions = agentExtensions(this.#agents, {
         scope: this.scope,
         ports: this.#portsOf,
         portsFailed: this.#portsFailed,
+        app,
       });
       for (const extension of extensions.values()) registry.install(extension);
+      for (const extension of app.installed) registry.install(extension);
       // Resolved by name, whichever extensions a conversation selects.
       const { courier, extension: asks } = askCourier({
         deliver: this.#options.deliverReply,
@@ -589,6 +604,7 @@ class Instance implements AgentInstance {
       // SAFETY: an instance's agents include its own.
       const own = extensions.get(this.agent.kind)!;
       const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
+      const selection = app.selectionOf(this.agent.kind, own);
       const appSettings = this.#options.settings;
       const telemetry = this.#options.telemetryFor?.(this.scope);
       const { wake } = host;
@@ -600,10 +616,10 @@ class Instance implements AgentInstance {
           models: models?.get ?? (this.#options.models as HarnessOptions["models"]),
           registry,
           // A session that selects no extensions of its own, also one made before sub-agents were, runs its
-          // instance's agent alone: no sub-agent's tools or instructions reach it.
+          // instance's agent, after the app's extensions that select it: no sub-agent's tools or instructions reach it.
           settings: () => ({
             ...(typeof appSettings === "function" ? appSettings() : appSettings),
-            extensions: [own],
+            extensions: selection,
           }),
           onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
           ...(wake.kind === "alarm" && {
@@ -623,6 +639,7 @@ class Instance implements AgentInstance {
         models,
         detach,
         tools,
+        catalog: app.catalog,
         courier,
         sessions: undefined,
         failed: false,
@@ -846,11 +863,19 @@ class Instance implements AgentInstance {
     if (opened.sessions?.sessions[sessionId]?.parent !== undefined) throw new SessionOwnedError(sessionId);
   }
 
-  /** pi-durable's change of the agent's tools for `selection` (`null`: all of them again). */
+  /**
+   * pi-durable's change of the agent's tools for the enabled `names` (`null`: all of them again): the agent's others
+   * removed, so the app's tools stay enabled.
+   */
   #toolsChange(opened: Opened, names: readonly string[] | null): Pick<AgentChange, "tools"> {
     if (names === null) return { tools: null };
-    // SAFETY: the names were checked against the agent's tools, and the open registered every one.
-    return { tools: names.map((name) => opened.tools.get(name)!) };
+    const enabled = new Set(names);
+    return { tools: { remove: [...opened.tools.values()].filter((tool) => !enabled.has(tool.name)) } };
+  }
+
+  /** `rule` as a session of the instance's agent stores it: tiers its app tools carry count, known once open. */
+  #storedRule(opened: Opened, rule: ApprovalRule) {
+    return storedRule(this.agent.kind, opened.catalog.tiers(this.agent.kind), rule);
   }
 
   open(): Promise<void> {
@@ -870,16 +895,16 @@ class Instance implements AgentInstance {
   createSession(options?: SessionOptions): Promise<SessionInfo> {
     let model: ModelRef;
     let tools: string[] | undefined;
-    let rule: ReturnType<typeof storedRule> | undefined;
     try {
       model = this.#modelOf(options?.model);
       if (options?.tools !== undefined) tools = selectedTools(this.agent, options.tools);
-      if (options?.requiresApproval !== undefined) rule = storedRule(this.agent, options.requiresApproval);
     } catch (error) {
       return Promise.reject(error);
     }
     const requestId = options?.requestId;
     return this.#lifecycle.run(async (opened) => {
+      const requiresApproval = options?.requiresApproval;
+      const rule = requiresApproval === undefined ? undefined : this.#storedRule(opened, requiresApproval);
       // One commit looks the request up and makes the session it does not find, so no retry, however it overlaps or
       // whatever crash came before it, makes a second one.
       const session = await opened.harness.commit(async (tx): Promise<SessionInfo> => {
@@ -1043,7 +1068,8 @@ class Instance implements AgentInstance {
         await opened.models?.refresh();
         const rule = ruleOf(opened.sessions, conversation.id);
         const agent = this.#agentOf(opened, conversation.id);
-        return this.#armedFor(harness, () => decide(agent, harness, conversation.id, rule, decisions));
+        const gated = (name: string) => isGated(agent, opened.catalog.tool(agent.kind, name), rule);
+        return this.#armedFor(harness, () => decide(harness, conversation.id, gated, decisions));
       });
     });
   }
@@ -1114,19 +1140,20 @@ class Instance implements AgentInstance {
   configure(sessionId: string, change: SessionChange): Promise<void> {
     let model: ModelRef | undefined;
     let tools: string[] | null | undefined;
-    let rule: ReturnType<typeof storedRule> | null | undefined;
     try {
       // pi-durable's unset model would leave the session with none, so `null` puts back the one a new session gets.
       if (change.model !== undefined) model = this.#modelOf(change.model ?? undefined);
       if (change.tools !== undefined) tools = change.tools === null ? null : selectedTools(this.agent, change.tools);
-      if (change.requiresApproval !== undefined) {
-        rule = change.requiresApproval === null ? null : storedRule(this.agent, change.requiresApproval);
-      }
     } catch (error) {
       return Promise.reject(error);
     }
     return this.#lifecycle.run(async (opened) => {
       const { harness } = opened;
+      const requiresApproval = change.requiresApproval;
+      const rule =
+        requiresApproval === undefined || requiresApproval === null
+          ? requiresApproval
+          : this.#storedRule(opened, requiresApproval);
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
       const agentChange: AgentChange = {

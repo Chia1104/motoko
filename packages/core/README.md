@@ -256,6 +256,7 @@ createAgentRuntime({
   ports | portsFor,        // exactly one: one ports object, or ports per tool call
   closeIdleAfterMs?,       // close an instance idle this long; default never
   settings?,               // pi-durable's settings; the runtime sets `extensions`
+  extensionsFor?,          // (scope) => AppExtension[]: the app's pi-durable extensions for an instance; default none
   telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
   deliverReply?,           // (reply, signal) => Promise<void>: how an ask's answer reaches its asker
 }): AgentRuntime
@@ -636,15 +637,16 @@ await instance.session(id).configure({
   call included. `null` takes the limit away.
 - `tools` is a list of the agent's tool names, exactly those, or `{ remove }`: every one but those. The
   model is offered only the session's tools, and a call of another one ends with an error result
-  without running. It is pi-durable's per-conversation tool selection; a change applies from the
-  run's next model request.
+  without running. It chooses among the agent's own tools: the tools of [app extensions](#app-extensions)
+  stay on whatever it says. It is pi-durable's per-conversation tool selection, which the runtime
+  stores as the agent's tools to remove; a change applies from the run's next model request.
 - `requiresApproval` is a list of tiers, exactly the calls of those wait, or `{ add, remove }`: the
   agent's policy with `add` tiers gated as well and `remove` tiers not. It applies to every call that
   reaches the gate after the change. A call already waiting keeps waiting, and its decision decides
   it whatever the rule says by then: a declined call never runs, and its question stays visible.
 
-`tools` and `requiresApproval` reject with a `TypeError` for a tool or tier the agent does not have,
-and change nothing.
+`tools` rejects with a `TypeError` for a tool the agent does not have, and `requiresApproval` for a
+tier no tool of the session carries, the app extensions' included, and neither changes anything.
 `configure` on a child session rejects with `SessionOwnedError`: its delegate chose what it runs with.
 The wire's `createSession` call takes none of these: what a session runs with is the app's to choose.
 
@@ -741,8 +743,10 @@ why, and the parent's run goes on.
 - A delegate is a tool like any other: the agent's policy and the session's rule judge its tier. A
   call that started is never gated again, whatever the rule says by then.
 - Each session sees only its own agent's tools and instructions. The runtime sets pi-durable's default
-  extension selection (`settings.extensions`) to the instance's agent, so a top-level session, also
-  one made before its agent had delegates, never sees a sub-agent's.
+  extension selection (`settings.extensions`) to the instance's agent, after the app extensions that
+  select it, so a top-level session, also one made before its agent had delegates, never sees a
+  sub-agent's. A child session selects the app extensions that name its sub-agent's kind, then the
+  sub-agent's own: by default none of the app's ([App extensions](#app-extensions)).
 - Sub-agents have no instances of their own. `createAgentRuntime` throws a `TypeError` for two
   definitions of one kind among its agents and the sub-agents their delegates reach. A definition is
   frozen once made, so delegates never loop.
@@ -848,6 +852,64 @@ The asked side keeps a courier for each ask, a background task of the asked sess
 client of the cluster ([forwarding](../node#forwarding-experimental) takes the call to the home), or a
 Durable Object's stub ([asks between objects](../cloudflare#asks-between-objects)).
 
+## App extensions
+
+`extensionsFor(scope)` gives an instance the app's own pi-durable extensions: tools, prompt sections,
+hooks, wraps and tasks that use the app's resources, which an agent definition, importable by a
+client, cannot hold. It may be async. The runtime calls it each time the instance opens, before the
+instance's Harness opens, so work the instance resumes runs with the extensions it ran with. A throw
+or rejection fails the open: the call that opened the instance rejects with that error, nothing of
+the instance runs, and a call waiting at the gate keeps waiting for a later open.
+
+```ts
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
+
+const runtime = createAgentRuntime({
+  // ...
+  extensionsFor: (scope) => [
+    { extension: createToolSearchExtension(), tier: () => "read" },
+    { extension: mcpTools(scope), tier: (name) => (name.startsWith("mcp_github_") ? "network" : undefined) },
+    { extension: traces(scope), agents: ["notes", "researcher"] },
+  ],
+});
+```
+
+- **Tiers.** `tier(toolName)` gives each of the extension's tools its tier, which the agent's policy
+  and a session's rule judge as they judge the agent's own tools; `tool:start` and `approval:request`
+  carry it. A tool it gives none is `unknown`, and every call of it waits for approval: no policy or
+  rule lets it run without a decision, and a rule cannot name `unknown`.
+- **Selection.** Every extension is installed in the instance's registry. A session selects the
+  extensions whose `agents` name its agent's kind, in the order `extensionsFor` lists them, then its
+  agent's own, so the approval gate runs last and judges the arguments the call runs with: `beforeTool`
+  hooks, prompt sections and `afterTool` hooks run in selection order, each `beforeTool` seeing the
+  arguments the one before it returned. Leaving `agents` out names the instance's own agent alone, so
+  a delegate's sub-agent runs an app extension only when `agents` names its kind. A hook meant for
+  every session, such as tracing, names the sub-agents' kinds too; a sub-agent of the instance's own
+  kind runs what a top-level session runs.
+- **Tools.** A session's `tools` choose among its agent's own tools; the app's stay on. To give
+  sessions other app tools, run them as another agent. A call of an app tool that parks on its own
+  work (its `execute` returns `{ sleep }`) is recorded in `runtime.calls` before it parks, so its
+  sleep raises no question and `approve()` refuses it, as a deferred call's does.
+- **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
+  tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
+  another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
+  or wraps a tool of a name, so any of those would run something in an agent's tool's place, past its
+  ports.
+- **Stable names.** While a session may still have work of an extension, a call waiting at the gate
+  or a task its hook asked for, keep giving that extension, its tools and its tasks under the same
+  names: register a tool whose backend is down, and fail in its `execute`. When the instance opens
+  without it, a call waiting at the gate for its tool ends with `tool_unavailable`, and a task whose
+  definition is gone stays blocked, the session busy, until the extension is back or the session is
+  aborted.
+- **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
+  before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
+  throws `SessionBusyError`, and an input that queues starts once they end.
+- **Nested calls.** A call a tool makes through pi-durable's `executeTool()` passes the gate too. One
+  the gate holds raises no question yet and cannot be decided; aborting the run ends it.
+
+A session whose `tools` an earlier Motoko stored, as pi-durable's list of exactly those tools, runs
+none of the app's until `configure({ tools })` sets them again.
+
 ## Deleting a session
 
 `session.delete()` stops the session's run (and background work it owns), ends its readers, and hides
@@ -946,8 +1008,9 @@ aborts).
 A call whose tier the policy gates (the session's own rule, if it has one) is parked by a
 `beforeTool` hook that returns `{ sleep: { signals: [ApprovalSignal.key(callId)] } }`, pi-durable
 1.6's gate. The park is the tool task's committed state; nothing waits in memory. A delegate's call
-also sleeps once it has started, while its child works, and so does a deferred call while it waits for its reply.
-Those parks are their own, so they raise no question.
+also sleeps once it has started, while its child works, and so does a deferred call while it waits for its reply,
+and an app tool's call that parks on its own work. Those parks are their own, recorded in `runtime.calls`, so they
+raise no question. The gate judges every call of a session, the app extensions' tools' too.
 `approve()` delivers every decision of its batch with `tx.signal()` in one commit that also records them in a
 conversation document (`runtime.approvals`): if any call of the batch is not waiting, the commit is
 discarded and nothing is decided (`ApprovalNotPendingError` names that call). Restarting,
