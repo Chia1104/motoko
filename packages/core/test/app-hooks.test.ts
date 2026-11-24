@@ -1,7 +1,9 @@
 // An app extension's tool hooks driven through the runtime, on the faux provider. Each test expects what the README's
 // "App extensions" says of them: a `beforeTool` hook rewrites a call's arguments once, and the call runs with that
 // rewrite however often pi-durable runs the chain again, a restart included, and is asked about with it; it may block a
-// call; and a sleep of its ends the call blocked, never at the gate, so nothing asks about it.
+// call; and a sleep of its ends the call blocked, never at the gate, so nothing asks about it. The last tests expect what
+// "Durable approval" says of a call approved before it parked: it runs only with the arguments the operator was asked
+// about.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool as definePiTool, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -24,16 +26,22 @@ const desk = defineAgent({
   policy: { requiresApproval: ["network"] },
 });
 
-/** The tool search, and a deferred `weather` that goes out to the network, which the policy gates. */
-function forecasting() {
+/**
+ * The tool search, and a deferred `weather` that goes out to the network, which the policy gates. With `sequential`, a
+ * round that calls it runs its calls one after another.
+ */
+function forecasting(executionMode?: "sequential") {
   const cities: string[] = [];
+  const ran: JsonObject[] = [];
   const weather = definePiTool({
     name: "weather",
     description: "The weather in a city",
-    parameters: { type: "object", properties: { city: { type: "string" } } },
+    parameters: { type: "object", properties: { city: { type: "string" }, units: { type: "string" } } },
     deferred: true,
+    ...(executionMode !== undefined && { executionMode }),
     async execute(args) {
       cities.push((args as { city: string }).city);
+      ran.push(args as JsonObject);
       return { output: [{ type: "text", text: "sunny" }] };
     },
   });
@@ -41,7 +49,7 @@ function forecasting() {
     { extension: createToolSearchExtension(), tier: () => "read" },
     { extension: defineExtension({ name: "forecast", tools: [weather] }), tier: () => "network" },
   ];
-  return { app, cities };
+  return { app, cities, ran };
 }
 
 const hooks = (name: string, handlers: Partial<ToolHooks>): AppExtension => ({
@@ -227,5 +235,97 @@ describe("app hooks", () => {
       error: expect.stringContaining("Tool call blocked: no forecasts today"),
     });
     expect(cities).toEqual([]);
+  });
+});
+
+/**
+ * An app hook that holds call `callId` at the start of its chain until `release()`, then gives it `rewrite`, if any:
+ * while held, the call has its task and is still pending. `reached` resolves once the chain holds it.
+ */
+function holding(callId: string, rewrite?: JsonObject) {
+  let reach!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const extension = hooks("hold", {
+    async beforeTool(call) {
+      if (call.id !== callId) return undefined;
+      reach();
+      await released;
+      return rewrite === undefined ? undefined : { arguments: rewrite };
+    },
+  });
+  return { extension, reached, release };
+}
+
+/** The model loads the weather, asks for Taipei's and then `second`'s in one sequential round, and answers. */
+function twoCities(second: JsonObject) {
+  let read: unknown;
+  const responses = [
+    call("tool_search", { query: "weather" }, "ts-1"),
+    fauxAssistantMessage(
+      [fauxToolCall("weather", { city: "Taipei" }, { id: "w-1" }), fauxToolCall("weather", second, { id: "w-2" })],
+      { stopReason: "toolUse" },
+    ),
+    (request: { messages: readonly unknown[] }) => {
+      read = request.messages.at(-1);
+      return fauxAssistantMessage("Done.");
+    },
+  ];
+  return { responses, read: () => read };
+}
+
+describe("a call approved before it parked", () => {
+  it("ends blocked when an app hook rewrites it after the approval, and the model reads why", async () => {
+    const { app, cities } = forecasting("sequential");
+    const hold = holding("w-2", { city: "Kaohsiung" });
+    const { faux, instance } = start([...app, hold.extension], memoryHost());
+    const model = twoCities({ city: "Tainan" });
+    faux.setResponses(model.responses);
+    const session = instance.session((await instance.createSession()).id);
+    await session.submit({ text: "Weather?", requestId: "1" });
+    await readUntil(session, isAsked);
+    await session.approve([{ toolCallId: "w-1", approved: true }]);
+    // The round's second call has its task and has not reached the gate: the operator approves it as the model wrote it.
+    await hold.reached;
+    expect(await session.approve([{ toolCallId: "w-2", approved: true }])).toEqual([
+      { toolCallId: "w-2", outcome: "applied" },
+    ]);
+    hold.release();
+    await readUntil(session, isRunEnd);
+
+    expect(cities).toEqual(["Taipei"]);
+    expect(model.read()).toMatchObject({
+      role: "toolResult",
+      toolCallId: "w-2",
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("The call's arguments changed after the operator was asked about it."),
+        },
+      ],
+    });
+  });
+
+  it("runs when no app hook rewrites it, with the model's arguments as the tool coerces them", async () => {
+    const { app, cities, ran } = forecasting("sequential");
+    const hold = holding("w-2");
+    const { faux, instance } = start([...app, hold.extension], memoryHost());
+    // A model that fills every property sends `null` for one it leaves out; validation drops it.
+    const model = twoCities({ city: "Tainan", units: null });
+    faux.setResponses(model.responses);
+    const session = instance.session((await instance.createSession()).id);
+    await session.submit({ text: "Weather?", requestId: "1" });
+    await readUntil(session, isAsked);
+    await session.approve([{ toolCallId: "w-1", approved: true }]);
+    await hold.reached;
+    await session.approve([{ toolCallId: "w-2", approved: true }]);
+    hold.release();
+    await readUntil(session, isRunEnd);
+
+    expect(cities).toEqual(["Taipei", "Tainan"]);
+    expect(ran.at(-1)).toEqual({ city: "Tainan" });
+    expect(model.read()).toMatchObject({ role: "toolResult", toolCallId: "w-2", isError: false });
   });
 });
