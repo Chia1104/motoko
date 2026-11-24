@@ -121,6 +121,29 @@ describe("app hooks", () => {
     expect(weatherItem(items)).toMatchObject({ status: "ok" });
   });
 
+  it("keeps an app hook's rewrite when the hook leaves a later run of the chain alone", async () => {
+    const { app, cities } = forecasting();
+    let passes = 0;
+    const once = hooks("once", {
+      beforeTool(call) {
+        if (call.name !== "weather") return undefined;
+        passes += 1;
+        return passes === 1 ? { arguments: { city: "Tainan" } } : undefined;
+      },
+    });
+    const { faux, instance } = start([...app, once], memoryHost());
+    faux.setResponses(weatherInTaipei);
+    const session = instance.session((await instance.createSession()).id);
+    await session.submit({ text: "Weather?", requestId: "1" });
+    await readUntil(session, isAsked);
+    await session.approve([{ toolCallId: "w-1", approved: true }]);
+    await readUntil(session, isRunEnd);
+
+    // The decision woke the call and the hook gave nothing the second time: the call still runs with its rewrite.
+    expect(passes).toBeGreaterThan(1);
+    expect(cities).toEqual(["Tainan"]);
+  });
+
   it.each([
     { what: "a sleep", decision: { sleep: { until: Date.now() + 60_000 } } },
     {
