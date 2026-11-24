@@ -910,7 +910,8 @@ const runtime = createAgentRuntime({
   it. A hook that needs something awaits it. pi-durable runs the whole chain again at every wake,
   registry change and decision, so the runtime memoizes the first `arguments` each hook gives a call:
   the call runs with those, through a decision and a restart, however the hook rewrites them later
-  (with the time, say), or if it gives none.
+  (with the time, say), or if it gives none. A gated call is asked about with them
+  (`approval:request.args`, see "Durable approval").
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
@@ -964,8 +965,8 @@ overwriting their bytes (`PRAGMA secure_delete`) is the store's to arrange where
 
 Each session's stream is derived from committed state by one transcriber, with one set of rules for
 history and for each new commit: the entries (`pi.user`, `pi.assistant`, `pi.tool-result`,
-`pi.compaction`, and the runtime's `motoko.steer` and `motoko.continue`), the `pi.live` document and
-the runtime's approval record. Stored facts (messages, tool calls, results, decisions, run ends) come
+`pi.compaction`, and the runtime's `motoko.steer` and `motoko.continue`), the `pi.live` document,
+the runtime's approval record, and the gate's memo of the arguments of a call waiting at it. Stored facts (messages, tool calls, results, decisions, run ends) come
 from entries and documents; what only `pi.live` shows (a streaming reply, drafts, running output, a
 retry wait, a parked question, a compaction going on or the newest one's failure) is superseded by
 the stored events that follow it.
@@ -1038,6 +1039,17 @@ discarded and nothing is decided (`ApprovalNotPendingError` names that call). Re
 reinstalling the registry or the decision arriving reruns the gate, which reads the signal first and
 passes, or blocks a declined call, whatever the session's rule says by then; an `afterTool` hook then
 hands the model `The operator declined this call: <comment>` as the call's result.
+
+The operator is asked about the arguments the call runs with. The gate is the last `beforeTool` hook,
+after the app's, and when a call first parks it memoizes the arguments it sees on the call's tool
+task (`motoko.gate.args`). `approval:request.args` are those, and `approve()` records them with the
+decision, since the memo goes when the task ends. So the live stream, a catch-up and a replay ask with
+the same arguments: the decision's, else the memo's, else, for a call the gate never saw park (one
+decided before it parked, or by an earlier Motoko), the model's. A call no app hook rewrote is asked
+about with the model's arguments. An approved call whose arguments are not the memoized ones when the
+gate wakes is blocked, with `The call's arguments changed after the operator was asked about it.`:
+the app hooks' memos keep that from happening, and this is the last check that what runs is what was
+approved.
 
 ## What Motoko owns, and what is pi's
 

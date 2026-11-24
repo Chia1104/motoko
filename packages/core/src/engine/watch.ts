@@ -17,7 +17,7 @@ import type { AgentWireEvent, Cursor, CursorPosition, StreamItem } from "@chia11
 
 import { InvalidCursorError } from "../errors.ts";
 
-import { decisionsOf } from "./approvals.ts";
+import { decisionsOf, gateArgsOf } from "./approvals.ts";
 import { callsOf } from "./calls.ts";
 import { ContinueEntry, inboxOf, isInput, joinsRun, liveOf, Transcriber } from "./transcriber.ts";
 import type { Endings, History, Position, RunEnding, ToolInfo, Transcribed } from "./transcriber.ts";
@@ -137,6 +137,7 @@ export function historyOf({
     entry: (id) => entryAt(conversation, id),
     runStart: (at) => runStartBefore(conversation, at),
     decisions: () => decisionsOf(harness, conversation.id),
+    gateArgs: (taskId) => gateArgsOf(harness, taskId),
     calls: () => callsOf(harness, conversation.id),
     endings: () => endingsOf(storage, conversation),
   };

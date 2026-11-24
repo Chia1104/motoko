@@ -127,6 +127,7 @@ export const agentWireEventSchema = z.discriminatedUnion("type", [
     toolCallId: z.string(),
     toolName: z.string(),
     tier: z.string(),
+    /** The arguments the call runs with: an app's hook may have rewritten those the model wrote (`tool:start`'s). */
     args: z.unknown(),
   }),
   /** The decision; a declined call then ends with its comment as the result the model read. */

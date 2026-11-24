@@ -1,8 +1,9 @@
 // The transcriber driven through its own interface. Each session is a real pi-durable conversation
 // on MemoryStorage: a test commits what pi-durable would (entries, `pi.live`, the decisions, the
 // inputs' settlements) through the Harness, and the transcriber reads history back through
-// `historyOf`, as a session's stream does. Each test expects what the wire contract says a client
-// is sent.
+// `historyOf`, as a session's stream does. The gate's memo of a parked call's arguments lives on the
+// call's tool task, which no test here runs, so a session's `gate` stands in for it. Each test expects
+// what the wire contract says a client is sent.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Draft } from "@earendil-works/chord/delta";
@@ -23,6 +24,7 @@ import type {
   ConversationWindow,
   EntryId,
   EntryRecord,
+  JsonObject,
   LiveState,
   SubmissionId,
   TaskId,
@@ -118,9 +120,15 @@ async function session(window?: ConversationWindow) {
     context,
     window,
   );
-  const history = historyOf({ harness, storage, conversation });
+  /** What the gate memoized of each parked call, by its tool task, while the task lives. */
+  const gate = new Map<TaskId, JsonObject>();
+  const history = {
+    ...historyOf({ harness, storage, conversation }),
+    gateArgs: async (task: TaskId) => gate.get(task),
+  };
   const current = () => view ?? observation.value;
   return {
+    gate,
     transcriber: () => new Transcriber(history, info),
     get view() {
       return current();
@@ -161,8 +169,9 @@ async function session(window?: ConversationWindow) {
     /** The input that starts a run at `entry`, placed as the run takes it. */
     input: async (tx: Tx, entry: EntryId): Promise<SubmissionId> =>
       (await tx.createSubmission({ conversationId: id, type: "input", status: "placed", entry })).id,
-    decide: async (tx: Tx, toolCallId: string, approved: boolean) => {
-      (await tx.doc(ApprovalsDoc, id)).decisions[toolCallId] = { approved, at: 4 };
+    /** A decision, with the arguments the gate saw when the call parked, as `decide` records it. */
+    decide: async (tx: Tx, toolCallId: string, approved: boolean, args?: JsonObject) => {
+      (await tx.doc(ApprovalsDoc, id)).decisions[toolCallId] = { approved, ...(args !== undefined && { args }), at: 4 };
     },
     /** The record of a deferred call that task `taskId` started: it waits for a reply until 5000. */
     defer: async (tx: Tx, toolCallId: string, taskId: TaskId) => {
@@ -518,6 +527,80 @@ describe("a call parked at the gate", () => {
   });
 });
 
+describe("a call whose arguments a hook rewrote before the gate", () => {
+  // SAFETY: nothing here runs a task; the call's slot names its own, which holds the gate's memo.
+  const CALL = 3 as TaskId;
+  const rewritten = { key: "a", at: "noon" };
+  const question = { type: "approval:request", toolCallId: "r1", toolName: "remove", tier: "write", args: rewritten };
+  const toolOf = (sent: readonly Transcribed[]) => foldEvents(events(sent)).items.find((item) => item.kind === "tool");
+
+  /** A session whose run's reply asks for `remove`, the model's `{ key: "a" }`, and a client following it. */
+  async function asking() {
+    const s = await session();
+    const live = await follow(s);
+    await live.commit(async (tx, pi) => {
+      pi.run = { taskId: TASK, inputs: [await s.input(tx, await s.user(tx, "Delete a"))], turns: 0 };
+    });
+    const park: Write = async (tx, pi) => {
+      await s.reply(tx, reply([call("r1", "remove", { key: "a" })], "toolUse"));
+      pi.tools = [{ callId: "r1", name: "remove", status: "sleeping", taskId: CALL }];
+    };
+    const decided: Write = async (tx, pi) => {
+      await s.decide(tx, "r1", true, rewritten);
+      pi.tools = [{ callId: "r1", name: "remove", status: "running", taskId: CALL }];
+    };
+    const ran: Write = async (tx, pi) => {
+      const done = await s.result(tx, "r1", "remove", "deleted a");
+      pi.tools = [{ callId: "r1", name: "remove", status: "done", taskId: CALL, entry: done }];
+    };
+    const answered: Write = async (tx, pi) => {
+      await s.reply(tx, reply([text("Deleted.")], "stop"));
+      delete pi.run;
+      delete pi.tools;
+    };
+    return { s, live, park, decided, ran, answered };
+  }
+
+  it("asks with the arguments the call runs with, live, on catch-up and from every cursor", async () => {
+    const { s, live, park, decided, ran, answered } = await asking();
+    s.gate.set(CALL, rewritten);
+    const parked = await live.commit(park);
+    // The call starts with what the model wrote; the question shows what the gate saw.
+    expect(parked.slice(1)).toEqual([
+      { type: "tool:start", toolCallId: "r1", toolName: "remove", label: "remove", tier: "write", args: { key: "a" } },
+      question,
+    ]);
+    expect(toolOf(live.sent)).toMatchObject({ status: "awaiting_approval", args: rewritten });
+    // While it waits, from the gate's memo.
+    await expectEveryResumeFolds(s, live.sent);
+
+    await live.commit(decided);
+    // The task ends, and its memo with it: from now on only the decision's record has the arguments.
+    s.gate.delete(CALL);
+    await live.commit(ran);
+    await live.commit(answered);
+    expect(toolOf(live.sent)).toMatchObject({ status: "ok", args: rewritten, approval: { approved: true } });
+
+    const late = events(await catchUp(s));
+    expect(late.filter((event) => event.type === "approval:request")).toEqual([question]);
+    expect(foldEvents(late)).toEqual(foldEvents(events(live.sent)));
+    await expectEveryResumeFolds(s, live.sent);
+  });
+
+  it("asks with the decision's arguments when the stream reads the park after the call was decided", async () => {
+    const { s, park, decided } = await asking();
+    // A stream that falls behind: by the time it reads the park, the decision is stored and the memo is gone.
+    const transcriber = s.transcriber();
+    await transcriber.start(s.view);
+    const parking = await s.commit(park);
+    const deciding = await s.commit(decided);
+    expect(events(await transcriber.commit(parking.was, parking.next)).at(-1)).toEqual(question);
+    expect(events(await transcriber.commit(deciding.was, deciding.next))).toEqual([
+      { type: "approval:resolved", toolCallId: "r1", approved: true },
+    ]);
+  });
+});
+
 describe("a deferred call woken from its wait", () => {
   // SAFETY: nothing here reads a task; the call's record and its slot name the same one.
   const CALL = 2 as TaskId;
@@ -864,6 +947,7 @@ describe("inputs placed by a generation", () => {
       entry: async (id) => entries.find((entry) => entry.id === id),
       runStart: async () => undefined,
       decisions: async () => ({}),
+      gateArgs: async () => undefined,
       calls: async () => ({}),
       endings: async () => endings,
     };

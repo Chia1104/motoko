@@ -2,7 +2,8 @@
 // MemoryStorage: the agent's extension installs the gate, as the runtime does, the faux provider asks
 // for the calls, and each test decides them with `decide`. Each test expects what the README's
 // "Durable approval" says: a gated call waits for its decision, an approved one runs, a declined one
-// hands the model the operator's words as its result, and the decision is recorded.
+// hands the model the operator's words as its result, and the decision is recorded with the arguments
+// the gate saw.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -11,10 +12,12 @@ import {
   defineExtension,
   defineTool as definePiTool,
   Harness,
+  hook,
   LiveDoc,
   MemoryStorage,
+  ToolTask,
 } from "@earendil-works/pi-durable";
-import type { ConversationId, Extension, ToolSlot } from "@earendil-works/pi-durable";
+import type { ConversationId, Extension, JsonObject, ToolSlot } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
 
@@ -82,6 +85,18 @@ const clock = defineExtension({
   ],
 });
 
+/**
+ * A hook that runs before the gate and gives every call the arguments `rewrite` makes at each pass of the chain, as no
+ * app hook the runtime installs does: it holds an app hook's first rewrite.
+ */
+const rewriting = (rewrite: (pass: number) => JsonObject) => {
+  let pass = 0;
+  return defineExtension({
+    name: "rewrite",
+    hooks: [hook(ToolTask, { beforeTool: () => ({ arguments: rewrite((pass += 1)) }) })],
+  });
+};
+
 /** The app's extensions of an instance of `agent` that has none. */
 const noApp = (agent: AgentDefinition<Ports>) =>
   appExtensions({ kind: agent.kind, name: "a" }, new Map([[agent.kind, agent]]), []);
@@ -97,7 +112,8 @@ afterEach(async () => {
 
 /**
  * A conversation of `agent` whose first reply asks for `call`, and what the model reads after it. With `rule`, the
- * conversation is a session with that approval rule of its own, recorded as the runtime records it.
+ * conversation is a session with that approval rule of its own, recorded as the runtime records it. The extensions
+ * `more` run before the agent's, as an app's do.
  */
 async function conversationOf(
   agent: AgentDefinition<Ports>,
@@ -113,8 +129,8 @@ async function conversationOf(
     portsFailed: () => undefined,
     app: noApp(agent),
   });
-  for (const extension of extensions.values()) registry.install(extension);
   for (const extension of more) registry.install(extension);
+  for (const extension of extensions.values()) registry.install(extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
   harnesses.push(harness);
   const conversation = await harness.createConversation(
@@ -198,7 +214,9 @@ describe("the approval gate", () => {
       isError: false,
       content: [{ type: "text", text: "noon" }],
     });
-    expect(await decisionsOf(harness, id)).toEqual({ "c-1": { approved: true, at: expect.any(Number) } });
+    expect(await decisionsOf(harness, id)).toEqual({
+      "c-1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
+    });
   });
 
   it("parks a gated call until it is approved, then runs it and records the decision", async () => {
@@ -217,7 +235,9 @@ describe("the approval gate", () => {
       content: [{ type: "text", text: "deleted a" }],
     });
     expect(deleted).toEqual(["a"]);
-    expect(await decisionsOf(harness, id)).toEqual({ "rm-1": { approved: true, at: expect.any(Number) } });
+    expect(await decisionsOf(harness, id)).toEqual({
+      "rm-1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
+    });
     // The call left the gate: a second decision finds nothing waiting.
     await expect(decideOne(notes, harness, id, { toolCallId: "rm-1", approved: false })).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
@@ -235,7 +255,12 @@ describe("the approval gate", () => {
     expect(await result()).toMatchObject(declined(text));
     expect(deleted).toEqual([]);
     expect(await decisionsOf(harness, id)).toEqual({
-      "rm-1": { approved: false, ...(comment !== undefined && { comment }), at: expect.any(Number) },
+      "rm-1": {
+        approved: false,
+        ...(comment !== undefined && { comment }),
+        args: { key: "a" },
+        at: expect.any(Number),
+      },
     });
   });
 
@@ -252,7 +277,9 @@ describe("the approval gate", () => {
     ]);
     expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted a" }] });
     expect(deleted).toEqual(["a"]);
-    expect(await decisionsOf(harness, id)).toEqual({ "rm-1": { approved: true, at: expect.any(Number) } });
+    expect(await decisionsOf(harness, id)).toEqual({
+      "rm-1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
+    });
   });
 
   it("refuses a call that is not waiting at the gate, and commits nothing", async () => {
@@ -294,6 +321,48 @@ describe("the approval gate", () => {
       { toolCallId: "rm-1", outcome: "applied" },
     ]);
     expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted a" }] });
+  });
+});
+
+describe("the arguments a decision is made on", () => {
+  it("are those the gate saw when the call parked, after every hook before it, and the call runs with them", async () => {
+    const more = [rewriting(() => ({ key: "b" }))];
+    const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" }, { more });
+    await slot(harness, id, "rm-1", "sleeping");
+    expect(await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true })).toEqual({
+      toolCallId: "rm-1",
+      outcome: "applied",
+    });
+    expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted b" }] });
+    expect(deleted).toEqual(["b"]);
+    expect(await decisionsOf(harness, id)).toEqual({
+      "rm-1": { approved: true, args: { key: "b" }, at: expect.any(Number) },
+    });
+  });
+
+  it("block an approved call whose arguments changed since it parked", async () => {
+    const more = [rewriting((pass) => ({ key: `b${pass}` }))];
+    const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" }, { more });
+    await slot(harness, id, "rm-1", "sleeping");
+    await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true });
+    expect(await result()).toMatchObject({
+      role: "toolResult",
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("arguments changed after the operator was asked") }],
+    });
+    expect(deleted).toEqual([]);
+    expect(await decisionsOf(harness, id)).toEqual({
+      "rm-1": { approved: true, args: { key: "b1" }, at: expect.any(Number) },
+    });
+  });
+
+  it("run an approved call whose arguments come back in another key order", async () => {
+    const more = [rewriting((pass) => (pass === 1 ? { key: "b", note: "n" } : { note: "n", key: "b" }))];
+    const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" }, { more });
+    await slot(harness, id, "rm-1", "sleeping");
+    await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true });
+    expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted b" }] });
+    expect(deleted).toEqual(["b"]);
   });
 });
 

@@ -1,7 +1,7 @@
 // An app extension's tool hooks driven through the runtime, on the faux provider. Each test expects what the README's
 // "App extensions" says of them: a `beforeTool` hook rewrites a call's arguments once, and the call runs with that
-// rewrite however often pi-durable runs the chain again, a restart included; it may block a call; and a sleep of its
-// ends the call blocked, never at the gate, so nothing asks about it.
+// rewrite however often pi-durable runs the chain again, a restart included, and is asked about with it; it may block a
+// call; and a sleep of its ends the call blocked, never at the gate, so nothing asks about it.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool as definePiTool, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -119,6 +119,49 @@ describe("app hooks", () => {
     // The hook's other handlers run as the app wrote them.
     expect(ended).toBe(1);
     expect(weatherItem(items)).toMatchObject({ status: "ok" });
+  });
+
+  it("asks about a call with an app hook's rewrite, which it runs with, live, after a restart and from the start", async () => {
+    const { app, cities } = forecasting();
+    let passes = 0;
+    const stamp = hooks("stamp", {
+      beforeTool(call) {
+        if (call.name !== "weather") return undefined;
+        passes += 1;
+        return { arguments: { city: `${String(call.arguments.city)} at ${Date.now()}, pass ${passes}` } };
+      },
+    });
+    const place = memoryPlace();
+    const models = fauxModels();
+    let { faux, instance } = start([...app, stamp], durableMemoryHost(place), models);
+    faux.setResponses(weatherInTaipei);
+    const { id } = await instance.createSession();
+    await instance.session(id).submit({ text: "Weather?", requestId: "1" });
+    const [live] = asked(await readUntil(instance.session(id), isAsked));
+    await runtime!.close();
+
+    ({ instance } = start([...app, stamp], durableMemoryHost(place), models));
+    // A client arriving after the restart, while the call still waits.
+    const [waiting] = asked(await readUntil(instance.session(id), isAsked));
+    await instance.session(id).approve([{ toolCallId: "w-1", approved: true }]);
+    await readUntil(instance.session(id), isRunEnd);
+    // Replayed from the start once the call ran: the decision's record keeps what the operator was asked.
+    const replayed = await readUntil(instance.session(id), isRunEnd);
+    const [again] = asked(replayed);
+
+    expect(passes).toBeGreaterThan(1);
+    expect(cities).toEqual([expect.stringMatching(/^Taipei at \d+, pass 1$/)]);
+    const question = { type: "approval:request", toolCallId: "w-1", args: { city: cities[0] } };
+    expect([live?.event, waiting?.event, again?.event]).toEqual([
+      expect.objectContaining(question),
+      expect.objectContaining(question),
+      expect.objectContaining(question),
+    ]);
+    // The call started with what the model wrote; the view shows what it ran with.
+    expect(
+      replayed.find(({ event }) => event.type === "tool:start" && event.toolCallId === "w-1")?.event,
+    ).toMatchObject({ args: { city: "Taipei" } });
+    expect(weatherItem(replayed)).toMatchObject({ status: "ok", args: { city: cities[0] } });
   });
 
   it("keeps an app hook's rewrite when the hook leaves a later run of the chain alone", async () => {

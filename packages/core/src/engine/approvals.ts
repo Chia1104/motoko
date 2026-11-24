@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { defineDoc, defineSignal, hook, LiveDoc, ToolTask } from "@earendil-works/pi-durable";
-import type { ConversationId, Harness, HookRegistration } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, HookRegistration, JsonObject, TaskId } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 
 import type { AgentDefinition } from "../agent.ts";
@@ -49,6 +50,11 @@ const ApprovalSignal = defineSignal({
 type StoredDecision = {
   approved: boolean;
   comment?: string;
+  /**
+   * The arguments the gate saw when the call parked, which the call runs with: what the operator was asked about.
+   * Absent for a call decided before it parked, and in a decision an earlier Motoko recorded.
+   */
+  args?: JsonObject;
   /** Epoch ms the decision was committed. */
   at: number;
 };
@@ -89,6 +95,34 @@ export function ruleOf(
   return sessions?.sessions[String(conversationId)]?.requiresApproval;
 }
 
+/**
+ * The gate's memo of the arguments it saw when a call first parked. The gate runs last in the chain, after every app
+ * hook, so these are the arguments the call runs with. A memo lives on the call's tool task while the task can run.
+ */
+const GATE_ARGS = "motoko.gate.args";
+
+const isObject = (value: JsonValue | undefined): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Whether two JSON values are equal, whatever the order of their objects' keys (a JSON column may reorder them). */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  // SAFETY: both are JSON objects or arrays, whose members `Object.keys` lists.
+  const [x, y] = [a as Record<string, unknown>, b as Record<string, unknown>];
+  const keys = Object.keys(x);
+  return (
+    keys.length === Object.keys(y).length && keys.every((key) => Object.hasOwn(y, key) && sameJson(x[key], y[key]))
+  );
+}
+
+/** The arguments the gate saw when call task `taskId` parked at it; undefined if it never parked, or once it ended. */
+export async function gateArgsOf(harness: Harness, taskId: TaskId): Promise<JsonObject | undefined> {
+  const args = (await harness.getTask(taskId, context))?.memos?.[GATE_ARGS];
+  return isObject(args) ? args : undefined;
+}
+
 function declineText(comment: string | undefined): string {
   return comment === undefined || comment.trim().length === 0
     ? "The operator declined this call."
@@ -103,6 +137,10 @@ function declineText(comment: string | undefined): string {
  * rule says by then, so a rule changed while the call waited neither runs a declined call nor drops its
  * question. A declined call is blocked, and `afterTool` hands the model the operator's comment as the
  * call's result. It judges every call of a session of `agent`, the app's tools' too, as `toolOf` knows them.
+ *
+ * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
+ * An approved call whose arguments are not those any more is blocked. The app hooks' memos keep their rewrites fixed,
+ * so this should never happen; it is the last check that the operator approved what runs.
  */
 export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
   return hook(ToolTask, {
@@ -110,10 +148,16 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state !== undefined) {
         if ("expired" in state) return { block: "No decision arrived for this call." };
-        return state.value.approved ? undefined : { block: declineText(state.value.comment) };
+        if (!state.value.approved) return { block: declineText(state.value.comment) };
+        const asked = await api.memo<JsonObject>(GATE_ARGS, context);
+        return asked === undefined || sameJson(asked, call.arguments)
+          ? undefined
+          : { block: "The call's arguments changed after the operator was asked about it." };
       }
       const rule = ruleOf(await api.snapshot(SessionsDoc, context), api.conversationId);
       if (!isGated(agent, toolOf(call.name), rule)) return undefined;
+      // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
+      await api.memo(GATE_ARGS, call.arguments as JsonObject, context);
       return { sleep: { signals: [ApprovalSignal.key(call.id)] } };
     },
     async afterTool(call, result, api, context) {
@@ -140,11 +184,12 @@ class Refused extends Error {
 }
 
 /**
- * Decides calls of conversation `conversationId`, all in one transaction: every decision is delivered
- * and recorded, or none is. A call a decision reached first is `already_decided`. Rejects with
- * `ApprovalNotPendingError`, committing nothing, if any call is not waiting at the gate: neither parked
- * there nor about to reach it, as `gated` judges a tool by name under the session's rule. A call that sleeps after it
- * started, such as a delegate's waiting for its child, is parked on its own work. A call named twice is a `TypeError`.
+ * Decides calls of conversation `conversationId`, all in one transaction: every decision is delivered and recorded,
+ * each with the arguments the gate saw when the call parked, or none is. A call a decision reached first is
+ * `already_decided`. Rejects with `ApprovalNotPendingError`, committing nothing, if any call is not waiting at the gate:
+ * neither parked there nor about to reach it, as `gated` judges a tool by name under the session's rule. A call that
+ * sleeps after it started, such as a delegate's waiting for its child, is parked on its own work. A call named twice is
+ * a `TypeError`.
  */
 export async function decide(
   harness: Harness,
@@ -175,6 +220,9 @@ export async function decide(
     return await harness.commit(async (tx) => {
       const outcomes: ApprovalOutcome[] = [];
       const doc = await tx.doc(ApprovalsDoc, conversationId);
+      // The memos go with their tasks, so the records keep what the operator was asked about. Read before any write:
+      // a transaction reads no table after its first write.
+      const asked = await Promise.all(tasks.map(async (task) => (await tx.task(task))?.memos?.[GATE_ARGS]));
       for (const [index, decision] of decisions.entries()) {
         const comment = decision.comment;
         const delivered = await tx.signal(tasks[index]!, ApprovalSignal, decision.toolCallId, {
@@ -186,9 +234,11 @@ export async function decide(
           continue;
         }
         if (delivered !== "delivered") throw new Refused(decision.toolCallId);
+        const args = asked[index];
         const stored: StoredDecision = {
           approved: decision.approved,
           ...(comment !== undefined && { comment }),
+          ...(isObject(args) && { args }),
           at: Date.now(),
         };
         doc.decisions[decision.toolCallId] = stored;

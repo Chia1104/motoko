@@ -13,8 +13,10 @@ import type {
   ConversationView,
   EntryRecord,
   InboxState,
+  JsonObject,
   LiveState,
   RunFailure,
+  TaskId,
   ToolSlot,
 } from "@earendil-works/pi-durable";
 
@@ -88,11 +90,23 @@ export interface History {
   runStart(at: number): Promise<number | undefined>;
   /** The operator's decisions on gated calls, by call id. */
   decisions(): Promise<Decisions>;
+  /**
+   * The arguments the gate saw when call task `taskId` parked at it, which the call runs with; undefined if it never
+   * parked, or once the task ended, when its decision's record has them.
+   */
+  gateArgs(taskId: TaskId): Promise<JsonObject | undefined>;
   /** The calls the runtime runs itself that have started, by call id. */
   calls(): Promise<Calls>;
   /** How each run that ended without an answer ended. */
   endings(): Promise<Endings>;
 }
+
+/**
+ * What the gate saw of the calls waiting at it whose question has not gone out, by call id: read before a commit's
+ * events are made, which nothing may wait for.
+ */
+type GateArgs = ReadonlyMap<string, JsonObject>;
+const NO_GATE_ARGS: GateArgs = new Map();
 
 type RunEnd = AgentWireEventOf<"run:end">;
 type Compaction = AgentWireEventOf<"compaction:start" | "compaction:end">;
@@ -389,7 +403,8 @@ export class Transcriber {
     const newest = newestOf(view);
     if (answering(live) !== undefined) {
       await this.#rebuild("*", newest);
-      this.#resync(live, await this.#history.decisions(), await this.#callsFor(live, underWay));
+      const calls = await this.#callsFor(live, underWay);
+      this.#resync(live, await this.#history.decisions(), calls, await this.#gateArgsFor(live, calls));
     }
     this.#at(newest);
     this.#queueState(view);
@@ -454,6 +469,7 @@ export class Transcriber {
     const live = view === undefined ? undefined : liveOf(view);
     const decisions = await this.#history.decisions();
     const calls = await this.#callsFor(live, underWay);
+    const gateArgs = await this.#gateArgsFor(live, calls);
     const rest = to > this.#entry ? await this.#range(this.#entry + 1, to) : [];
     const endings = rest.some(mayStartRun) ? await this.#history.endings() : undefined;
     return this.#collect(() => {
@@ -461,7 +477,7 @@ export class Transcriber {
       this.#at(to);
       // Before the in-flight state, which may end the run: a run's end stays its last event.
       this.#compactionState(live);
-      this.#resync(live, decisions, calls);
+      this.#resync(live, decisions, calls, gateArgs);
       this.#queueState(view);
     });
   }
@@ -476,7 +492,11 @@ export class Transcriber {
     const before = liveOf(was);
     const now = liveOf(next);
     const calls = await this.#callsFor(now);
-    const decisions = this.#needsDecisions(before, now, entries, calls) ? await this.#history.decisions() : {};
+    const gateArgs = await this.#gateArgsFor(now, calls);
+    // A call this commit shows at the gate whose memo is gone was decided since: its decision's record has them.
+    const decidedSince = this.#waiting(now, calls).length > gateArgs.size;
+    const decisions =
+      decidedSince || this.#needsDecisions(before, now, entries, calls) ? await this.#history.decisions() : {};
     const failure =
       now?.runFailure && !sameFailure(now.runFailure, before?.runFailure) ? failureOf(now.runFailure) : undefined;
     return this.#collect(() => {
@@ -495,7 +515,7 @@ export class Transcriber {
       if (unstarted()) this.#startRun(undefined);
       this.#retryState(now);
       if (answering(now) !== undefined) this.#stream(now);
-      this.#slots(before?.tools, now?.tools, decisions, calls);
+      this.#slots(before?.tools, now?.tools, decisions, calls, gateArgs);
       this.#queueState(next);
       this.#compactionState(now);
       // A run's end last, so it stays the run's last event.
@@ -510,6 +530,24 @@ export class Transcriber {
    */
   async #callsFor(live: LiveState | undefined, needed = sleeps): Promise<Calls> {
     return needed(live) ? this.#history.calls() : {};
+  }
+
+  /** The calls `live` shows waiting at the gate whose question has not gone out. */
+  #waiting(live: LiveState | undefined, calls: Calls): ToolSlot[] {
+    return (live?.tools ?? []).filter((slot) => atGate(slot, calls) && !this.#asked.has(slot.callId));
+  }
+
+  /** What the gate saw of each call `#waiting` names, while its task lives. */
+  async #gateArgsFor(live: LiveState | undefined, calls: Calls): Promise<GateArgs> {
+    const waiting = this.#waiting(live, calls);
+    if (waiting.length === 0) return NO_GATE_ARGS;
+    const read = await Promise.all(
+      waiting.map(async ({ callId, taskId }) => {
+        const args = taskId === undefined ? undefined : await this.#history.gateArgs(taskId);
+        return args === undefined ? [] : [[callId, args] as const];
+      }),
+    );
+    return new Map(read.flat());
   }
 
   #run(): CursorPosition["run"] {
@@ -598,9 +636,9 @@ export class Transcriber {
    * questions for calls at the gate, decisions of calls that left it, the output and details of calls
    * under way, the wait of a deferred call parked on its reply or the update that says a woken one runs
    * again, a retry wait, and the reply streamed so far as one delta per channel. A client that holds
-   * any of it already folds the same view.
+   * any of it already folds the same view. `gateArgs` holds what the gate saw of the calls that wait at it.
    */
-  #resync(live: LiveState | undefined, decisions: Decisions, calls: Calls) {
+  #resync(live: LiveState | undefined, decisions: Decisions, calls: Calls, gateArgs: GateArgs) {
     if (answering(live) === undefined) {
       this.#endRun(decisions, live?.runFailure && failureOf(live.runFailure));
       return;
@@ -609,7 +647,7 @@ export class Transcriber {
     for (const slot of live?.tools ?? []) {
       if (!this.#open.has(slot.callId)) continue;
       if (atGate(slot, calls)) {
-        this.#ask(slot.callId);
+        this.#ask(slot.callId, decisions, gateArgs);
         continue;
       }
       // A decided call that left the gate: the live stream said so as it left.
@@ -698,7 +736,7 @@ export class Transcriber {
   #decision(toolCallId: string, decisions: Decisions) {
     const decision = decisions[toolCallId];
     if (decision === undefined || this.#resolved.has(toolCallId)) return;
-    this.#ask(toolCallId);
+    this.#ask(toolCallId, decisions);
     this.#resolved.add(toolCallId);
     this.#emit({
       type: "approval:resolved",
@@ -708,7 +746,11 @@ export class Transcriber {
     });
   }
 
-  #ask(toolCallId: string) {
+  /**
+   * The question of a gated call, once, with the arguments it runs with: those its decision's record keeps, else those
+   * the gate saw (`gateArgs`), else, for a call no gate saw park, those the model wrote.
+   */
+  #ask(toolCallId: string, decisions: Decisions, gateArgs = NO_GATE_ARGS) {
     const call = this.#open.get(toolCallId);
     if (call === undefined || this.#asked.has(toolCallId) || this.#resolved.has(toolCallId)) return;
     this.#asked.add(toolCallId);
@@ -717,7 +759,7 @@ export class Transcriber {
       toolCallId,
       toolName: call.name,
       tier: this.#info(call.name).tier,
-      args: call.args,
+      args: decisions[toolCallId]?.args ?? gateArgs.get(toolCallId) ?? call.args,
     });
   }
 
@@ -852,13 +894,14 @@ export class Transcriber {
     now: readonly ToolSlot[] | undefined,
     decisions: Decisions,
     calls: Calls,
+    gateArgs: GateArgs,
   ) {
     const before = new Map((was ?? []).map((slot) => [slot.callId, slot]));
     for (const slot of now ?? []) {
       if (!this.#open.has(slot.callId)) continue;
       const previous = before.get(slot.callId);
       if (atGate(slot, calls)) {
-        this.#ask(slot.callId);
+        this.#ask(slot.callId, decisions, gateArgs);
         continue;
       }
       if (previous?.status === "sleeping") this.#decision(slot.callId, decisions);

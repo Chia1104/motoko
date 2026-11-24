@@ -64,6 +64,25 @@ describe("applyEvent", () => {
     expect(resolved.pendingApprovals).toEqual([]);
   });
 
+  it("shows a call with the arguments its question carries, which the call runs with", () => {
+    // An app's hook rewrote the `{ path: "/x" }` the call started with.
+    const rewritten = { path: "/x", at: "noon" };
+    const question: AgentWireEvent = {
+      type: "approval:request",
+      toolCallId: "c1",
+      toolName: "rm",
+      tier: "write",
+      args: rewritten,
+    };
+    const asked = foldEvents([...live.slice(0, 8), question]);
+    expect(asked.items.find((item) => item.kind === "tool")).toMatchObject({
+      args: rewritten,
+      status: "awaiting_approval",
+    });
+    // Sent again to a resumed client, the question changes nothing.
+    expect(applyEvent(asked, question)).toEqual(asked);
+  });
+
   it("ends what a run left open, and notes a run that did not finish", () => {
     const view = foldEvents([...live.slice(0, 6), { type: "run:end", reason: "aborted", code: "aborted" }]);
     // The reply that streamed was never stored and the draft never became a call.

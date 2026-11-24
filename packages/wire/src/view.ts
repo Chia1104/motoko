@@ -313,8 +313,10 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
       const asked = view.items.find((item) => isTool(item, event.toolCallId));
       // A call that ended waits for nothing; one already decided waits no more.
       if (asked?.kind === "tool" && (hasEnded(asked) || asked.approval !== undefined)) return view;
+      // The question carries the arguments the call runs with, which may not be those the model wrote.
       const items = upsertTool(view.items.slice(), event.toolCallId, (found) => ({
-        ...(found ?? { ...placeholderTool(event.toolCallId, event.toolName), args: event.args, tier: event.tier }),
+        ...(found ?? { ...placeholderTool(event.toolCallId, event.toolName), tier: event.tier }),
+        args: event.args,
         status: "awaiting_approval",
       }));
       const pending = view.pendingApprovals.includes(event.toolCallId)

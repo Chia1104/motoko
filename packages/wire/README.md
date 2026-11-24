@@ -52,7 +52,7 @@ export class SessionClient {
 | `tool:start`               | `toolCallId`, `toolName`, `label`, `tier`, `args`                                 | The model called a tool (from the stored reply).                                         |
 | `tool:update`              | `toolCallId`, `output?`, `details?`                                               | Progress of a running call; only changed fields.                                         |
 | `tool:end`                 | `toolCallId`, `toolName`, `status` (`ok`/`error`/`aborted`), `error?`, `details?` | How the call ended.                                                                      |
-| `approval:request`         | `toolCallId`, `toolName`, `tier`, `args`                                          | The call waits for a decision.                                                           |
+| `approval:request`         | `toolCallId`, `toolName`, `tier`, `args`                                          | The call waits for a decision on `args`, the arguments it runs with.                     |
 | `approval:resolved`        | `toolCallId`, `approved`, `comment?`                                              | The decision.                                                                            |
 | `reply:wait`               | `toolCallId`, `until?`                                                            | A deferred call is parked until its reply comes, or its deadline `until` passes.         |
 | `retry:wait` / `retry:end` | `error`, `at` /                                                                   | A model request failed and waits to be retried / the wait is over.                       |
@@ -129,6 +129,9 @@ ids), `status` (`idle`, `running`, `awaiting_approval`), `retrying`, `queued`, t
 waiting for a run, absent while none waits, and `compaction`, `{ status: "running", reason }` while a
 compaction goes on or `{ status: "failed", error }` after one failed, absent otherwise. A user message that steered its run has `steer: true`.
 Every event that names an item upserts it.
+
+A tool call's `args` are those the model wrote (`tool:start`) until its `approval:request`, whose `args`
+replace them: the arguments the call runs with, which an app's hook may have rewritten before the gate.
 
 A tool call's `status` is `drafting`, `running`, `awaiting_approval`, `awaiting_reply` or how it ended
 (`ok`, `error`, `aborted`). `awaiting_reply` is a deferred call parked on its reply, from its
