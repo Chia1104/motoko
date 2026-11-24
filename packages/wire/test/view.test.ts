@@ -309,6 +309,24 @@ describe("a compaction", () => {
   });
 });
 
+describe("a wrap-up", () => {
+  it("shows from its start after the run's end until its end, which a next run's start does not stand for", () => {
+    const start: AgentWireEvent = { type: "wrapup:start" };
+    const end: AgentWireEvent = { type: "wrapup:end" };
+    const wrapping = foldEvents([...live, start]);
+    expect(wrapping).toEqual({ ...foldEvents(live), wrappingUp: true });
+    expect(applyEvent(wrapping, end)).toEqual(foldEvents(live));
+    // A resumed stream that states it again changes nothing, and a run's start leaves it to its end.
+    expect(foldEvents([start, end, end], wrapping)).toEqual(applyEvent(wrapping, end));
+    expect(applyEvent(wrapping, start)).toEqual(wrapping);
+    expect(applyEvent(wrapping, { type: "run:start" })).toMatchObject({ status: "running", wrappingUp: true });
+    expect(foldEvents([end, { type: "run:start" }], wrapping)).not.toHaveProperty("wrappingUp");
+    expect(applyEvent(wrapping, { type: "stream:reset" })).toEqual(emptySessionView());
+    expect(agentWireEventSchema.parse(start)).toEqual(start);
+    expect(agentWireEventSchema.parse(end)).toEqual(end);
+  });
+});
+
 describe("delegateOf", () => {
   it("names the child session a delegate's call runs, from its start through its end", () => {
     const start: AgentWireEvent = {

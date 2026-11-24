@@ -60,7 +60,8 @@ export const callSchemas = {
       requestId: z.string().min(1),
       /**
        * While a run is going: `queue` (default) starts a run once it has answered, `steer` joins it after its current
-       * tool round, `reject` refuses it (`session_busy`). With no run going, each starts a run.
+       * tool round, `reject` refuses it (`session_busy`). Between `wrapup:start` and `wrapup:end` a run answered and its
+       * wrap-up goes on: `reject` refuses the input, and every other input waits. With neither, each starts a run.
        */
       whenBusy: z.enum(["queue", "steer", "reject"]).optional(),
       /** Makes it an ask: the run's answer goes to this address once the run ends. An ask always queues. */
@@ -141,7 +142,7 @@ export const callErrorCodeSchema = z.enum([
    */
   "invalid_request",
   "session_not_found",
-  /** `submit` with `whenBusy: "reject"`, or `continue`, while a run is going. */
+  /** `submit` with `whenBusy: "reject"`, or `continue`, while a run is going or wraps up (`wrapup:start`). */
   "session_busy",
   /**
    * `submit`, `continue`, `withdraw`, `compact` or `deleteSession` of a child session: only its delegate submits to it,

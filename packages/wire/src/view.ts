@@ -103,6 +103,8 @@ export interface AgentSessionView {
   readonly queued?: readonly QueuedInput[];
   /** A compaction going on, or the newest one's failure until a later one succeeds; absent otherwise. */
   readonly compaction?: CompactionState;
+  /** The run answered and the session still runs its `afterRun` tasks, so it takes no new input yet; absent otherwise. */
+  readonly wrappingUp?: true;
 }
 
 export const emptySessionView = (): AgentSessionView => ({
@@ -462,6 +464,14 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     case "run:end":
       // The view shows no run: this end was folded already.
       return view.status === "idle" ? view : runEnd(view, event);
+
+    case "wrapup:start":
+      return { ...view, wrappingUp: true };
+
+    case "wrapup:end": {
+      const { wrappingUp: _wrappingUp, ...rest } = view;
+      return rest;
+    }
 
     default: {
       const exhaustive: never = event;

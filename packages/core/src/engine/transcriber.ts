@@ -31,10 +31,11 @@ import type { Calls } from "./calls.ts";
 /**
  * Turns committed conversation state into wire events. Stored facts (messages, tool calls, results,
  * decisions, run ends) come from entries and documents; what only `pi.live` shows (a streaming
- * reply, drafts, running output, a retry wait, a parked question, a compaction going on) is
- * superseded by the stored events that follow it. One set of rules serves the live stream (`commit`
- * as each commit lands), a catch-up from storage (`replay` of a stretch of history), and a resumed
- * client (`catchUp`: the in-flight state as events the reducer applies idempotently).
+ * reply, drafts, running output, a retry wait, a parked question, a compaction going on, a run's
+ * `afterRun` tasks) is superseded by the stored events that follow it. One set of rules serves the
+ * live stream (`commit` as each commit lands), a catch-up from storage (`replay` of a stretch of
+ * history), and a resumed client (`catchUp`: the in-flight state as events the reducer applies
+ * idempotently).
  *
  * A run starts at an input, or at the marker a continue writes (`ContinueEntry`), and takes every input placed into it
  * after one of its tool rounds (a steer) or with that input; the inputs still waiting for a run go out as the queue,
@@ -112,6 +113,7 @@ const NO_GATE_ARGS: GateArgs = new Map();
 
 type RunEnd = AgentWireEventOf<"run:end">;
 type Compaction = AgentWireEventOf<"compaction:start" | "compaction:end">;
+type Wrapup = AgentWireEventOf<"wrapup:start" | "wrapup:end">;
 type Batch = { event: AgentWireEvent; run: CursorPosition["run"] }[];
 type Block = AssistantMessage["content"][number];
 
@@ -198,6 +200,14 @@ function compactionOf(live: LiveState | undefined): Compaction {
   const failure = live?.compactionFailure;
   return failure === undefined ? { type: "compaction:end" } : { type: "compaction:end", error: clip(failure.error) };
 }
+
+/**
+ * What a client is shown of a run past its answer in `live`: pi-durable keeps `run.afterRun` from the commit that stores
+ * the answer until the run's `afterRun` tasks end, and the session takes no new input meanwhile.
+ */
+const wrapupOf = (live: LiveState | undefined): Wrapup => ({
+  type: live?.run?.afterRun === undefined ? "wrapup:end" : "wrapup:start",
+});
 
 const UNFINISHED = new Set(["aborted", "abandoned", "interrupted"]);
 
@@ -385,6 +395,11 @@ const NO_COMPACTION = JSON.stringify({ type: "compaction:end" } satisfies Compac
 /** Stands for "unknown": a resumed client may hold any compaction state, so the catch-up states it. */
 const UNKNOWN_COMPACTION = "\0unknown";
 
+/** The wrap-up state a client holds before any wrap-up event: none. */
+const NO_WRAPUP = JSON.stringify({ type: "wrapup:end" } satisfies Wrapup);
+/** Stands for "unknown": a resumed client may hold a wrap-up that is over, so the catch-up states it. */
+const UNKNOWN_WRAPUP = "\0unknown";
+
 export class Transcriber {
   readonly #history: History;
   readonly #info: (toolName: string) => ToolInfo;
@@ -426,6 +441,8 @@ export class Transcriber {
   #queue = EMPTY_QUEUE;
   /** The compaction state the client holds, as the JSON of the event that stated it. */
   #compaction = NO_COMPACTION;
+  /** The wrap-up state the client holds, as the JSON of the event that stated it. */
+  #wrapup = NO_WRAPUP;
 
   constructor(history: History, info: (toolName: string) => ToolInfo) {
     this.#history = history;
@@ -452,6 +469,7 @@ export class Transcriber {
     this.#at(newest);
     this.#queueState(view);
     this.#compactionState(live);
+    this.#wrapupState(live);
   }
 
   /**
@@ -462,9 +480,10 @@ export class Transcriber {
   async restore({ entry, run }: Position): Promise<boolean> {
     if (entry > 0 && (await this.#history.entry(entry)) === undefined) return false;
     // A client may hold queued inputs a run took or that were withdrawn since it left, or a compaction that is over:
-    // the catch-up states both.
+    // the catch-up states both. It may hold a wrap-up that is over too, which a run's start or the catch-up ends.
     this.#queue = UNKNOWN_QUEUE;
     this.#compaction = UNKNOWN_COMPACTION;
+    this.#wrapup = UNKNOWN_WRAPUP;
     if (run === undefined || (run !== "*" && run > entry)) {
       this.#at(entry);
       // Inside the entry that starts the run: the run has begun, nothing of it is read yet.
@@ -522,6 +541,8 @@ export class Transcriber {
       this.#compactionState(live);
       this.#resync(live, decisions, calls, gateArgs);
       this.#queueState(view);
+      // After the in-flight state, which may end the run whose wrap-up this is.
+      this.#wrapupState(live);
     });
   }
 
@@ -562,8 +583,9 @@ export class Transcriber {
       this.#nested(now, decisions, calls, gateArgs);
       this.#queueState(next);
       this.#compactionState(now);
-      // A run's end last, so it stays the run's last event.
+      // A run's end last, so it stays the run's last event; the wrap-up it leaves after it.
       if (answering(now) === undefined && this.#inRun) this.#endRun(decisions, failure);
+      this.#wrapupState(now);
       this.#at(newestOf(next));
     });
   }
@@ -745,6 +767,8 @@ export class Transcriber {
   }
 
   #startRun(runEntry: number | undefined) {
+    // A run starts once the wrap-up before it is over, in the commit that ends it or in history, which keeps none.
+    this.#wrapupState(undefined);
     this.#inRun = true;
     this.#runEntry = runEntry;
     this.#runContinue = undefined;
@@ -1021,6 +1045,15 @@ export class Transcriber {
     const key = JSON.stringify(event);
     if (key === this.#compaction) return;
     this.#compaction = key;
+    this.#emit(event);
+  }
+
+  /** Whether the run in `live` is past its answer, with its `afterRun` tasks going on, when the client holds another. */
+  #wrapupState(live: LiveState | undefined) {
+    const event = wrapupOf(live);
+    const key = JSON.stringify(event);
+    if (key === this.#wrapup) return;
+    this.#wrapup = key;
     this.#emit(event);
   }
 

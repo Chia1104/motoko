@@ -956,7 +956,14 @@ const runtime = createAgentRuntime({
   while it is not open does nothing, as its next open calls `extensionsFor` anyway.
 - **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
   before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
-  throws `SessionBusyError`, and an input that queues starts once they end.
+  throws `SessionBusyError`, and an input that queues starts once they end. The stream says so:
+  `wrapup:start` after the run's `run:end`, from `pi.live.run.afterRun`, which pi-durable sets in the
+  commit that stores the answer, and `wrapup:end` once the tasks end, before the next run's
+  `run:start`; the view's `wrappingUp` is `true` in between (see
+  [wire](../wire#wrap-ups)). A hook that asks for no task still sends a short wrap-up. A restart or a
+  resume from any cursor shows the wrap-up still going on. An agent with no `afterRun` hook sends
+  none of these events to a reader from the session's start; a reader resumed from a cursor may get
+  one `wrapup:end`, since it may hold a wrap-up that is over.
 - **Nested calls.** A call a tool makes through pi-durable's `executeTool()`, such as a code mode
   script's, passes the gate too, and is asked about and decided under the call that made it (see
   "Durable approval").
@@ -1019,8 +1026,9 @@ Resuming from a cursor:
    committed after the position are sent; then the current in-flight state is sent as events the
    reducer applies idempotently: the run going on, the question of each call waiting for approval,
    each decision of a call that left its wait, each deferred call's wait for its reply, running
-   output, a retry wait, the reply streamed so far as one delta, drafted calls, and the compaction
-   going on or the newest one's failure (`compaction:start` or `compaction:end`). The reader then
+   output, a retry wait, the reply streamed so far as one delta, drafted calls, the compaction
+   going on or the newest one's failure (`compaction:start` or `compaction:end`), and, after the
+   run's end, its wrap-up going on or none (`wrapup:start` or `wrapup:end`). The reader then
    joins the live log where it continues. The last step runs in the session's commit chain, so no
    commit lands between the catch-up and the log. The folded view equals that of a client connected
    all along; the events need not be the same ones.

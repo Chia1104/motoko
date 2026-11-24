@@ -193,6 +193,14 @@ export const agentWireEventSchema = z.discriminatedUnion("type", [
     error: z.string().optional(),
   }),
   /**
+   * The run answered, and the session still runs the tasks the app's `afterRun` hook asked for, such as naming the
+   * session: until `wrapup:end`, an input submitted with `whenBusy: "reject"` is refused and one that queues waits. Sent
+   * after the run's `run:end`.
+   */
+  z.object({ type: z.literal("wrapup:start") }),
+  /** The `afterRun` tasks are over: the session takes a new input now. Sent before the next run's `run:start`. */
+  z.object({ type: z.literal("wrapup:end") }),
+  /**
    * Transport-level: the cursor a client resumed from cannot be honoured (it names an entry this
    * session's storage does not hold, as after a restore from an older backup). Discard the folded
    * view; a full replay follows.
