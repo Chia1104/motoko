@@ -258,6 +258,7 @@ createAgentRuntime({
   settings?,               // pi-durable's settings; the runtime sets `extensions`
   extensionsFor?,          // (scope) => AppExtension[]: the app's pi-durable extensions for an instance; default none
   telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
+  envFor?,                 // (scope) => pi-durable's env: builds an instance's ExecutionEnv; default none
   deliverReply?,           // (reply, signal) => Promise<void>: how an ask's answer reaches its asker
 }): AgentRuntime
 runtime.get(agent, name): AgentInstance       // lazily opened, one per scope per runtime
@@ -322,6 +323,19 @@ to pi-durable's `HarnessOptions.telemetry` each time the instance opens. It then
 content-free spans and metrics (`pi.durable.submit`, `pi.durable.phase`, ...) for that instance alone,
 so an app can tag them with the scope or send each caller's to its own exporter. A throw fails the
 open. The app imports pi-telemetry itself; core depends on none of it.
+
+`envFor(scope)` gives an instance its execution environment: pi-durable's `HarnessOptions.env`, a
+function that builds the `ExecutionEnv` a tool call reads as `api.env`. The runtime hands it to the
+Harness each time the instance opens, so an app's shell tool, such as pi-durable's `createBashTool()`,
+runs in the working directory the app keeps for that scope:
+
+```ts
+envFor: (scope) => () => new NodeExecutionEnv({ cwd: join(workspaces, scope.kind, scope.name) }),
+```
+
+`NodeExecutionEnv` is pi-durable's, from `@earendil-works/pi-durable/env/node`; a sandbox supplies its
+own. A throw fails the open. Without `envFor` a call has no environment, and a tool that needs one,
+such as `bash`, fails it.
 
 ## Calls
 

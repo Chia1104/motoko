@@ -131,6 +131,12 @@ interface AgentRuntimeCommonOptions<Ports> {
    */
   readonly telemetryFor?: (scope: StorageScope) => NonNullable<HarnessOptions["telemetry"]>;
   /**
+   * The execution environment of one instance, from its scope: pi-durable's `HarnessOptions.env`, which builds the
+   * `ExecutionEnv` a tool call reads as `api.env` (pi-durable's `bash` runs in its `cwd`). Called each time the instance
+   * opens. Default: none, so a tool that needs an environment fails its call.
+   */
+  readonly envFor?: (scope: StorageScope) => NonNullable<HarnessOptions["env"]>;
+  /**
    * How the runtime reaches a reply address: an ask's run ended, so its answer goes to the asker's instance, through
    * the app's way to reach that instance's home (the local runtime's `session.reply`, a client of the cluster, a
    * Durable Object's stub). Resolve once the reply was delivered or refused for good (map `reply_not_pending` and
@@ -607,11 +613,13 @@ class Instance implements AgentInstance {
       const selection = app.selectionOf(this.agent.kind, own);
       const appSettings = this.#options.settings;
       const telemetry = this.#options.telemetryFor?.(this.scope);
+      const env = this.#options.envFor?.(this.scope);
       const { wake } = host;
       harness = await Harness.open(
         storage,
         {
           ...(telemetry !== undefined && { telemetry }),
+          ...(env !== undefined && { env }),
           // SAFETY: the options hold exactly one of `models` and `modelsFor`.
           models: models?.get ?? (this.#options.models as HarnessOptions["models"]),
           registry,
