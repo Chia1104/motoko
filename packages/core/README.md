@@ -911,7 +911,8 @@ const runtime = createAgentRuntime({
   registry change and decision, so the runtime memoizes the first `arguments` each hook gives a call:
   the call runs with those, through a decision and a restart, however the hook rewrites them later
   (with the time, say), or if it gives none. A gated call is asked about with them
-  (`approval:request.args`, see "Durable approval").
+  (`approval:request.args`, see "Durable approval"), and one approved before it reached the gate,
+  asked about with the model's arguments, ends blocked when a hook rewrites them.
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
@@ -1050,6 +1051,15 @@ about with the model's arguments. An approved call whose arguments are not the m
 gate wakes is blocked, with `The call's arguments changed after the operator was asked about it.`:
 the app hooks' memos keep that from happening, and this is the last check that what runs is what was
 approved.
+
+A call may be decided before it parks: `approve()` also takes a call whose task exists and that the
+gate will gate but has not reached, such as the next call of a sequential round while its app hooks
+run. Its operator was asked about the model's arguments, so it runs only with those. The first app
+hook that rewrites a call memoizes the arguments pi handed it (`motoko.model.args`): the model's, as
+the tool repairs and coerces them, which no app hook has touched. The gate checks an approved call
+that has no memo of its own against these, and blocks it with the same message when it would run
+with others. pi's coercion is not a rewrite: a call no app hook rewrote runs, even when the model
+wrote `"42"` for a number or `null` for an optional property.
 
 ## What Motoko owns, and what is pi's
 

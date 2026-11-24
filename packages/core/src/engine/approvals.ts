@@ -8,6 +8,7 @@ import type { AgentDefinition } from "../agent.ts";
 import { ApprovalNotPendingError } from "../errors.ts";
 
 import { callsOf, startedCall } from "./calls.ts";
+import { MODEL_ARGS } from "./extensions.ts";
 import type { GatedTool } from "./extensions.ts";
 import { SessionsDoc } from "./sessions.ts";
 import type { ApprovalRule } from "./sessions.ts";
@@ -140,7 +141,9 @@ function declineText(comment: string | undefined): string {
  *
  * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
  * An approved call whose arguments are not those any more is blocked. The app hooks' memos keep their rewrites fixed,
- * so this should never happen; it is the last check that the operator approved what runs.
+ * so this should never happen; it is the last check that the operator approved what runs. A call decided before it
+ * parked has no such memo: the operator was asked about the model's arguments, so it is blocked if an app hook rewrote
+ * them (`MODEL_ARGS`).
  */
 export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
   return hook(ToolTask, {
@@ -149,7 +152,8 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       if (state !== undefined) {
         if ("expired" in state) return { block: "No decision arrived for this call." };
         if (!state.value.approved) return { block: declineText(state.value.comment) };
-        const asked = await api.memo<JsonObject>(GATE_ARGS, context);
+        const asked =
+          (await api.memo<JsonObject>(GATE_ARGS, context)) ?? (await api.memo<JsonObject>(MODEL_ARGS, context));
         return asked === undefined || sameJson(asked, call.arguments)
           ? undefined
           : { block: "The call's arguments changed after the operator was asked about it." };

@@ -86,6 +86,13 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
 });
 
 /**
+ * The arguments pi hands the chain of a call that an app hook rewrites: the model's, as the tool repairs and coerces
+ * them, which no app hook has touched. The first app hook to rewrite the call memoizes them on its tool task, and the
+ * gate checks a call decided before it parked against them, since the operator was asked about the model's arguments.
+ */
+export const MODEL_ARGS = "motoko.model.args";
+
+/**
  * The tool hooks `registration`, the hook at `index` in app extension `extension`, as the instance installs them. What
  * their `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
  *
@@ -94,7 +101,7 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
  *   and `approve()` would decide it;
  * - `arguments`: the first the hook gave this call, memoized under the hook's extension and place (an extension may
  *   hook the tool task more than once), since pi-durable runs the chain again at every wake, registry change and
- *   decision;
+ *   decision. The first app hook to rewrite a call also memoizes the arguments it was handed (`MODEL_ARGS`);
  * - nothing, from a hook that gave `arguments` on an earlier run of the chain: those `arguments` still.
  */
 function appToolHooks(extension: string, index: number, registration: HookRegistration): HookRegistration {
@@ -111,7 +118,13 @@ function appToolHooks(extension: string, index: number, registration: HookRegist
       if (decision?.sleep !== undefined) {
         return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
       }
-      if (decision?.arguments !== undefined) return { arguments: await api.memo(memo, decision.arguments, context) };
+      if (decision?.arguments !== undefined) {
+        // Before the rewrite's own memo, so a held rewrite always has them. No hook before this one rewrote the call,
+        // or its memo would hold them already.
+        // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
+        await api.memo(MODEL_ARGS, call.arguments as JsonObject, context);
+        return { arguments: await api.memo(memo, decision.arguments, context) };
+      }
       const rewritten = await api.memo<JsonObject>(memo, context);
       return rewritten === undefined ? decision : { arguments: rewritten };
     },
