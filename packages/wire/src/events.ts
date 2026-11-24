@@ -129,6 +129,12 @@ export const agentWireEventSchema = z.discriminatedUnion("type", [
     tier: z.string(),
     /** The arguments the call runs with: an app's hook may have rewritten those the model wrote (`tool:start`'s). */
     args: z.unknown(),
+    /**
+     * For a nested call, one a tool call made through pi-durable's `executeTool()` (a code mode script's, say): the
+     * model's call it was made under. A nested call has no `tool:start` or `tool:end`, and its question ends with that
+     * call.
+     */
+    parentToolCallId: z.string().optional(),
   }),
   /** The decision; a declined call then ends with its comment as the result the model read. */
   z.object({

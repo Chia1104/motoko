@@ -52,7 +52,7 @@ export class SessionClient {
 | `tool:start`               | `toolCallId`, `toolName`, `label`, `tier`, `args`                                 | The model called a tool (from the stored reply).                                         |
 | `tool:update`              | `toolCallId`, `output?`, `details?`                                               | Progress of a running call; only changed fields.                                         |
 | `tool:end`                 | `toolCallId`, `toolName`, `status` (`ok`/`error`/`aborted`), `error?`, `details?` | How the call ended.                                                                      |
-| `approval:request`         | `toolCallId`, `toolName`, `tier`, `args`                                          | The call waits for a decision on `args`, the arguments it runs with.                     |
+| `approval:request`         | `toolCallId`, `toolName`, `tier`, `args`, `parentToolCallId?`                     | The call waits for a decision on `args`, the arguments it runs with.                     |
 | `approval:resolved`        | `toolCallId`, `approved`, `comment?`                                              | The decision.                                                                            |
 | `reply:wait`               | `toolCallId`, `until?`                                                            | A deferred call is parked until its reply comes, or its deadline `until` passes.         |
 | `retry:wait` / `retry:end` | `error`, `at` /                                                                   | A model request failed and waits to be retried / the wait is over.                       |
@@ -66,6 +66,10 @@ export class SessionClient {
 `StreamItem` is `{ cursor, event }`; `cursor` is the position right after `event`. A call's `tier` is
 `UNKNOWN_TIER` (`"unknown"`) when it is not known: the agent has no such tool, or the view shows the
 call before its `tool:start`.
+
+An `approval:request` with `parentToolCallId` is a nested call's: one a tool call made through
+pi-durable's `executeTool()`, such as a code mode script's, under the model's call it names. A nested
+call has no `tool:start` or `tool:end` of its own; its question ends with the call it was made under.
 
 ### Steering and the queue
 
@@ -133,6 +137,12 @@ Every event that names an item upserts it.
 A tool call's `args` are those the model wrote (`tool:start`) until its `approval:request`, whose `args`
 replace them: the arguments the call runs with, which an app's hook may have rewritten before the gate.
 
+A nested call's question is in `nestedApprovals` of the call it was made under, in the order they
+asked, with its `toolName`, `tier`, `args`, and `approval` once decided; its id is in
+`pendingApprovals` until then. The call it was made under runs on meanwhile. Its `tool:end`, or the
+run's end, drops them, decided or not, and a question for a call the view does not hold, or that
+ended, changes nothing.
+
 A tool call's `status` is `drafting`, `running`, `awaiting_approval`, `awaiting_reply` or how it ended
 (`ok`, `error`, `aborted`). `awaiting_reply` is a deferred call parked on its reply, from its
 `reply:wait`, with the deadline as `replyBy`. Its `tool:update` puts it back to `running`, without
@@ -141,7 +151,7 @@ meanwhile: nothing waits for an operator.
 
 A resumed stream sends in-flight state again rather than replaying it, and the reducer applies what
 a client may already hold idempotently: a stored message or call it has, `approval:request` for a
-call still waiting (and none for a call that ended or was decided), `reply:wait` for a call still
+call still waiting (and none for a call that ended or was decided), nested calls' too, `reply:wait` for a call still
 parked on its reply, `tool:update` only for a call still running, the reply streamed so far as
 `assistant:start` and one delta, `retry:wait` or `retry:end`, `queue`, `compaction:start` or
 `compaction:end`, and `run:end` only while the view shows a run.

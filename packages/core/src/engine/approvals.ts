@@ -137,7 +137,8 @@ function declineText(comment: string | undefined): string {
  * passes, blocks, or parks again. A decision, once delivered, decides the call whatever the session's
  * rule says by then, so a rule changed while the call waited neither runs a declined call nor drops its
  * question. A declined call is blocked, and `afterTool` hands the model the operator's comment as the
- * call's result. It judges every call of a session of `agent`, the app's tools' too, as `toolOf` knows them.
+ * call's result, or, for a nested call, the tool that made it, as the result's error. It judges every call of a session
+ * of `agent`, the app's tools' too, and the calls they make, as `toolOf` knows them.
  *
  * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
  * An approved call whose arguments are not those any more is blocked. The app hooks' memos keep their rewrites fixed,
@@ -168,11 +169,13 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       if (!result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return undefined;
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state === undefined || !("value" in state) || state.value.approved) return undefined;
-      // The model reads the operator's words, not the harness's report of a blocked call.
+      const text = declineText(state.value.comment);
+      // The model reads the operator's words, not the harness's report of a blocked call. The tool that made a nested
+      // call reads no output of an error, only its error diagnostics, so there the words are one.
       return {
-        output: [{ type: "text", text: declineText(state.value.comment) }],
+        output: [{ type: "text", text }],
         isError: true,
-        diagnostics: [],
+        diagnostics: call.parent === undefined ? [] : [{ severity: "error", code: "declined", message: text }],
       };
     },
   });
@@ -192,8 +195,8 @@ class Refused extends Error {
  * each with the arguments the gate saw when the call parked, or none is. A call a decision reached first is
  * `already_decided`. Rejects with `ApprovalNotPendingError`, committing nothing, if any call is not waiting at the gate:
  * neither parked there nor about to reach it, as `gated` judges a tool by name under the session's rule. A call that
- * sleeps after it started, such as a delegate's waiting for its child, is parked on its own work. A call named twice is
- * a `TypeError`.
+ * sleeps after it started, such as a delegate's waiting for its child, is parked on its own work. A nested call, one a
+ * tool made through `executeTool()`, is decided as a call of the model's is. A call named twice is a `TypeError`.
  */
 export async function decide(
   harness: Harness,
@@ -212,7 +215,8 @@ export async function decide(
     callsOf(harness, conversationId),
   ]);
   const tasks = decisions.map((decision) => {
-    const slot = live?.tools?.find((candidate) => candidate.callId === decision.toolCallId);
+    const named = (candidate: { callId: string }) => candidate.callId === decision.toolCallId;
+    const slot = live?.tools?.find(named) ?? live?.nestedTools?.find(named);
     const waiting =
       slot !== undefined &&
       ((slot.status === "sleeping" && startedCall(calls, slot.callId, slot.taskId) === undefined) ||

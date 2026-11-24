@@ -3,7 +3,8 @@
 // for the calls, and each test decides them with `decide`. Each test expects what the README's
 // "Durable approval" says: a gated call waits for its decision, an approved one runs, a declined one
 // hands the model the operator's words as its result, and the decision is recorded with the arguments
-// the gate saw.
+// the gate saw. A nested call, one a tool makes through `executeTool()`, is decided the same way, and a
+// declined one hands the operator's words to the tool that made it.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -17,7 +18,7 @@ import {
   MemoryStorage,
   ToolTask,
 } from "@earendil-works/pi-durable";
-import type { ConversationId, Extension, JsonObject, ToolSlot } from "@earendil-works/pi-durable";
+import type { ConversationId, Extension, JsonObject, NestedToolSlot, ToolSlot } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
 
@@ -25,6 +26,7 @@ import { decide, decisionsOf, isGated } from "../src/engine/approvals.ts";
 import type { ApprovalDecision } from "../src/engine/approvals.ts";
 import { agentExtensions } from "../src/engine/bind.ts";
 import { appExtensions } from "../src/engine/extensions.ts";
+import type { AppExtension } from "../src/engine/extensions.ts";
 import { SessionsDoc } from "../src/engine/sessions.ts";
 import type { ApprovalRule } from "../src/engine/sessions.ts";
 import { ApprovalNotPendingError, defineAgent, defineTool } from "../src/index.ts";
@@ -97,9 +99,37 @@ const rewriting = (rewrite: (pass: number) => JsonObject) => {
   });
 };
 
-/** The app's extensions of an instance of `agent` that has none. */
-const noApp = (agent: AgentDefinition<Ports>) =>
-  appExtensions({ kind: agent.kind, name: "a" }, new Map([[agent.kind, agent]]), []);
+/** The app's extensions `app` of an instance of `agent`: none by default. */
+const appOf = (agent: AgentDefinition<Ports>, app: readonly AppExtension[] = []) =>
+  appExtensions({ kind: agent.kind, name: "a" }, new Map([[agent.kind, agent]]), app);
+const noApp = (agent: AgentDefinition<Ports>) => appOf(agent);
+
+/**
+ * The app's `script`, at tier `exec`, whose call makes its first nested call, `<its id>/1`, of the agent's `remove` on
+ * note `a`, and hands the model what the nested call returned, or why it failed: replay-safe, as a code mode call is,
+ * so it runs again after a restart and finds its nested call again.
+ */
+const scripting: AppExtension = {
+  extension: defineExtension({
+    name: "script",
+    tools: [
+      definePiTool({
+        name: "script",
+        description: "Run a script",
+        parameters: { type: "object", properties: {} },
+        replay: "safe",
+        async execute(_args, api, context) {
+          const nested = await api.executeTool("remove", { key: "a" }, context);
+          // As a code mode script reads it: the output, or why it failed.
+          const why = nested.diagnostics.filter(({ severity }) => severity === "error").map(({ message }) => message);
+          const text = nested.isError ? why.join("\n") : String(nested.structuredOutput);
+          return { output: [{ type: "text", text }], isError: nested.isError };
+        },
+      }),
+    ],
+  }),
+  tier: () => "exec",
+};
 
 /** Whether a call of tool `name` in a session of `agent` waits for approval under `rule`, as the runtime judges it. */
 const gatedIn = (agent: AgentDefinition<Ports>, name: string, rule?: ApprovalRule) =>
@@ -113,12 +143,12 @@ afterEach(async () => {
 /**
  * A conversation of `agent` whose first reply asks for `call`, and what the model reads after it. With `rule`, the
  * conversation is a session with that approval rule of its own, recorded as the runtime records it. The extensions
- * `more` run before the agent's, as an app's do.
+ * `more` run before the agent's, as an app's do, and the app's extensions `app` too, with the tiers they give.
  */
 async function conversationOf(
   agent: AgentDefinition<Ports>,
   call: { name: string; id: string },
-  { rule, more = [] }: { rule?: ApprovalRule; more?: Extension[] } = {},
+  { rule, more = [], app = [] }: { rule?: ApprovalRule; more?: Extension[]; app?: AppExtension[] } = {},
 ) {
   const { faux, models, model } = fauxModels();
   const deleted: string[] = [];
@@ -127,9 +157,9 @@ async function conversationOf(
     scope: { kind: agent.kind, name: "a" },
     ports: () => ({ deleted }),
     portsFailed: () => undefined,
-    app: noApp(agent),
+    app: appOf(agent, app),
   });
-  for (const extension of more) registry.install(extension);
+  for (const extension of [...more, ...app.map(({ extension }) => extension)]) registry.install(extension);
   for (const extension of extensions.values()) registry.install(extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
   harnesses.push(harness);
@@ -175,6 +205,23 @@ async function slot(harness: Harness, id: ConversationId, callId: string, status
     const live = await harness.snapshot(LiveDoc, id, context);
     if (live?.tools?.some((candidate) => candidate.callId === callId && candidate.status === status)) return;
     if (Date.now() > deadline) throw new Error(`Call ${callId} never became ${status}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Resolves with the nested call of `parentCallId` in conversation `id` once it has reached `status`. */
+async function nestedSlot(
+  harness: Harness,
+  id: ConversationId,
+  parentCallId: string,
+  status: NestedToolSlot["status"],
+): Promise<NestedToolSlot> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const live = await harness.snapshot(LiveDoc, id, context);
+    const found = live?.nestedTools?.find((nested) => nested.parentCallId === parentCallId && nested.status === status);
+    if (found !== undefined) return found;
+    if (Date.now() > deadline) throw new Error(`No nested call of ${parentCallId} became ${status}`);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
@@ -403,5 +450,60 @@ describe("a session's own approval rule", () => {
     });
     expect(await result()).toMatchObject(declined("The operator declined this call."));
     expect(deleted).toEqual([]);
+  });
+});
+
+describe("a nested call", () => {
+  it("parks until it is approved, then runs, its caller carries on, and the decision is recorded", async () => {
+    const { harness, id, deleted, result } = await conversationOf(
+      notes,
+      { name: "script", id: "sc-1" },
+      {
+        app: [scripting],
+      },
+    );
+    const nested = await nestedSlot(harness, id, "sc-1", "sleeping");
+    expect(nested).toMatchObject({ callId: "sc-1/1", name: "remove", arguments: { key: "a" } });
+    expect(deleted).toEqual([]);
+
+    expect(await decideOne(notes, harness, id, { toolCallId: "sc-1/1", approved: true })).toEqual({
+      toolCallId: "sc-1/1",
+      outcome: "applied",
+    });
+    expect(await result()).toMatchObject({
+      role: "toolResult",
+      isError: false,
+      content: [{ type: "text", text: "deleted a" }],
+    });
+    expect(deleted).toEqual(["a"]);
+    expect(await decisionsOf(harness, id)).toEqual({
+      "sc-1/1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
+    });
+    // The caller is not at the gate: it runs, waiting on its nested call.
+    await expect(decideOne(notes, harness, id, { toolCallId: "sc-1", approved: true })).rejects.toBeInstanceOf(
+      ApprovalNotPendingError,
+    );
+  });
+
+  it("declined, hands its caller the operator's refusal as its result, and does not run", async () => {
+    const { harness, id, deleted, result } = await conversationOf(
+      notes,
+      { name: "script", id: "sc-1" },
+      {
+        app: [scripting],
+      },
+    );
+    await nestedSlot(harness, id, "sc-1", "sleeping");
+    const decision = { toolCallId: "sc-1/1", approved: false, comment: "Keep a." };
+    expect(await decideOne(notes, harness, id, decision)).toEqual({ toolCallId: "sc-1/1", outcome: "applied" });
+    expect(await result()).toMatchObject({
+      role: "toolResult",
+      isError: true,
+      content: [{ type: "text", text: "The operator declined this call: Keep a." }],
+    });
+    expect(deleted).toEqual([]);
+    expect(await decisionsOf(harness, id)).toEqual({
+      "sc-1/1": { approved: false, comment: "Keep a.", args: { key: "a" }, at: expect.any(Number) },
+    });
   });
 });

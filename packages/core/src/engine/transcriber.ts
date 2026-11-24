@@ -15,6 +15,7 @@ import type {
   InboxState,
   JsonObject,
   LiveState,
+  NestedToolSlot,
   RunFailure,
   TaskId,
   ToolSlot,
@@ -248,16 +249,40 @@ const newestOf = (view: ConversationView): number => view.entries.at(-1)?.id ?? 
 export const answering = (live: LiveState | undefined) =>
   live?.run !== undefined && live.run.afterRun === undefined ? live.run.inputs[0] : undefined;
 
-/** Whether any call sleeps: at the gate, or parked on its own work once started. */
-const sleeps = (live: LiveState | undefined) => live?.tools?.some((slot) => slot.status === "sleeping") === true;
+/** Whether any call sleeps, nested calls too: at the gate, or parked on its own work once started. */
+const sleeps = (live: LiveState | undefined) =>
+  [...(live?.tools ?? []), ...(live?.nestedTools ?? [])].some((slot) => slot.status === "sleeping");
 
 /** Whether any call sleeps or runs: a running one may be a deferred call that a reply or its deadline woke. */
 const underWay = (live: LiveState | undefined) =>
-  live?.tools?.some((slot) => slot.status === "sleeping" || slot.status === "running") === true;
+  sleeps(live) || live?.tools?.some((slot) => slot.status === "running") === true;
 
 /** Whether a call waits at the gate: it sleeps before it started. A started call that sleeps waits on its own work. */
-const atGate = (slot: ToolSlot, calls: Calls) =>
+const atGate = (slot: ToolSlot | NestedToolSlot, calls: Calls) =>
   slot.status === "sleeping" && startedCall(calls, slot.callId, slot.taskId) === undefined;
+
+/**
+ * What a call is asked about with: its tool and the arguments it was made with, and, for a nested call, the model's
+ * call it was made under.
+ */
+interface Asking {
+  readonly name: string;
+  readonly args: unknown;
+  readonly parent?: string;
+}
+
+/**
+ * The nested calls `live` shows, each with what it is asked about with: a call a tool made through `executeTool()`,
+ * under the model's call that made it, directly or through other nested calls. A parent precedes its children.
+ */
+function nestedOf(live: LiveState | undefined): { slot: NestedToolSlot; call: Asking & { parent: string } }[] {
+  const under = new Map<string, string>();
+  return (live?.nestedTools ?? []).map((slot) => {
+    const parent = under.get(slot.parentCallId) ?? slot.parentCallId;
+    under.set(slot.callId, parent);
+    return { slot, call: { name: slot.name, args: slot.arguments, parent } };
+  });
+}
 
 /** A deferred call's record while it is parked on its reply: it sleeps, and no reply reached it yet. */
 function awaitedReply(slot: ToolSlot, calls: Calls) {
@@ -355,7 +380,10 @@ export class Transcriber {
   #batch: Batch | undefined;
   /** Calls whose start went out and whose end has not, with what they were called with. */
   #open = new Map<string, { name: string; args: unknown }>();
-  /** Gated calls of this run whose question went out, and those whose decision went out too. */
+  /**
+   * Gated calls of this run whose question went out, and those whose decision went out too, nested calls among them.
+   * A nested call leaves no entry: what it is asked with, and under which call, is read from its slot while it shows.
+   */
   #asked = new Set<string>();
   #resolved = new Set<string>();
   /** Deferred calls of this run whose wait for a reply went out, while they wait. */
@@ -516,6 +544,7 @@ export class Transcriber {
       this.#retryState(now);
       if (answering(now) !== undefined) this.#stream(now);
       this.#slots(before?.tools, now?.tools, decisions, calls, gateArgs);
+      this.#nested(now, decisions, calls, gateArgs);
       this.#queueState(next);
       this.#compactionState(now);
       // A run's end last, so it stays the run's last event.
@@ -532,9 +561,11 @@ export class Transcriber {
     return needed(live) ? this.#history.calls() : {};
   }
 
-  /** The calls `live` shows waiting at the gate whose question has not gone out. */
-  #waiting(live: LiveState | undefined, calls: Calls): ToolSlot[] {
-    return (live?.tools ?? []).filter((slot) => atGate(slot, calls) && !this.#asked.has(slot.callId));
+  /** The calls `live` shows waiting at the gate whose question has not gone out, nested calls too. */
+  #waiting(live: LiveState | undefined, calls: Calls): (ToolSlot | NestedToolSlot)[] {
+    return [...(live?.tools ?? []), ...(live?.nestedTools ?? [])].filter(
+      (slot) => atGate(slot, calls) && !this.#asked.has(slot.callId),
+    );
   }
 
   /** What the gate saw of each call `#waiting` names, while its task lives. */
@@ -633,10 +664,11 @@ export class Transcriber {
 
   /**
    * The current in-flight state as events, after the entries are read: the run going on or its end,
-   * questions for calls at the gate, decisions of calls that left it, the output and details of calls
-   * under way, the wait of a deferred call parked on its reply or the update that says a woken one runs
-   * again, a retry wait, and the reply streamed so far as one delta per channel. A client that holds
-   * any of it already folds the same view. `gateArgs` holds what the gate saw of the calls that wait at it.
+   * questions for calls at the gate, decisions of calls that left it, nested calls' alike while the call
+   * they were made under runs, the output and details of calls under way, the wait of a deferred call
+   * parked on its reply or the update that says a woken one runs again, a retry wait, and the reply
+   * streamed so far as one delta per channel. A client that holds any of it already folds the same view.
+   * `gateArgs` holds what the gate saw of the calls that wait at it.
    */
   #resync(live: LiveState | undefined, decisions: Decisions, calls: Calls, gateArgs: GateArgs) {
     if (answering(live) === undefined) {
@@ -647,7 +679,7 @@ export class Transcriber {
     for (const slot of live?.tools ?? []) {
       if (!this.#open.has(slot.callId)) continue;
       if (atGate(slot, calls)) {
-        this.#ask(slot.callId, decisions, gateArgs);
+        this.#ask(slot.callId, this.#open.get(slot.callId), decisions, gateArgs);
         continue;
       }
       // A decided call that left the gate: the live stream said so as it left.
@@ -655,6 +687,7 @@ export class Transcriber {
       if (slot.status === "running" || slot.status === "sleeping") this.#progress(slot, undefined);
       this.#replyWait(slot, calls, true);
     }
+    this.#nested(live, decisions, calls, gateArgs);
     this.#retryState(live);
     this.#stream(live);
   }
@@ -669,8 +702,7 @@ export class Transcriber {
     entries: readonly EntryRecord[],
     calls: Calls,
   ): boolean {
-    const undecided = (callId: string) => {
-      const call = this.#open.get(callId);
+    const undecided = (callId: string, call = this.#open.get(callId)) => {
       if (call === undefined || this.#resolved.has(callId)) return false;
       // Asked about: gated when it parked, whatever the session's rule says now.
       return this.#asked.has(callId) || this.#info(call.name).gated;
@@ -678,7 +710,7 @@ export class Transcriber {
     // Open calls are closed, each with its decision, when a reply follows or the run ends.
     const closing =
       answering(now) === undefined || entries.some((entry) => AssistantEntry.is(entry) || mayStartRun(entry));
-    if (closing && [...this.#open.keys()].some(undecided)) return true;
+    if (closing && [...this.#open.keys()].some((callId) => undecided(callId))) return true;
     for (const entry of entries) {
       const [message] = entry.model ?? [];
       if (message?.role === "toolResult" && undecided(message.toolCallId)) return true;
@@ -687,6 +719,12 @@ export class Transcriber {
       if (slot.status !== "sleeping" || !undecided(slot.callId)) continue;
       const next = now?.tools?.find((candidate) => candidate.callId === slot.callId);
       if (next === undefined || !atGate(next, calls)) return true;
+    }
+    // A nested call's decision goes out as it moves on from the gate, or from before it.
+    const before = new Map((was?.nestedTools ?? []).map((slot) => [slot.callId, slot.status]));
+    for (const { slot, call } of nestedOf(now)) {
+      if (!this.#open.has(call.parent) || slot.status === "pending" || atGate(slot, calls)) continue;
+      if (before.get(slot.callId) !== slot.status && undecided(slot.callId, call)) return true;
     }
     return false;
   }
@@ -733,10 +771,10 @@ export class Transcriber {
   }
 
   /** The stored decision of a call, after its question if that has not gone out: a decision answers one. */
-  #decision(toolCallId: string, decisions: Decisions) {
+  #decision(toolCallId: string, decisions: Decisions, call = this.#open.get(toolCallId)) {
     const decision = decisions[toolCallId];
     if (decision === undefined || this.#resolved.has(toolCallId)) return;
-    this.#ask(toolCallId, decisions);
+    this.#ask(toolCallId, call, decisions);
     this.#resolved.add(toolCallId);
     this.#emit({
       type: "approval:resolved",
@@ -748,10 +786,10 @@ export class Transcriber {
 
   /**
    * The question of a gated call, once, with the arguments it runs with: those its decision's record keeps, else those
-   * the gate saw (`gateArgs`), else, for a call no gate saw park, those the model wrote.
+   * the gate saw (`gateArgs`), else, for a call no gate saw park, those it was made with: the model's, or the tool's
+   * that made a nested call.
    */
-  #ask(toolCallId: string, decisions: Decisions, gateArgs = NO_GATE_ARGS) {
-    const call = this.#open.get(toolCallId);
+  #ask(toolCallId: string, call: Asking | undefined, decisions: Decisions, gateArgs = NO_GATE_ARGS) {
     if (call === undefined || this.#asked.has(toolCallId) || this.#resolved.has(toolCallId)) return;
     this.#asked.add(toolCallId);
     this.#emit({
@@ -760,6 +798,7 @@ export class Transcriber {
       toolName: call.name,
       tier: this.#info(call.name).tier,
       args: decisions[toolCallId]?.args ?? gateArgs.get(toolCallId) ?? call.args,
+      ...(call.parent !== undefined && { parentToolCallId: call.parent }),
     });
   }
 
@@ -901,12 +940,25 @@ export class Transcriber {
       if (!this.#open.has(slot.callId)) continue;
       const previous = before.get(slot.callId);
       if (atGate(slot, calls)) {
-        this.#ask(slot.callId, decisions, gateArgs);
+        this.#ask(slot.callId, this.#open.get(slot.callId), decisions, gateArgs);
         continue;
       }
       if (previous?.status === "sleeping") this.#decision(slot.callId, decisions);
       if (slot.status === "running" || slot.status === "sleeping") this.#progress(slot, previous);
       this.#replyWait(slot, calls);
+    }
+  }
+
+  /**
+   * Questions for the nested calls `live` shows at the gate, and decisions for those that moved on from it, while the
+   * call they were made under runs. A nested call that has not reached the gate yet may be decided, but its decision
+   * goes out as it moves on, so a resumed stream says what a live one does.
+   */
+  #nested(live: LiveState | undefined, decisions: Decisions, calls: Calls, gateArgs: GateArgs) {
+    for (const { slot, call } of nestedOf(live)) {
+      if (!this.#open.has(call.parent)) continue;
+      if (atGate(slot, calls)) this.#ask(slot.callId, call, decisions, gateArgs);
+      else if (slot.status !== "pending") this.#decision(slot.callId, decisions, call);
     }
   }
 

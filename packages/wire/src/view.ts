@@ -28,6 +28,17 @@ export interface MessageItem {
 
 export type ToolStatus = "drafting" | "running" | "awaiting_approval" | "awaiting_reply" | ToolEndStatus;
 
+/** A call a tool call made through pi-durable's `executeTool()` (a code mode script's, say) that was asked about. */
+export interface NestedApproval {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly tier: string;
+  /** The arguments it runs with. */
+  readonly args: unknown;
+  /** The decision, once made; until then it waits for one. */
+  readonly approval?: { readonly approved: boolean; readonly comment?: string };
+}
+
 export interface ToolItem {
   readonly kind: "tool";
   readonly toolCallId: string;
@@ -43,6 +54,8 @@ export interface ToolItem {
   readonly approval?: { readonly approved: boolean; readonly comment?: string };
   /** A deferred call's deadline, epoch ms, while it waits for its reply. */
   readonly replyBy?: number;
+  /** The calls it made that were asked about, in the order they asked, while it runs: they end with it. */
+  readonly nestedApprovals?: readonly NestedApproval[];
 }
 
 /** A delegate's call's details, from its start: the child session its sub-agent runs in, and the sub-agent's kind. */
@@ -171,6 +184,50 @@ function assistantEnd(view: AgentSessionView, event: AgentWireEventOf<"assistant
   return settle(view, items);
 }
 
+/**
+ * The question of a nested call, under the call it was made under. A call that ended, or that the view does not hold,
+ * waits on nothing; a question already decided waits no more.
+ */
+function nestedRequest(view: AgentSessionView, event: AgentWireEventOf<"approval:request">, parentToolCallId: string) {
+  const index = view.items.findIndex((item) => isTool(item, parentToolCallId));
+  const parent = view.items[index];
+  if (parent?.kind !== "tool" || hasEnded(parent)) return view;
+  const nested = parent.nestedApprovals ?? [];
+  const asked = nested.findIndex((item) => item.toolCallId === event.toolCallId);
+  if (nested[asked]?.approval !== undefined) return view;
+  const question: NestedApproval = {
+    toolCallId: event.toolCallId,
+    toolName: event.toolName,
+    tier: event.tier,
+    args: event.args,
+  };
+  const items = view.items.slice();
+  items[index] = {
+    ...parent,
+    nestedApprovals: asked === -1 ? [...nested, question] : nested.with(asked, question),
+  };
+  const pending = view.pendingApprovals.includes(event.toolCallId)
+    ? view.pendingApprovals
+    : [...view.pendingApprovals, event.toolCallId];
+  return settle(view, items, pending);
+}
+
+/** The decision of a nested call, on its question under the call it was made under, if the view holds it. */
+function nestedDecision(items: SessionViewItem[], event: AgentWireEventOf<"approval:resolved">): void {
+  const index = items.findIndex(
+    (item) => item.kind === "tool" && item.nestedApprovals?.some((nested) => nested.toolCallId === event.toolCallId),
+  );
+  const parent = items[index];
+  if (parent?.kind !== "tool" || parent.nestedApprovals === undefined) return;
+  const approval = { approved: event.approved, ...(event.comment !== undefined && { comment: event.comment }) };
+  items[index] = {
+    ...parent,
+    nestedApprovals: parent.nestedApprovals.map((nested) =>
+      nested.toolCallId === event.toolCallId ? { ...nested, approval } : nested,
+    ),
+  };
+}
+
 function runEnd(view: AgentSessionView, event: AgentWireEventOf<"run:end">): AgentSessionView {
   // Nothing of the run goes on: a call still open gets no result, a reply still streaming was never
   // stored, and a draft never became a call.
@@ -179,7 +236,7 @@ function runEnd(view: AgentSessionView, event: AgentWireEventOf<"run:end">): Age
     if (item.kind === "tool" && item.status === "drafting") continue;
     if (isStreaming(item)) continue;
     if (item.kind === "tool" && OPEN.has(item.status)) {
-      const { progress: _progress, replyBy: _replyBy, ...rest } = item;
+      const { progress: _progress, replyBy: _replyBy, nestedApprovals: _nested, ...rest } = item;
       items.push({ ...rest, status: "aborted" });
       continue;
     }
@@ -287,14 +344,18 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     }
 
     case "tool:end": {
+      // The questions of the calls it made end with it.
+      const ending = new Set([event.toolCallId]);
       const items = upsertTool(view.items.slice(), event.toolCallId, (found) => {
         const {
           progress: _progress,
           error: _error,
           details: _details,
           replyBy: _replyBy,
+          nestedApprovals,
           ...base
         } = found ?? placeholderTool(event.toolCallId, event.toolName);
+        for (const nested of nestedApprovals ?? []) ending.add(nested.toolCallId);
         return {
           ...base,
           status: event.status,
@@ -305,11 +366,12 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
       return settle(
         view,
         items,
-        view.pendingApprovals.filter((id) => id !== event.toolCallId),
+        view.pendingApprovals.filter((id) => !ending.has(id)),
       );
     }
 
     case "approval:request": {
+      if (event.parentToolCallId !== undefined) return nestedRequest(view, event, event.parentToolCallId);
       const asked = view.items.find((item) => isTool(item, event.toolCallId));
       // A call that ended waits for nothing; one already decided waits no more.
       if (asked?.kind === "tool" && (hasEnded(asked) || asked.approval !== undefined)) return view;
@@ -339,6 +401,8 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
           // Decided, not yet run: the call's own `tool:end` settles it.
           status: tool.status === "awaiting_approval" ? "running" : tool.status,
         };
+      } else {
+        nestedDecision(items, event);
       }
       return settle(
         view,

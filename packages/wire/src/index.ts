@@ -28,6 +28,7 @@ export type {
   CompactionState,
   DelegateDetails,
   MessageItem,
+  NestedApproval,
   RunNoticeItem,
   RunStatus,
   SessionViewItem,
