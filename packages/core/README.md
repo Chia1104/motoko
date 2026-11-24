@@ -256,6 +256,8 @@ createAgentRuntime({
   ports | portsFor,        // exactly one: one ports object, or ports per tool call
   closeIdleAfterMs?,       // close an instance idle this long; default never
   settings?,               // pi-durable's settings; the runtime sets `extensions`
+  extensionsFor?,          // (scope) => AppExtension[]: the app's pi-durable extensions for an instance; default none
+  telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
   deliverReply?,           // (reply, signal) => Promise<void>: how an ask's answer reaches its asker
 }): AgentRuntime
 runtime.get(agent, name): AgentInstance       // lazily opened, one per scope per runtime
@@ -263,16 +265,19 @@ runtime.recover({ concurrency? })             // open the scopes the host lists 
 runtime.inspect(): AgentRuntimeInspection     // what the runtime holds: { open, instances }
 runtime.close()
 instance.state                                // dormant · opening · open · closing · closed · lease_lost · failed
-instance.open() · createSession({ model?, tools?, requiresApproval?, requestId? }) · listSessions() · session(id)
+instance.open() · createSession({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval?, requestId? })
+instance.listSessions() · session(id)
 instance.resume() · refreshModels() · close()
 session.submit({ text, requestId, whenBusy?, replyTo? })  // idempotent on requestId; replyTo makes an ask
+session.continue({ requestId })                 // carries on a run that ended without an answer; idempotent
 session.withdraw(submissionId)                  // { outcome: "withdrawn" | "already_placed" | "settled" }
 session.events({ from?, signal? })              // AsyncIterable<{ cursor, event }>
 session.approve([{ toolCallId, approved, comment? }])  // one commit: all of the batch, or none
 session.reply({ toolCallId, token, text, isError? })  // { outcome: "applied" | "already_replied" }
 session.abort()
-session.configure({ tools?, requiresApproval? })       // null puts back the agent's
-session.settings()                              // { tools, requiresApproval? }
+session.compact({ instructions? })              // resolves once admitted; the stream shows it go
+session.configure({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval? })  // one commit; null puts back the agent's
+session.settings()                              // { model, thinkingLevel, maxTurns?, tools, requiresApproval? }
 session.delete()                                // with its child sessions
 ```
 
@@ -311,6 +316,12 @@ type InstanceReport =
 `reply_failed` is an ask whose reply `deliverReply` failed to deliver: it is tried again unless
 `gaveUp`. It is also reported, with `gaveUp` and `attempt: 0`, for an ask whose request was first
 submitted without a reply address, whose run's answer therefore reaches no one.
+
+`telemetryFor(scope)` gives an instance its pi-telemetry `TelemetryContext`, which the runtime hands
+to pi-durable's `HarnessOptions.telemetry` each time the instance opens. It then receives pi-durable's
+content-free spans and metrics (`pi.durable.submit`, `pi.durable.phase`, ...) for that instance alone,
+so an app can tag them with the scope or send each caller's to its own exporter. A throw fails the
+open. The app imports pi-telemetry itself; core depends on none of it.
 
 ## Calls
 
@@ -458,14 +469,15 @@ function returning one, and may be async (keys usually live in a database). pi-d
 beforehand and hands pi-durable the newest result:
 
 - It resolves when the instance opens, before anything runs, so a run resumed after a restart or an
-  idle close runs on the credentials of now; again before every `submit`, `approve` and `resume`;
-  and on `instance.refreshModels()`.
+  idle close runs on the credentials of now; again before every `submit`, `continue`, `approve`,
+  `compact` and `resume`; and on `instance.refreshModels()`.
 - A key the user adds or removes while the instance is open: build the `Models` with a pi-ai
   `CredentialStore` that reads the app's table (as the example does), and there is nothing to do:
-  pi-ai resolves credentials at every request, so the next request uses the new key, or fails with
-  the provider's "not configured" error once it is gone. A change that needs another `Models` (a
-  provider registered only when the user has a key) reaches the next `submit`, `approve` or
-  `resume` on its own; call `refreshModels()` to reach a run already going at its next request.
+  pi-ai resolves credentials at every request, so the next request uses the new key, or, once it is
+  gone, fails with the provider's "not configured" error and ends its run with `run:end`
+  `code: "no_credentials"`. A change that needs another `Models` (a provider registered only when
+  the user has a key) reaches the next `submit`, `approve` or `resume` on its own; call
+  `refreshModels()` to reach a run already going at its next request.
 - A throw or rejection is reported as `models_failed` and held: every model request of the instance
   then fails with `ModelsUnavailableError`, which ends the run it serves (`run:end` with
   `reason: "error"`, `code: "faulted"` and the error's message, which names no cause; pi-durable
@@ -475,6 +487,12 @@ beforehand and hands pi-durable the newest result:
 - A run resumed after a restart whose credentials can no longer be resolved (the user deleted their
   keys, or the lookup fails) ends that way: with an error the client sees, its committed state
   kept, and nothing sent on anyone else's credentials. A later input runs once the lookup succeeds.
+
+**A key the app holds for a while.** The app keeps the caller's key where its `CredentialStore`
+reads it, such as in server memory for a while. A run that finds none, after the key expired or the
+server restarted, ends `no_credentials` with its committed state kept, so the client can tell it
+from other failures and ask the user for the key. Once the app holds the key again,
+`session.continue()` carries the run on and answers the user's message.
 
 **`portsFor({ scope, sessionId, toolCallId, toolName, signal })`** returns one tool call's ports,
 and may be async. It runs **per call**, right before the call executes: after its approval, if it
@@ -497,7 +515,7 @@ Harness, releases its lease (so another process can take the scope) and lets it 
 end, a reader's end, any change to pi-durable's task graph):
 
 - no call of the runtime's under way on the instance (`open`, `createSession`, `listSessions`,
-  `submit`, `withdraw`, `approve`, `abort`, `resume`);
+  `submit`, `continue`, `withdraw`, `approve`, `abort`, `compact`, `resume`);
 - no event reader attached to any of its sessions;
 - `harness.wake()` is not `active`: no task can run now or is running, so no run is going (a run's
   generation or tool calls, queued inputs it will take, a compaction);
@@ -589,30 +607,101 @@ const again = await instance.createSession({ requestId });
   stays gone.
 - Without a `requestId`, every call makes a session.
 
-## A session's tools and approval rule
+## What a session runs with
 
-A session may run with less than the whole agent, chosen per session and stored with it, so it holds
-after a restart. `createSession({ tools, requiresApproval })` sets both, `session.configure()` changes
-them in one commit (a field left out keeps its value, `null` puts back the agent's), and
-`session.settings()` reads them back:
+A session's model, thinking level and turn limit, and which of the agent's tools it may use and which
+of its calls wait for approval, are chosen per session and stored with it, so they hold after a
+restart. `createSession()` sets them, `session.configure()` changes any of them in one commit (a field
+left out keeps its value, `null` puts back the agent's), and `session.settings()` reads them back:
 
 ```ts
-// A session that may only read, and asks before every call of it.
-const { id } = await instance.createSession({ tools: ["read_note"], requiresApproval: ["read"] });
-// Later: every tool but delete_note, and write-tier calls run without asking.
-await instance.session(id).configure({ tools: { remove: ["delete_note"] }, requiresApproval: { remove: ["write"] } });
+// A session that may only read, asks before every call of it, and takes at most five tool rounds a run.
+const { id } = await instance.createSession({ tools: ["read_note"], requiresApproval: ["read"], maxTurns: 5 });
+// Later: a bigger model that thinks harder, every tool but delete_note, and write-tier calls run without asking.
+await instance.session(id).configure({
+  model: { provider: "anthropic", modelId: "claude-opus-5" },
+  thinkingLevel: "high",
+  tools: { remove: ["delete_note"] },
+  requiresApproval: { remove: ["write"] },
+});
 ```
 
+- `model` is pi's `ModelRef`; `null` puts back the model a new session gets, the agent's, else the
+  runtime's `defaultModel`, and rejects with a `TypeError` when there is neither. `thinkingLevel` is
+  pi-ai's `ModelThinkingLevel`; `null` puts back pi-durable's default. A change to either applies from
+  the run's next model request.
+- `maxTurns` bounds the tool rounds of one run: the round that reaches it runs its tools, then the run
+  ends without an answer (`run:end` with `reason: "error"`, `code: "turn_limit"` and `error: "1 turn"`
+  or `"N turns"`), and [`continue`](#continuing-a-run) carries it on. It is an integer, 1 or more;
+  anything else rejects with pi-durable's `RangeError` and changes nothing, the other fields of the
+  call included. `null` takes the limit away.
 - `tools` is a list of the agent's tool names, exactly those, or `{ remove }`: every one but those. The
   model is offered only the session's tools, and a call of another one ends with an error result
-  without running. It is pi-durable's per-conversation tool selection; a change applies from the
-  run's next model request.
+  without running. It chooses among the agent's own tools: the tools of [app extensions](#app-extensions)
+  stay on whatever it says. It is pi-durable's per-conversation tool selection, which the runtime
+  stores as the agent's tools to remove; a change applies from the run's next model request.
 - `requiresApproval` is a list of tiers, exactly the calls of those wait, or `{ add, remove }`: the
   agent's policy with `add` tiers gated as well and `remove` tiers not. It applies to every call that
   reaches the gate after the change. A call already waiting keeps waiting, and its decision decides
   it whatever the rule says by then: a declined call never runs, and its question stays visible.
 
-Both reject with a `TypeError` for a tool or tier the agent does not have, and change nothing.
+`tools` rejects with a `TypeError` for a tool the agent does not have, and `requiresApproval` for a
+tier no tool of the session carries, the app extensions' included, and neither changes anything.
+`configure` on a child session rejects with `SessionOwnedError`: its delegate chose what it runs with.
+The wire's `createSession` call takes none of these: what a session runs with is the app's to choose.
+
+## Continuing a run
+
+A run that ended without an answer, such as one at its turn limit, keeps what it did: its replies and
+its calls' results. `session.continue({ requestId })` starts a run on the session's context as it is,
+without a new message, so the model carries on from where the run stopped, on the round's results:
+
+```ts
+const { id } = await instance.createSession({ maxTurns: 3 });
+// ... a run ends with `run:end` and `code: "turn_limit"`: the user agrees to let it go on.
+await instance.session(id).configure({ maxTurns: 10 });
+await instance.session(id).continue({ requestId: crypto.randomUUID() });
+```
+
+- It is pi-durable's continue. It starts a run only while none is going: a busy session rejects with
+  `SessionBusyError` (`session_busy`), and nothing is written. Inputs a failed run left waiting
+  (pi-durable's `afterFailedRun: "keep"`, its default) join the run it starts.
+- A context with nothing to answer, empty or ending in an answer, ends the run at once without a
+  model request: `run:end` with `reason: "error"` and `code: "nothing_to_answer"`.
+- It is idempotent on `requestId`, as `submit` is: a retry, also at once, returns the first continue's
+  `submissionId` and starts nothing.
+- The run resolves the scope's models first, as `submit` does. A child session refuses it with
+  `SessionOwnedError`.
+
+pi-durable's continue places no entry, so the stream could not tell from history alone where the
+failed run ended and the continued one began. In the commit that admits a continue whose run takes no
+waiting input, the runtime writes a `motoko.continue` entry (nothing the model reads) naming the
+continue's submission. The stream shows that run as `run:start` there, then its replies and calls, and
+its `run:end`, live and in history alike, and a cursor's `run` names that entry, as it names the user
+entry of a run an input started (see [Cursors](#cursors)). A run that takes waiting inputs starts at
+the first of them, as any run does.
+
+## Compacting a session
+
+pi-durable compacts a session on its own when its context nears the model's window (its `compaction`
+settings, in `settings`). `session.compact({ instructions? })` asks for one now: it admits pi-durable's
+manual compaction and resolves once it is admitted. The compaction summarizes the session's older
+messages, keeping the newest ones verbatim, into what the model reads from then on; the thread keeps
+them. It runs while the session keeps working, and its summary lands at once when the session is
+idle, else at the run's next boundary. `instructions` is added to the summarization prompt, to say what
+the summary should keep.
+
+```ts
+await session.compact({ instructions: "Keep every decision the user made." });
+```
+
+The stream shows it as it goes, from `pi.live`: `compaction:start` (`reason: "manual"`, or
+`threshold` and `overflow` for pi-durable's own), then `session:compacted` with the summary and
+`compaction:end`. A compaction whose summary fails (the model's error, after pi-durable's retries) ends
+with `compaction:end` and its `error`, and the model reads the messages as they were; the view keeps
+the failure until a later compaction succeeds. A compaction runs on the scope's models, resolved again
+before `compact` as before `submit`. A child session refuses it with `SessionOwnedError`: what its
+sub-agent reads is its delegate's call's.
 
 ## Delegates
 
@@ -654,8 +743,10 @@ why, and the parent's run goes on.
 - A delegate is a tool like any other: the agent's policy and the session's rule judge its tier. A
   call that started is never gated again, whatever the rule says by then.
 - Each session sees only its own agent's tools and instructions. The runtime sets pi-durable's default
-  extension selection (`settings.extensions`) to the instance's agent, so a top-level session, also
-  one made before its agent had delegates, never sees a sub-agent's.
+  extension selection (`settings.extensions`) to the instance's agent, after the app extensions that
+  select it, so a top-level session, also one made before its agent had delegates, never sees a
+  sub-agent's. A child session selects the app extensions that name its sub-agent's kind, then the
+  sub-agent's own: by default none of the app's ([App extensions](#app-extensions)).
 - Sub-agents have no instances of their own. `createAgentRuntime` throws a `TypeError` for two
   definitions of one kind among its agents and the sub-agents their delegates reach. A definition is
   frozen once made, so delegates never loop.
@@ -670,8 +761,8 @@ A child session is followed, decided in and aborted like any session, under its 
 - A call the sub-agent's policy gates waits in the child: approve it with the child session's
   `approve()`. The parent shows no question, and its `approve()` refuses the delegate's call. The
   child's `settings()` lists the sub-agent's tools.
-- Only its delegate submits to it: the child's `submit()`, `configure()` and `delete()` reject with
-  `SessionOwnedError` (`session_owned`). `listSessions()` leaves it out.
+- Only its delegate submits to it: the child's `submit()`, `continue()`, `configure()`, `compact()`
+  and `delete()` reject with `SessionOwnedError` (`session_owned`). `listSessions()` leaves it out.
 - Aborting the parent aborts the child, through pi-durable's ownership. Aborting the child ends its
   run, and the parent's call returns an error result.
 - Deleting the parent deletes its child sessions in the same commit: their readers end, their calls
@@ -761,6 +852,64 @@ The asked side keeps a courier for each ask, a background task of the asked sess
 client of the cluster ([forwarding](../node#forwarding-experimental) takes the call to the home), or a
 Durable Object's stub ([asks between objects](../cloudflare#asks-between-objects)).
 
+## App extensions
+
+`extensionsFor(scope)` gives an instance the app's own pi-durable extensions: tools, prompt sections,
+hooks, wraps and tasks that use the app's resources, which an agent definition, importable by a
+client, cannot hold. It may be async. The runtime calls it each time the instance opens, before the
+instance's Harness opens, so work the instance resumes runs with the extensions it ran with. A throw
+or rejection fails the open: the call that opened the instance rejects with that error, nothing of
+the instance runs, and a call waiting at the gate keeps waiting for a later open.
+
+```ts
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
+
+const runtime = createAgentRuntime({
+  // ...
+  extensionsFor: (scope) => [
+    { extension: createToolSearchExtension(), tier: () => "read" },
+    { extension: mcpTools(scope), tier: (name) => (name.startsWith("mcp_github_") ? "network" : undefined) },
+    { extension: traces(scope), agents: ["notes", "researcher"] },
+  ],
+});
+```
+
+- **Tiers.** `tier(toolName)` gives each of the extension's tools its tier, which the agent's policy
+  and a session's rule judge as they judge the agent's own tools; `tool:start` and `approval:request`
+  carry it. A tool it gives none is `unknown`, and every call of it waits for approval: no policy or
+  rule lets it run without a decision, and a rule cannot name `unknown`.
+- **Selection.** Every extension is installed in the instance's registry. A session selects the
+  extensions whose `agents` name its agent's kind, in the order `extensionsFor` lists them, then its
+  agent's own, so the approval gate runs last and judges the arguments the call runs with: `beforeTool`
+  hooks, prompt sections and `afterTool` hooks run in selection order, each `beforeTool` seeing the
+  arguments the one before it returned. Leaving `agents` out names the instance's own agent alone, so
+  a delegate's sub-agent runs an app extension only when `agents` names its kind. A hook meant for
+  every session, such as tracing, names the sub-agents' kinds too; a sub-agent of the instance's own
+  kind runs what a top-level session runs.
+- **Tools.** A session's `tools` choose among its agent's own tools; the app's stay on. To give
+  sessions other app tools, run them as another agent. A call of an app tool that parks on its own
+  work (its `execute` returns `{ sleep }`) is recorded in `runtime.calls` before it parks, so its
+  sleep raises no question and `approve()` refuses it, as a deferred call's does.
+- **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
+  tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
+  another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
+  or wraps a tool of a name, so any of those would run something in an agent's tool's place, past its
+  ports.
+- **Stable names.** While a session may still have work of an extension, a call waiting at the gate
+  or a task its hook asked for, keep giving that extension, its tools and its tasks under the same
+  names: register a tool whose backend is down, and fail in its `execute`. When the instance opens
+  without it, a call waiting at the gate for its tool ends with `tool_unavailable`, and a task whose
+  definition is gone stays blocked, the session busy, until the extension is back or the session is
+  aborted.
+- **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
+  before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
+  throws `SessionBusyError`, and an input that queues starts once they end.
+- **Nested calls.** A call a tool makes through pi-durable's `executeTool()` passes the gate too. One
+  the gate holds raises no question yet and cannot be decided; aborting the run ends it.
+
+A session whose `tools` an earlier Motoko stored, as pi-durable's list of exactly those tools, runs
+none of the app's until `configure({ tools })` sets them again.
+
 ## Deleting a session
 
 `session.delete()` stops the session's run (and background work it owns), ends its readers, and hides
@@ -794,17 +943,19 @@ overwriting their bytes (`PRAGMA secure_delete`) is the store's to arrange where
 
 Each session's stream is derived from committed state by one transcriber, with one set of rules for
 history and for each new commit: the entries (`pi.user`, `pi.assistant`, `pi.tool-result`,
-`pi.compaction`), the `pi.live` document and the runtime's approval record. Stored facts (messages, tool
-calls, results, decisions, run ends) come from entries and documents; what only `pi.live` shows (a
-streaming reply, drafts, running output, a retry wait, a parked question) is superseded by the
-stored events that follow it.
+`pi.compaction`, and the runtime's `motoko.steer` and `motoko.continue`), the `pi.live` document and
+the runtime's approval record. Stored facts (messages, tool calls, results, decisions, run ends) come
+from entries and documents; what only `pi.live` shows (a streaming reply, drafts, running output, a
+retry wait, a parked question, a compaction going on or the newest one's failure) is superseded by
+the stored events that follow it.
 
 ### Cursors
 
 A cursor names a position in committed state: the session, the newest entry whose events the client
-has all folded, and the run it is in (the user entry that started it). It stays valid across a
-restart and in another process that opens the same storage. A cursor handed out from the live log
-also carries that log's place (`epoch`, `seq`). Resuming from a cursor:
+has all folded, and the run it is in (the entry that started it: its input, or its continue's
+`motoko.continue` entry). It stays valid across a restart and in another process that opens the same
+storage. A cursor handed out from the live log also carries that log's place (`epoch`, `seq`).
+Resuming from a cursor:
 
 1. **Exact, from the log.** While the cursor's place is still in this process's log, the reader
    gets exactly the events after it, live included: no duplicates, no gaps.
@@ -814,11 +965,11 @@ also carries that log's place (`epoch`, `seq`). Resuming from a cursor:
    committed after the position are sent; then the current in-flight state is sent as events the
    reducer applies idempotently: the run going on, the question of each call waiting for approval,
    each decision of a call that left its wait, each deferred call's wait for its reply, running
-   output, a retry wait, the reply streamed so
-   far as one delta, drafted calls. The reader then joins the live log where it continues. The
-   last step runs in the session's commit chain, so no commit lands between the catch-up and the
-   log. The folded view equals that of a client connected all along; the events need not be the
-   same ones.
+   output, a retry wait, the reply streamed so far as one delta, drafted calls, and the compaction
+   going on or the newest one's failure (`compaction:start` or `compaction:end`). The reader then
+   joins the live log where it continues. The last step runs in the session's commit chain, so no
+   commit lands between the catch-up and the log. The folded view equals that of a client connected
+   all along; the events need not be the same ones.
 3. `stream:reset` and a full replay only for a cursor storage cannot honour (it names an entry the
    session does not hold, as after a restore from an older backup). A string that is not a cursor
    of this session rejects with `InvalidCursorError`.
@@ -829,16 +980,17 @@ joins the log the same way.
 History read from storage shows how a run ended through its entries, except for a run that ended
 without an answer and left no entry saying why (`faulted`, `no_model`, `turn_limit`, ...), which
 `pi.live.runFailure` describes only until the next run starts. The runtime takes such a run's end from
-its input's settlement (`unanswered`, with the same reason and detail), which pi-durable keeps.
+its input's settlement, or its continue's (`unanswered`, with the same reason and detail), which
+pi-durable keeps.
 pi-durable scans submissions only on the `Storage`, so the runtime reads the instance's own Storage for
 it.
 
 ### What is held in memory
 
 - A session's stream (its observer, transcriber and log) exists only while it is needed: a reader
-  is iterating, a call (`submit`, `approve`, `abort`, `withdraw`) is under way, or the session has
-  work (a run, or queued input). A session with no reader and no run holds nothing; its stream closes and the
-  next reader or call opens it again from committed state.
+  is iterating, a call (`submit`, `continue`, `approve`, `abort`, `withdraw`, `compact`) is under way,
+  or the session has work (a run, or queued input). A session with no reader and no run holds
+  nothing; its stream closes and the next reader or call opens it again from committed state.
 - While it exists, the log holds the events since the current run's `run:start`, plus the previous
   run's events only while an attached reader has not read them yet. The transcriber holds the
   current run's open calls and questions. So what is held is bounded by the run, not by the
@@ -856,8 +1008,9 @@ aborts).
 A call whose tier the policy gates (the session's own rule, if it has one) is parked by a
 `beforeTool` hook that returns `{ sleep: { signals: [ApprovalSignal.key(callId)] } }`, pi-durable
 1.6's gate. The park is the tool task's committed state; nothing waits in memory. A delegate's call
-also sleeps once it has started, while its child works, and so does a deferred call while it waits for its reply.
-Those parks are their own, so they raise no question.
+also sleeps once it has started, while its child works, and so does a deferred call while it waits for its reply,
+and an app tool's call that parks on its own work. Those parks are their own, recorded in `runtime.calls`, so they
+raise no question. The gate judges every call of a session, the app extensions' tools' too.
 `approve()` delivers every decision of its batch with `tx.signal()` in one commit that also records them in a
 conversation document (`runtime.approvals`): if any call of the batch is not waiting, the commit is
 discarded and nothing is decided (`ApprovalNotPendingError` names that call). Restarting,

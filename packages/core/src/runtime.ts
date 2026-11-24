@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { configure, ConversationBusy, createRegistry, Harness } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { configure, ConversationBusy, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
   Conversation,
@@ -23,6 +24,8 @@ import type { ApprovalDecision, ApprovalOutcome } from "./engine/approvals.ts";
 import { ask, askCourier, COURIER_TIMING } from "./engine/asks.ts";
 import type { Courier, CourierTiming, DeliverReply, ReplyFailure } from "./engine/asks.ts";
 import { agentExtensions } from "./engine/bind.ts";
+import { appExtensions } from "./engine/extensions.ts";
+import type { ExtensionsResolver, ToolCatalog } from "./engine/extensions.ts";
 import { InstanceLifecycle } from "./engine/lifecycle.ts";
 import type { Clock, InstanceInspection, InstanceState } from "./engine/lifecycle.ts";
 import { ModelAccess } from "./engine/models.ts";
@@ -31,7 +34,7 @@ import { applyReply } from "./engine/replies.ts";
 import type { ReplyInput, ReplyResult } from "./engine/replies.ts";
 import { selectedTools, SessionsDoc, storedRule, withChildren } from "./engine/sessions.ts";
 import type { ApprovalRule, SessionRecord, ToolSelection } from "./engine/sessions.ts";
-import { STEER_ENTRY } from "./engine/transcriber.ts";
+import { ContinueEntry, STEER_ENTRY } from "./engine/transcriber.ts";
 import type { ToolInfo } from "./engine/transcriber.ts";
 import { SessionWatch } from "./engine/watch.ts";
 import {
@@ -111,9 +114,22 @@ interface AgentRuntimeCommonOptions<Ports> {
   readonly closeIdleAfterMs?: number;
   /**
    * pi-durable's `HarnessOptions.settings` (such as `progress`), passed to every instance's Harness, read at each use
-   * as pi-durable reads it. `extensions` is the runtime's: a session selects its own agent's.
+   * as pi-durable reads it. `extensions` is the runtime's: a session selects the app's extensions and its own agent's.
    */
   readonly settings?: HarnessOptions["settings"];
+  /**
+   * The app's pi-durable extensions for one instance, from its scope: tools, prompt sections, hooks and tasks that
+   * use the app's resources. Called each time the instance opens, before anything of it runs; a throw or rejection
+   * fails the open. Each extension's tools carry the tiers its `tier` gives them, and its `agents` say which agents'
+   * sessions select it: by default the instance's own agent's alone. Default: none.
+   */
+  readonly extensionsFor?: ExtensionsResolver;
+  /**
+   * The telemetry of one instance, from its scope: pi-durable's `HarnessOptions.telemetry` (a pi-telemetry
+   * `TelemetryContext`), which receives its content-free `pi.durable.*` spans and metrics. Called each time the
+   * instance opens. Default: pi-durable's, which records nothing.
+   */
+  readonly telemetryFor?: (scope: StorageScope) => NonNullable<HarnessOptions["telemetry"]>;
   /**
    * How the runtime reaches a reply address: an ask's run ended, so its answer goes to the asker's instance, through
    * the app's way to reach that instance's home (the local runtime's `session.reply`, a client of the cluster, a
@@ -176,6 +192,13 @@ export interface SessionInfo {
 export interface SessionOptions {
   /** Default: the agent's model, else the runtime's `defaultModel`. */
   readonly model?: ModelRef;
+  /** How hard the model thinks. Default: pi-durable's. */
+  readonly thinkingLevel?: ModelThinkingLevel;
+  /**
+   * Tool rounds one run takes at most: the round that reaches it runs its tools, then the run ends without an answer
+   * (`turn_limit`). An integer, 1 or more. Default: no limit.
+   */
+  readonly maxTurns?: number;
   /** The agent's tools the session may use. Default: all of them. */
   readonly tools?: ToolSelection;
   /** Which of the session's calls wait for approval. Default: what the agent's policy gates. */
@@ -187,14 +210,25 @@ export interface SessionOptions {
   readonly requestId?: string;
 }
 
-/** A change to what a session runs with: a field left out keeps its value, `null` puts back the agent's. */
+/**
+ * A change to what a session runs with: a field left out keeps its value, `null` puts back the agent's: for `model`,
+ * the model a new session gets (the agent's, else the runtime's `defaultModel`); for `thinkingLevel` and `maxTurns`,
+ * pi-durable's default.
+ */
 export interface SessionChange {
+  readonly model?: ModelRef | null;
+  readonly thinkingLevel?: ModelThinkingLevel | null;
+  readonly maxTurns?: number | null;
   readonly tools?: ToolSelection | null;
   readonly requiresApproval?: ApprovalRule | null;
 }
 
 /** What a session runs with now. */
 export interface SessionSettings {
+  readonly model: ModelRef;
+  readonly thinkingLevel: ModelThinkingLevel;
+  /** Tool rounds one run takes at most; absent, no limit. */
+  readonly maxTurns?: number;
   /** The agent's tools the session may use, in the agent's order. */
   readonly tools: readonly string[];
   /** The session's own approval rule; absent, the agent's policy decides. */
@@ -222,12 +256,22 @@ export interface SubmitResult {
   readonly submissionId: string;
 }
 
+export interface ContinueInput {
+  /** Idempotency key: continuing with the same one again returns the first continue. */
+  readonly requestId: string;
+}
+
 /**
  * What `withdraw` did: `withdrawn` (it was waiting, and it never reaches the agent), `already_placed` (a run took it
  * first), or `settled` (it was answered, withdrawn already, or dropped with its run).
  */
 export interface WithdrawResult {
   readonly outcome: "withdrawn" | "already_placed" | "settled";
+}
+
+export interface CompactOptions {
+  /** What the summary should keep, added to pi-durable's summarization prompt. */
+  readonly instructions?: string;
 }
 
 export interface EventsOptions {
@@ -240,12 +284,20 @@ export interface EventsOptions {
 /**
  * One session: a pi-durable conversation of an agent instance. A child session, the one a delegate's call runs its
  * sub-agent in, is followed, decided in and aborted like any other, under its sub-agent's tools and policy; only its
- * delegate submits to it, so `submit`, `withdraw`, `configure` and `delete` reject with `SessionOwnedError`.
+ * delegate submits to it, so `submit`, `continue`, `withdraw`, `configure`, `compact` and `delete` reject with
+ * `SessionOwnedError`.
  */
 export interface AgentSession {
   readonly id: string;
   /** Admits the input durably and resolves once admitted; the run's progress arrives as events. */
   submit(input: SubmitInput): Promise<SubmitResult>;
+  /**
+   * Starts a run on the session's context as it is, without a new message: it carries on a run that ended without an
+   * answer, such as one that reached its turn limit, from where it stopped. Inputs a failed run left waiting join it.
+   * Only while no run is going: a busy session rejects with `SessionBusyError`. A context with nothing to answer (an
+   * answer ends it) ends the run at once, `nothing_to_answer`. Resolves once admitted, as `submit` does.
+   */
+  continue(input: ContinueInput): Promise<SubmitResult>;
   /**
    * Takes back an input still waiting for a run, by the `submissionId` its `submit` gave. Rejects with
    * `InvalidRequestError` for a submission of another session, or one of an ask: its asker waits for its answer.
@@ -270,6 +322,13 @@ export interface AgentSession {
   reply(input: ReplyInput): Promise<ReplyResult>;
   /** Stops the run; what it produced so far is kept, ending as aborted. */
   abort(): Promise<void>;
+  /**
+   * Summarizes the session's older messages into what the model reads from then on; the thread keeps them. Resolves
+   * once the compaction is admitted. It runs while the session keeps working, and its summary lands at once when the
+   * session is idle, else at the run's next boundary. The stream shows `compaction:start`, then `session:compacted`
+   * and `compaction:end`, or `compaction:end` with an `error`.
+   */
+  compact(options?: CompactOptions): Promise<void>;
   /**
    * Changes which tools the session may use and which of its calls wait for approval, in one commit. A tool change
    * applies from the run's next model request; an approval change to calls that reach the gate after it, while a
@@ -370,6 +429,8 @@ interface Opened {
   readonly detach: AbortController;
   /** The agent's tools as this open registered them, by name: what a session's tool selection names. */
   readonly tools: ReadonlyMap<string, ToolRegistration>;
+  /** The tools each agent's sessions run, the app's included, as this open installed them. */
+  readonly catalog: ToolCatalog;
   /** The task that delivers an ask's reply, as this open registered it. */
   readonly courier: Courier;
   /** The sessions record as this open last read it: what each session's stream reads its approval rule from. */
@@ -495,11 +556,11 @@ class Instance implements AgentInstance {
   #toolInfo(opened: Opened, conversationId: ConversationId): (name: string) => ToolInfo {
     return (name) => {
       const agent = this.#agentOf(opened, conversationId);
-      const tool = agent.tool(name);
+      const tool = opened.catalog.tool(agent.kind, name);
       return {
-        label: tool?.label ?? name,
-        tier: tool?.tier ?? UNKNOWN_TIER,
-        gated: isGated(agent, name, ruleOf(opened.sessions, conversationId)),
+        label: tool.label,
+        tier: tool.tier ?? UNKNOWN_TIER,
+        gated: isGated(agent, tool, ruleOf(opened.sessions, conversationId)),
       };
     };
   }
@@ -522,13 +583,17 @@ class Instance implements AgentInstance {
           ? undefined
           : new ModelAccess(this.scope, modelsFor, (error) => this.#runtimeReport("models_failed", error));
       await models?.refresh();
+      // Resolved before the Harness opens: work it resumes runs with every extension it ran with.
+      const app = appExtensions(this.scope, this.#agents, (await this.#options.extensionsFor?.(this.scope)) ?? []);
       const registry = createRegistry();
       const extensions = agentExtensions(this.#agents, {
         scope: this.scope,
         ports: this.#portsOf,
         portsFailed: this.#portsFailed,
+        app,
       });
       for (const extension of extensions.values()) registry.install(extension);
+      for (const extension of app.installed) registry.install(extension);
       // Resolved by name, whichever extensions a conversation selects.
       const { courier, extension: asks } = askCourier({
         deliver: this.#options.deliverReply,
@@ -539,19 +604,22 @@ class Instance implements AgentInstance {
       // SAFETY: an instance's agents include its own.
       const own = extensions.get(this.agent.kind)!;
       const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
+      const selection = app.selectionOf(this.agent.kind, own);
       const appSettings = this.#options.settings;
+      const telemetry = this.#options.telemetryFor?.(this.scope);
       const { wake } = host;
       harness = await Harness.open(
         storage,
         {
+          ...(telemetry !== undefined && { telemetry }),
           // SAFETY: the options hold exactly one of `models` and `modelsFor`.
           models: models?.get ?? (this.#options.models as HarnessOptions["models"]),
           registry,
           // A session that selects no extensions of its own, also one made before sub-agents were, runs its
-          // instance's agent alone: no sub-agent's tools or instructions reach it.
+          // instance's agent, after the app's extensions that select it: no sub-agent's tools or instructions reach it.
           settings: () => ({
             ...(typeof appSettings === "function" ? appSettings() : appSettings),
-            extensions: [own],
+            extensions: selection,
           }),
           onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
           ...(wake.kind === "alarm" && {
@@ -571,6 +639,7 @@ class Instance implements AgentInstance {
         models,
         detach,
         tools,
+        catalog: app.catalog,
         courier,
         sessions: undefined,
         failed: false,
@@ -794,36 +863,48 @@ class Instance implements AgentInstance {
     if (opened.sessions?.sessions[sessionId]?.parent !== undefined) throw new SessionOwnedError(sessionId);
   }
 
-  /** pi-durable's change of the agent's tools for `selection` (`null`: all of them again). */
+  /**
+   * pi-durable's change of the agent's tools for the enabled `names` (`null`: all of them again): the agent's others
+   * removed, so the app's tools stay enabled.
+   */
   #toolsChange(opened: Opened, names: readonly string[] | null): Pick<AgentChange, "tools"> {
     if (names === null) return { tools: null };
-    // SAFETY: the names were checked against the agent's tools, and the open registered every one.
-    return { tools: names.map((name) => opened.tools.get(name)!) };
+    const enabled = new Set(names);
+    return { tools: { remove: [...opened.tools.values()].filter((tool) => !enabled.has(tool.name)) } };
+  }
+
+  /** `rule` as a session of the instance's agent stores it: tiers its app tools carry count, known once open. */
+  #storedRule(opened: Opened, rule: ApprovalRule) {
+    return storedRule(this.agent.kind, opened.catalog.tiers(this.agent.kind), rule);
   }
 
   open(): Promise<void> {
     return this.#lifecycle.run(async () => undefined);
   }
 
-  createSession(options?: SessionOptions): Promise<SessionInfo> {
-    const model = options?.model ?? this.agent.model ?? this.#options.defaultModel;
+  #modelOf(requested: ModelRef | undefined): ModelRef {
+    const model = requested ?? this.agent.model ?? this.#options.defaultModel;
     if (model === undefined) {
-      return Promise.reject(
-        new TypeError(
-          `No model for a session of \`${this.agent.kind}\`: pass one, or set the agent's or the runtime's default`,
-        ),
+      throw new TypeError(
+        `No model for a session of \`${this.agent.kind}\`: pass one, or set the agent's or the runtime's default`,
       );
     }
+    return { provider: model.provider, modelId: model.modelId };
+  }
+
+  createSession(options?: SessionOptions): Promise<SessionInfo> {
+    let model: ModelRef;
     let tools: string[] | undefined;
-    let rule: ReturnType<typeof storedRule> | undefined;
     try {
+      model = this.#modelOf(options?.model);
       if (options?.tools !== undefined) tools = selectedTools(this.agent, options.tools);
-      if (options?.requiresApproval !== undefined) rule = storedRule(this.agent, options.requiresApproval);
     } catch (error) {
       return Promise.reject(error);
     }
     const requestId = options?.requestId;
     return this.#lifecycle.run(async (opened) => {
+      const requiresApproval = options?.requiresApproval;
+      const rule = requiresApproval === undefined ? undefined : this.#storedRule(opened, requiresApproval);
       // One commit looks the request up and makes the session it does not find, so no retry, however it overlaps or
       // whatever crash came before it, makes a second one.
       const session = await opened.harness.commit(async (tx): Promise<SessionInfo> => {
@@ -835,8 +916,11 @@ class Instance implements AgentInstance {
         }
         const createdAt = Date.now();
         const { id } = await tx.createConversation({ ownership: { kind: "ownerless" } });
+        // pi-durable refuses a `maxTurns` that is not an integer 1 or more with a `RangeError`, failing the commit.
         await configure(tx, id, {
-          model: { provider: model.provider, modelId: model.modelId },
+          model,
+          ...(options?.thinkingLevel !== undefined && { thinkingLevel: options.thinkingLevel }),
+          ...(options?.maxTurns !== undefined && { maxTurns: options.maxTurns }),
           ...(tools !== undefined && this.#toolsChange(opened, tools)),
         });
         doc.sessions[String(id)] = {
@@ -922,6 +1006,37 @@ class Instance implements AgentInstance {
     });
   }
 
+  continue(sessionId: string, input: ContinueInput): Promise<SubmitResult> {
+    return this.#lifecycle.run(async (opened) => {
+      const { harness } = opened;
+      const conversation = await this.#conversation(opened, sessionId);
+      this.#refuseOwned(opened, sessionId);
+      return this.#withWatch(opened, conversation, async () => {
+        // The run this starts uses the scope's models of now.
+        await opened.models?.refresh();
+        return this.#armedFor(harness, async () => {
+          try {
+            const { requestId } = input;
+            const id = await harness.commit(async (tx) => {
+              // pi-durable throws `ReadAfterWrite` for a table read after the admission's writes.
+              const known = await tx.submissionByRequest(conversation.id, requestId);
+              const admitted = await conversation.submit(tx, { type: "continue", requestId });
+              // A run that takes inputs a failed run left waiting starts at the first of them, as any run does.
+              const alone = (await tx.doc(LiveDoc, conversation.id)).run?.inputs.length === 1;
+              if (known === undefined && alone) {
+                await tx.appendEntry(ContinueEntry, conversation.id, { data: { submissionId: admitted } });
+              }
+              return admitted;
+            }, context);
+            return { submissionId: String(id) };
+          } catch (error) {
+            throw error instanceof ConversationBusy ? new SessionBusyError(sessionId) : error;
+          }
+        });
+      });
+    });
+  }
+
   /** Why `submit` refuses an ask, if it does. */
   #refusedAsk(input: SubmitInput): string | undefined {
     if (this.#options.deliverReply === undefined)
@@ -953,7 +1068,8 @@ class Instance implements AgentInstance {
         await opened.models?.refresh();
         const rule = ruleOf(opened.sessions, conversation.id);
         const agent = this.#agentOf(opened, conversation.id);
-        return this.#armedFor(harness, () => decide(agent, harness, conversation.id, rule, decisions));
+        const gated = (name: string) => isGated(agent, opened.catalog.tool(agent.kind, name), rule);
+        return this.#armedFor(harness, () => decide(harness, conversation.id, gated, decisions));
       });
     });
   }
@@ -975,6 +1091,20 @@ class Instance implements AgentInstance {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       await this.#withWatch(opened, conversation, () => this.#armedFor(harness, () => conversation.abort(context)));
+    });
+  }
+
+  compact(sessionId: string, options: CompactOptions | undefined): Promise<void> {
+    return this.#lifecycle.run(async (opened) => {
+      const { harness } = opened;
+      const conversation = await this.#conversation(opened, sessionId);
+      // A child's context is its delegate's call's work: the app compacts the sessions it made.
+      this.#refuseOwned(opened, sessionId);
+      await this.#withWatch(opened, conversation, async () => {
+        // The summary is a model request, made on the scope's models of now.
+        await opened.models?.refresh();
+        await this.#armedFor(harness, () => conversation.compact(options?.instructions, context));
+      });
     });
   }
 
@@ -1008,23 +1138,35 @@ class Instance implements AgentInstance {
   }
 
   configure(sessionId: string, change: SessionChange): Promise<void> {
+    let model: ModelRef | undefined;
     let tools: string[] | null | undefined;
-    let rule: ReturnType<typeof storedRule> | null | undefined;
     try {
+      // pi-durable's unset model would leave the session with none, so `null` puts back the one a new session gets.
+      if (change.model !== undefined) model = this.#modelOf(change.model ?? undefined);
       if (change.tools !== undefined) tools = change.tools === null ? null : selectedTools(this.agent, change.tools);
-      if (change.requiresApproval !== undefined) {
-        rule = change.requiresApproval === null ? null : storedRule(this.agent, change.requiresApproval);
-      }
     } catch (error) {
       return Promise.reject(error);
     }
     return this.#lifecycle.run(async (opened) => {
       const { harness } = opened;
+      const requiresApproval = change.requiresApproval;
+      const rule =
+        requiresApproval === undefined || requiresApproval === null
+          ? requiresApproval
+          : this.#storedRule(opened, requiresApproval);
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
-      if (tools === undefined && rule === undefined) return;
+      const agentChange: AgentChange = {
+        ...(model !== undefined && { model }),
+        ...(change.thinkingLevel !== undefined && { thinkingLevel: change.thinkingLevel }),
+        ...(change.maxTurns !== undefined && { maxTurns: change.maxTurns }),
+        ...(tools !== undefined && this.#toolsChange(opened, tools)),
+      };
+      const agentChanges = Object.keys(agentChange).length > 0;
+      if (!agentChanges && rule === undefined) return;
+      // One commit: pi-durable's `RangeError` for a bad `maxTurns` discards the whole change.
       await harness.commit(async (tx) => {
-        if (tools !== undefined) await configure(tx, conversation.id, this.#toolsChange(opened, tools));
+        if (agentChanges) await configure(tx, conversation.id, agentChange);
         if (rule === undefined) return;
         const record = (await tx.doc(SessionsDoc)).sessions[sessionId];
         if (record === undefined) throw new SessionNotFoundError(sessionId);
@@ -1039,9 +1181,14 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async (opened) => {
       const conversation = await this.#conversation(opened, sessionId);
       const agent = await conversation.agent(context);
+      // Every session gets a model when it is made, and `configure` never takes it away.
+      if (agent.model === undefined) throw new Error(`Session ${sessionId} has no model`);
       const offered = new Set(agent.tools.map((tool) => tool.name));
       const rule = ruleOf(opened.sessions, conversation.id);
       return {
+        model: { provider: agent.model.provider, modelId: agent.model.modelId },
+        thinkingLevel: agent.thinkingLevel,
+        ...(agent.maxTurns !== undefined && { maxTurns: agent.maxTurns }),
         tools: this.#agentOf(opened, conversation.id)
           .tools.map((tool) => tool.name)
           .filter((name) => offered.has(name)),
@@ -1090,6 +1237,10 @@ class Session implements AgentSession {
     return this.#instance.submit(this.id, input);
   }
 
+  continue(input: ContinueInput): Promise<SubmitResult> {
+    return this.#instance.continue(this.id, input);
+  }
+
   events(options?: EventsOptions): AsyncIterable<StreamItem> {
     return { [Symbol.asyncIterator]: () => this.#instance.events(this.id, options) };
   }
@@ -1104,6 +1255,10 @@ class Session implements AgentSession {
 
   abort(): Promise<void> {
     return this.#instance.abort(this.id);
+  }
+
+  compact(options?: CompactOptions): Promise<void> {
+    return this.#instance.compact(this.id, options);
   }
 
   withdraw(submissionId: string): Promise<WithdrawResult> {

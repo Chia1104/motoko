@@ -28,6 +28,7 @@ import { answerOf } from "./answers.ts";
 import type { Settled } from "./answers.ts";
 import { approvalGate } from "./approvals.ts";
 import { CallsDoc, startedCall } from "./calls.ts";
+import type { AppExtensions } from "./extensions.ts";
 import { newToken, REPLY_KEY, ReplySignal } from "./replies.ts";
 import { SessionsDoc } from "./sessions.ts";
 
@@ -42,6 +43,8 @@ interface BindOptions {
   readonly ports: (target: PortsTarget) => unknown;
   /** The ports of a call could not be resolved; the call fails with a `PortsUnavailableError`. */
   readonly portsFailed: (target: PortsTarget, error: unknown) => void;
+  /** The app's extensions this open installs: what each agent's sessions select with its own, and their tools. */
+  readonly app: AppExtensions;
 }
 
 /**
@@ -120,7 +123,11 @@ async function delegateResult(
  * of the call's, and parks until that submission settles. A rerun after a crash at any point finds the same child and
  * the same submission. Woken, it returns the child's answer.
  */
-function toDelegate(tool: DelegateDefinition, extensions: ReadonlyMap<string, Extension>): ToolRegistration {
+function toDelegate(
+  tool: DelegateDefinition,
+  extensions: ReadonlyMap<string, Extension>,
+  app: AppExtensions,
+): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
   const { agent } = tool;
   return defineTool({
@@ -142,11 +149,11 @@ function toDelegate(tool: DelegateDefinition, extensions: ReadonlyMap<string, Ex
         const sessions = await tx.doc(SessionsDoc);
         const calls = await tx.doc(CallsDoc, api.conversationId);
         const { id } = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
-        // The child starts as a copy of its parent's agent: it takes the sub-agent's extension alone, all of its tools,
-        // and its model when it names one.
+        // The child starts as a copy of its parent's agent: it takes the sub-agent's extension, after the app's that
+        // select the sub-agent, all of its tools, and its model when it names one.
         await configure(tx, id, {
           // SAFETY: the instance installs an extension for every agent its delegates reach.
-          extensions: [extensions.get(agent.kind)!],
+          extensions: app.selectionOf(agent.kind, extensions.get(agent.kind)!),
           tools: null,
           ...(agent.model !== undefined && { model: agent.model }),
         });
@@ -267,7 +274,8 @@ function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFail
 
 /**
  * Every agent of an instance as pi-durable extensions, one per agent, by kind: its tools, its prompt and its gate. A
- * conversation selects the one of its agent, so a session sees only its own agent's tools and instructions.
+ * conversation selects the one of its agent, after the app's extensions that select that agent, so a session sees its
+ * own agent's tools and instructions, and no other agent's.
  */
 export function agentExtensions(
   agents: ReadonlyMap<string, AgentDefinition>,
@@ -284,13 +292,13 @@ export function agentExtensions(
             case "app":
               return toPiTool(tool, options);
             case "delegate":
-              return toDelegate(tool, extensions);
+              return toDelegate(tool, extensions, options.app);
             case "deferred":
               return toDeferred(tool, options);
           }
         }),
         sections: [section("agent", () => agent.instructions, { tag: false })],
-        hooks: [approvalGate(agent)],
+        hooks: [approvalGate(agent, (name) => options.app.catalog.tool(agent.kind, name))],
       }),
     );
   }

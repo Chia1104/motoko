@@ -69,6 +69,16 @@ export const callSchemas = {
     result: z.object({ submissionId: z.string() }),
     writes: true,
   },
+  /**
+   * A run on the session's context as it is, without a new message: it carries on a run that ended without an answer,
+   * such as one at its turn limit. Only while no run is going (`session_busy`). Its `requestId`, like `submit`'s, makes
+   * a retry return the first continue.
+   */
+  continue: {
+    params: z.object({ sessionId: sessionIdSchema, requestId: z.string().min(1) }),
+    result: z.object({ submissionId: z.string() }),
+    writes: true,
+  },
   approve: {
     params: z.object({ sessionId: sessionIdSchema, decisions: z.array(decisionSchema).min(1) }),
     result: z.array(outcomeSchema),
@@ -90,6 +100,16 @@ export const callSchemas = {
     writes: true,
   },
   abort: { params: z.object({ sessionId: sessionIdSchema }), result: z.null(), writes: true },
+  /**
+   * Summarizes the session's older messages into what the model reads from then on, with `instructions` for what the
+   * summary should keep; the thread keeps the messages. Answered once the compaction is admitted: the stream shows it
+   * go (`compaction:start`, `session:compacted`, `compaction:end`).
+   */
+  compact: {
+    params: z.object({ sessionId: sessionIdSchema, instructions: z.string().optional() }),
+    result: z.null(),
+    writes: true,
+  },
   /**
    * Takes back an input still waiting for a run, by the `submissionId` its `submit` gave: `withdrawn`, or
    * `already_placed` when a run took it first, or `settled` when it was answered or dropped already. An ask's input
@@ -121,11 +141,11 @@ export const callErrorCodeSchema = z.enum([
    */
   "invalid_request",
   "session_not_found",
-  /** `submit` with `whenBusy: "reject"` while a run is going. */
+  /** `submit` with `whenBusy: "reject"`, or `continue`, while a run is going. */
   "session_busy",
   /**
-   * `submit`, `withdraw` or `deleteSession` of a child session: only its delegate submits to it, and it goes with its
-   * parent.
+   * `submit`, `continue`, `withdraw`, `compact` or `deleteSession` of a child session: only its delegate submits to it,
+   * and it goes with its parent.
    */
   "session_owned",
   /** A decision for a call that is not waiting for one; no decision of the batch was applied. */

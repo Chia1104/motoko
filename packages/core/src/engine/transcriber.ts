@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil
 import {
   AssistantEntry,
   CompactionEntry,
+  defineEntry,
   InboxDoc,
   LiveDoc,
   ToolResultEntry,
@@ -26,13 +27,14 @@ import type { Calls } from "./calls.ts";
 /**
  * Turns committed conversation state into wire events. Stored facts (messages, tool calls, results,
  * decisions, run ends) come from entries and documents; what only `pi.live` shows (a streaming
- * reply, drafts, running output, a retry wait, a parked question) is superseded by the stored events
- * that follow it. One set of rules serves the live stream (`commit` as each commit lands), a
- * catch-up from storage (`replay` of a stretch of history), and a resumed client (`catchUp`: the
- * in-flight state as events the reducer applies idempotently).
+ * reply, drafts, running output, a retry wait, a parked question, a compaction going on) is
+ * superseded by the stored events that follow it. One set of rules serves the live stream (`commit`
+ * as each commit lands), a catch-up from storage (`replay` of a stretch of history), and a resumed
+ * client (`catchUp`: the in-flight state as events the reducer applies idempotently).
  *
- * A run starts at an input and takes every input placed into it after one of its tool rounds (a steer) or with that
- * input; the inputs still waiting for a run go out as the queue, whole, whenever it changes.
+ * A run starts at an input, or at the marker a continue writes (`ContinueEntry`), and takes every input placed into it
+ * after one of its tool rounds (a steer) or with that input; the inputs still waiting for a run go out as the queue,
+ * whole, whenever it changes.
  *
  * After every event the transcriber knows its position, a cursor's `entry` and `run`: the newest
  * entry whose events all went out, and the run the client is in. That is what a cursor names, so a client can resume from it in
@@ -56,8 +58,13 @@ export interface RunEnding {
   readonly detail?: string;
 }
 
-/** Endings of past runs, by the user entry that started each: what a stretch of history cannot show. */
-export type Endings = ReadonlyMap<number, RunEnding>;
+/** Endings of past runs that ended without an answer: what a stretch of history cannot show. */
+export interface Endings {
+  /** By the input that started each run. */
+  readonly inputs: ReadonlyMap<number, RunEnding>;
+  /** By the submission of each continue whose run its marker started. */
+  readonly continues: ReadonlyMap<number, RunEnding>;
+}
 
 /**
  * Where a client stands in committed state: wire's `CursorPosition` without the session and the log place, which
@@ -77,7 +84,7 @@ export interface History {
   pages(min: number | undefined, max: number): AsyncIterable<readonly EntryRecord[]>;
   /** The entry `id`, if the conversation holds it. */
   entry(id: number): Promise<EntryRecord | undefined>;
-  /** The input at or before `at` that started the run going on at `at`, if one did. */
+  /** The entry at or before `at` that started the run going on at `at`, if one did: an input or a continue's marker. */
   runStart(at: number): Promise<number | undefined>;
   /** The operator's decisions on gated calls, by call id. */
   decisions(): Promise<Decisions>;
@@ -88,6 +95,7 @@ export interface History {
 }
 
 type RunEnd = AgentWireEventOf<"run:end">;
+type Compaction = AgentWireEventOf<"compaction:start" | "compaction:end">;
 type Batch = { event: AgentWireEvent; run: CursorPosition["run"] }[];
 type Block = AssistantMessage["content"][number];
 
@@ -117,6 +125,15 @@ function usageOf(message: AssistantMessage): Usage | undefined {
   };
 }
 
+/**
+ * The code of a run a model error ended. pi-ai stores no code on a failed reply, only its text, and this text is the
+ * only trace that the request found no credential for its provider (`Models.applyAuth`). Pinned by "a user's key
+ * changing while the instance is open" in `test/access.test.ts`, and for a reply alone by "ends with no_credentials
+ * when its failed reply found no credential for the provider" in `test/transcriber.test.ts`.
+ */
+const modelErrorCode = (error: string | undefined) =>
+  error?.startsWith("Provider is not configured: ") === true ? "no_credentials" : "model_error";
+
 /** How a reply ends its run; `undefined` while the run goes on to run its tools. */
 function runEndOf(message: AssistantMessage): RunEnd | undefined {
   switch (message.stopReason) {
@@ -128,7 +145,7 @@ function runEndOf(message: AssistantMessage): RunEnd | undefined {
       return {
         type: "run:end",
         reason: "error",
-        code: "model_error",
+        code: modelErrorCode(message.errorMessage),
         ...(message.errorMessage !== undefined && { error: clip(message.errorMessage) }),
       };
     case "aborted":
@@ -148,9 +165,22 @@ function failureOf({ reason, detail }: RunEnding): RunEnd {
     case "interrupted":
     case "restart_limit":
       return { type: "run:end", reason: "interrupted", code: reason, ...extra };
+    case "model_error":
+      return { type: "run:end", reason: "error", code: modelErrorCode(detail), ...extra };
     default:
       return { type: "run:end", reason: "error", code: reason, ...extra };
   }
+}
+
+/**
+ * What a client is shown of the compactions in `live`: the one going on (the first, in task order), else the newest
+ * one's failure, which pi-durable keeps until a compaction succeeds, else none.
+ */
+function compactionOf(live: LiveState | undefined): Compaction {
+  const running = live?.compactions?.[0];
+  if (running !== undefined) return { type: "compaction:start", reason: running.trigger };
+  const failure = live?.compactionFailure;
+  return failure === undefined ? { type: "compaction:end" } : { type: "compaction:end", error: clip(failure.error) };
 }
 
 const UNFINISHED = new Set(["aborted", "abandoned", "interrupted"]);
@@ -234,6 +264,16 @@ export const STEER_ENTRY = "motoko.steer";
 export const isInput = (entry: EntryRecord) =>
   (UserEntry.is(entry) || entry.kind === STEER_ENTRY) && entry.model?.[0]?.role === "user";
 
+/**
+ * The marker a continue writes in the commit that admits it, when its run takes no input: pi-durable's continue places
+ * no entry, so without one, history could not tell where the failed run it carries on ended and its own run began. It
+ * names the continue's submission, whose settlement says how that run ended. Nothing the model reads.
+ */
+export const ContinueEntry = defineEntry<{ submissionId: number }>("motoko.continue");
+
+/** Whether an entry may start a run: a continue's marker, or an input unless it joins the run going on. */
+export const mayStartRun = (entry: EntryRecord) => isInput(entry) || ContinueEntry.is(entry);
+
 /** When an input's message was made: a boundary gives every input it places the same time. */
 const placedAt = (entry: EntryRecord) => (entry.model?.[0] as UserMessage | undefined)?.timestamp;
 
@@ -286,6 +326,11 @@ const EMPTY_QUEUE = "[]";
 /** Stands for "unknown": a resumed client may hold any queue, so the catch-up states it. */
 const UNKNOWN_QUEUE = "\0unknown";
 
+/** The compaction state a client holds before any compaction event: none. */
+const NO_COMPACTION = JSON.stringify({ type: "compaction:end" } satisfies Compaction);
+/** Stands for "unknown": a resumed client may hold any compaction state, so the catch-up states it. */
+const UNKNOWN_COMPACTION = "\0unknown";
+
 export class Transcriber {
   readonly #history: History;
   readonly #info: (toolName: string) => ToolInfo;
@@ -303,6 +348,8 @@ export class Transcriber {
   #awaiting = new Set<string>();
   #inRun = false;
   #runEntry: number | undefined;
+  /** The continue whose marker started the run going on, by its submission. */
+  #runContinue: number | undefined;
   /** How the run ends if nothing follows: its last reply, or a call stopped with it. */
   #pending: RunEnd | undefined;
   #streaming: Streaming | undefined;
@@ -320,6 +367,8 @@ export class Transcriber {
   #over: RunEnd | null | undefined;
   /** The queue the client holds, as JSON. */
   #queue = EMPTY_QUEUE;
+  /** The compaction state the client holds, as the JSON of the event that stated it. */
+  #compaction = NO_COMPACTION;
 
   constructor(history: History, info: (toolName: string) => ToolInfo) {
     this.#history = history;
@@ -344,6 +393,7 @@ export class Transcriber {
     }
     this.#at(newest);
     this.#queueState(view);
+    this.#compactionState(live);
   }
 
   /**
@@ -353,17 +403,19 @@ export class Transcriber {
    */
   async restore({ entry, run }: Position): Promise<boolean> {
     if (entry > 0 && (await this.#history.entry(entry)) === undefined) return false;
-    // A client may hold queued inputs a run took or that were withdrawn since it left: the catch-up states the queue.
+    // A client may hold queued inputs a run took or that were withdrawn since it left, or a compaction that is over:
+    // the catch-up states both.
     this.#queue = UNKNOWN_QUEUE;
+    this.#compaction = UNKNOWN_COMPACTION;
     if (run === undefined || (run !== "*" && run > entry)) {
       this.#at(entry);
-      // Inside the user entry that starts the run: the run has begun, nothing of it is read yet.
+      // Inside the entry that starts the run: the run has begun, nothing of it is read yet.
       if (run !== undefined) this.#assume(run);
       return true;
     }
     if (run !== "*") {
       const first = await this.#history.entry(run);
-      if (first === undefined || !isInput(first)) return false;
+      if (first === undefined || !mayStartRun(first)) return false;
     }
     await this.#rebuild(run, entry);
     this.#assume(run);
@@ -371,11 +423,15 @@ export class Transcriber {
   }
 
   /**
-   * The queue as `view` holds it, if the client may hold another: what a catch-up states first, so a resumed client
-   * drops inputs that left the queue while it was away before history replays (which never changes the queue).
+   * The queue and the compaction state as `view` holds them, where the client may hold others: what a catch-up states
+   * first, so a resumed client drops inputs that left the queue, and a compaction that ended, while it was away before
+   * history replays (which changes neither). The same for every client from the same cursor, whenever it resumes.
    */
-  queue(view: ConversationView | undefined): readonly Transcribed[] {
-    return this.#collect(() => this.#queueState(view));
+  standing(view: ConversationView | undefined): readonly Transcribed[] {
+    return this.#collect(() => {
+      this.#queueState(view);
+      this.#compactionState(view === undefined ? undefined : liveOf(view));
+    });
   }
 
   /**
@@ -399,10 +455,12 @@ export class Transcriber {
     const decisions = await this.#history.decisions();
     const calls = await this.#callsFor(live, underWay);
     const rest = to > this.#entry ? await this.#range(this.#entry + 1, to) : [];
-    const endings = rest.some(isInput) ? await this.#history.endings() : undefined;
+    const endings = rest.some(mayStartRun) ? await this.#history.endings() : undefined;
     return this.#collect(() => {
       this.#entries(rest, decisions, endings);
       this.#at(to);
+      // Before the in-flight state, which may end the run: a run's end stays its last event.
+      this.#compactionState(live);
       this.#resync(live, decisions, calls);
       this.#queueState(view);
     });
@@ -426,7 +484,7 @@ export class Transcriber {
       // names it: before this commit's entries unless one of them starts a run, else after them. With
       // no run going, the first input starts one.
       const unstarted = () => answering(now) !== undefined && !this.#inRun;
-      if (unstarted() && !entries.some(isInput)) this.#startRun(undefined);
+      if (unstarted() && !entries.some(mayStartRun)) this.#startRun(undefined);
       const ended = answering(before) !== undefined && answering(before) !== answering(now);
       this.#over = ended ? (failure ?? null) : undefined;
       try {
@@ -439,6 +497,7 @@ export class Transcriber {
       if (answering(now) !== undefined) this.#stream(now);
       this.#slots(before?.tools, now?.tools, decisions, calls);
       this.#queueState(next);
+      this.#compactionState(now);
       // A run's end last, so it stays the run's last event.
       if (answering(now) === undefined && this.#inRun) this.#endRun(decisions, failure);
       this.#at(newestOf(next));
@@ -579,7 +638,8 @@ export class Transcriber {
       return this.#asked.has(callId) || this.#info(call.name).gated;
     };
     // Open calls are closed, each with its decision, when a reply follows or the run ends.
-    const closing = answering(now) === undefined || entries.some((entry) => AssistantEntry.is(entry) || isInput(entry));
+    const closing =
+      answering(now) === undefined || entries.some((entry) => AssistantEntry.is(entry) || mayStartRun(entry));
     if (closing && [...this.#open.keys()].some(undecided)) return true;
     for (const entry of entries) {
       const [message] = entry.model ?? [];
@@ -596,6 +656,7 @@ export class Transcriber {
   #startRun(runEntry: number | undefined) {
     this.#inRun = true;
     this.#runEntry = runEntry;
+    this.#runContinue = undefined;
     this.#pending = undefined;
     // Call ids never cross runs: what a run asked is forgotten with it.
     this.#asked.clear();
@@ -614,6 +675,7 @@ export class Transcriber {
     const end = this.#inRun ? (failure ?? this.#pending ?? { type: "run:end", reason: "interrupted" }) : undefined;
     this.#inRun = false;
     this.#runEntry = undefined;
+    this.#runContinue = undefined;
     this.#pending = undefined;
     this.#streaming = undefined;
     this.#asked.clear();
@@ -661,18 +723,19 @@ export class Transcriber {
 
   #read(entry: EntryRecord, decisions: Decisions) {
     const [message] = entry.model ?? [];
+    // A client resuming inside this entry is in its run already.
+    const resumed = this.#inRun && this.#runEntry === entry.id;
+
+    if (ContinueEntry.is(entry)) {
+      if (!resumed) this.#nextRun(entry, decisions);
+      this.#runContinue = entry.data.submissionId;
+      return;
+    }
 
     if (isInput(entry) && message?.role === "user") {
-      // A client resuming inside this entry is in its run already.
-      const resumed = this.#inRun && this.#runEntry === entry.id;
       const joined =
         resumed || !this.#inRun || this.#runOver(entry) ? undefined : joinsRun(entry, this.#last, this.#reply);
-      if (!resumed && joined === undefined) {
-        const ending = this.#runEntry === undefined ? undefined : this.#endings?.get(this.#runEntry);
-        this.#endRun(decisions, this.#over ?? (ending && failureOf(ending)));
-        this.#over = undefined;
-        this.#startRun(entry.id);
-      }
+      if (!resumed && joined === undefined) this.#nextRun(entry, decisions);
       this.#steered = joined === "steer" || (joined === "with" && this.#steered);
       const user: UserMessage = message;
       this.#emit({
@@ -745,15 +808,29 @@ export class Transcriber {
     }
   }
 
+  /** Ends the run going on, if any, as the commit being read or history says it ended, and starts one at `entry`. */
+  #nextRun(entry: EntryRecord, decisions: Decisions) {
+    const ending = this.#ending();
+    this.#endRun(decisions, this.#over ?? (ending && failureOf(ending)));
+    this.#over = undefined;
+    this.#startRun(entry.id);
+  }
+
+  /** How history says the run going on ended, if it ended without an answer. */
+  #ending(): RunEnding | undefined {
+    if (this.#runContinue !== undefined) return this.#endings?.continues.get(this.#runContinue);
+    return this.#runEntry === undefined ? undefined : this.#endings?.inputs.get(this.#runEntry);
+  }
+
   /**
    * Whether the run going on ended before `entry`, an input: the commit being read ended it, or history says it ended
    * without an answer and the input, which would have ended with it, did not end that way.
    */
   #runOver(entry: EntryRecord): boolean {
     if (this.#over !== undefined) return true;
-    const ending = this.#runEntry === undefined ? undefined : this.#endings?.get(this.#runEntry);
+    const ending = this.#ending();
     if (ending === undefined) return false;
-    const own = this.#endings?.get(entry.id);
+    const own = this.#endings?.inputs.get(entry.id);
     return own?.reason !== ending.reason || own.detail !== ending.detail;
   }
 
@@ -816,6 +893,15 @@ export class Transcriber {
       ...(output !== undefined && { output }),
       ...(details !== undefined && { details }),
     });
+  }
+
+  /** The compaction going on in `live`, or the newest one's failure, when the client holds another. */
+  #compactionState(live: LiveState | undefined) {
+    const event = compactionOf(live);
+    const key = JSON.stringify(event);
+    if (key === this.#compaction) return;
+    this.#compaction = key;
+    this.#emit(event);
   }
 
   #retryState(live: LiveState | undefined) {

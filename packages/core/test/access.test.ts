@@ -19,6 +19,7 @@ import type { AgentRuntime, InstanceReport, PortsTarget, StorageScope, ToolConte
 
 import {
   durableMemoryHost,
+  follow,
   isRunEnd,
   keyedModel,
   keyedModels,
@@ -349,12 +350,59 @@ describe("a user's key changing while the instance is open", () => {
     key = "rotated-key";
     await session.submit({ text: "2", requestId: "2" });
     await readUntil(session, (_event, read) => runEnds(read) === 2);
-    // Removed: the request finds no credential and the run ends with the provider's error.
+    // Removed: the request finds no credential and the run ends with `no_credentials`, live and in history.
     key = undefined;
+    const live = follow(session);
+    await live.until((read) => runEnds(read) === 2);
     await session.submit({ text: "3", requestId: "3" });
-    const items = await readUntil(session, (_event, read) => runEnds(read) === 3);
+    await live.until((read) => runEnds(read) === 3);
+    await live.stop();
+    const replayed = await readUntil(session, (_event, read) => runEnds(read) === 3);
     expect(seen).toEqual(["first-key", "rotated-key"]);
-    expect(items.at(-1)?.event).toMatchObject({ type: "run:end", reason: "error" });
+    const noCredentials = {
+      type: "run:end",
+      reason: "error",
+      code: "no_credentials",
+      error: "Provider is not configured: keyed",
+    };
+    expect(live.items.at(-1)?.event).toEqual(noCredentials);
+    expect(replayed.at(-1)?.event).toEqual(noCredentials);
+  });
+
+  it("ends a run with no_credentials, which continue carries on once the key is back", async () => {
+    let key: string | undefined;
+    const { models, faux } = keyedModels(() => key);
+    const runtime = createAgentRuntime({
+      agents: [agent],
+      host: memoryHost(),
+      modelsFor: () => models,
+      ports: { user: "u" },
+    });
+    runtimes.push(runtime);
+    const instance = runtime.get(agent, "alice");
+    const session = instance.session((await instance.createSession()).id);
+    const live = follow(session);
+    await session.submit({ text: "What is a?", requestId: "1" });
+    await live.until((read) => runEnds(read) === 1);
+    expect(live.items.at(-1)?.event).toMatchObject({ type: "run:end", code: "no_credentials" });
+
+    // The app asks the user for the key, holds it again, and the client continues the run.
+    key = "returned-key";
+    let read: string[] = [];
+    faux.setResponses([
+      (context, options) => {
+        read = context.messages.flatMap((message) => (message.role === "system" ? [] : [message.role]));
+        return fauxAssistantMessage(`a is apples, on ${options?.apiKey}`);
+      },
+    ]);
+    await session.continue({ requestId: "c-1" });
+    await live.until((items) => runEnds(items) === 2);
+    await live.stop();
+
+    // The failed reply is not in the context: the model answers the user's message.
+    expect(read).toEqual(["user"]);
+    expect(answers(live.items).at(-1)).toBe("a is apples, on returned-key");
+    expect(live.items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
   });
 
   it("is picked up by refreshModels() for a Models the app rebuilds", async () => {

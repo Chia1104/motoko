@@ -21,6 +21,7 @@ import * as z from "zod";
 import { decide, decisionsOf, isGated } from "../src/engine/approvals.ts";
 import type { ApprovalDecision } from "../src/engine/approvals.ts";
 import { agentExtensions } from "../src/engine/bind.ts";
+import { appExtensions } from "../src/engine/extensions.ts";
 import { SessionsDoc } from "../src/engine/sessions.ts";
 import type { ApprovalRule } from "../src/engine/sessions.ts";
 import { ApprovalNotPendingError, defineAgent, defineTool } from "../src/index.ts";
@@ -66,7 +67,7 @@ const notesUnder = (requiresApproval: Rule) =>
   });
 const notes = notesUnder(["write"]);
 
-/** A tool of another extension: the agent does not have it. */
+/** A tool of another extension, which the runtime knows no tier of: the agent does not have it. */
 const clock = defineExtension({
   name: "clock",
   tools: [
@@ -80,6 +81,14 @@ const clock = defineExtension({
     }),
   ],
 });
+
+/** The app's extensions of an instance of `agent` that has none. */
+const noApp = (agent: AgentDefinition<Ports>) =>
+  appExtensions({ kind: agent.kind, name: "a" }, new Map([[agent.kind, agent]]), []);
+
+/** Whether a call of tool `name` in a session of `agent` waits for approval under `rule`, as the runtime judges it. */
+const gatedIn = (agent: AgentDefinition<Ports>, name: string, rule?: ApprovalRule) =>
+  isGated(agent, noApp(agent).catalog.tool(agent.kind, name), rule);
 
 const harnesses: Harness[] = [];
 afterEach(async () => {
@@ -102,6 +111,7 @@ async function conversationOf(
     scope: { kind: agent.kind, name: "a" },
     ports: () => ({ deleted }),
     portsFailed: () => undefined,
+    app: noApp(agent),
   });
   for (const extension of extensions.values()) registry.install(extension);
   for (const extension of more) registry.install(extension);
@@ -163,27 +173,32 @@ async function decideOne(
   decision: ApprovalDecision,
   rule?: ApprovalRule,
 ) {
-  const [outcome] = await decide(agent, harness, id, rule, [decision]);
+  const [outcome] = await decide(harness, id, (name) => gatedIn(agent, name, rule), [decision]);
   return outcome;
 }
 
 describe("the approval gate", () => {
-  it("gates what the agent's policy says of a tool's tier and name, and never a tool the agent does not have", async () => {
-    expect(isGated(notes, "remove")).toBe(true);
-    expect(isGated(notes, "lookup")).toBe(false);
+  it("gates what the agent's policy says of a tool's tier and name, and always a tool of unknown tier", async () => {
+    expect(gatedIn(notes, "remove")).toBe(true);
+    expect(gatedIn(notes, "lookup")).toBe(false);
     const byName = notesUnder((tier, name) => tier === "read" && name === "lookup");
-    expect([isGated(byName, "lookup"), isGated(byName, "remove")]).toEqual([true, false]);
+    expect([gatedIn(byName, "lookup"), gatedIn(byName, "remove")]).toEqual([true, false]);
 
-    // Even a policy that gates everything lets another extension's tool run without a decision.
-    const strict = notesUnder(() => true);
-    expect(isGated(strict, "clock")).toBe(false);
-    const { harness, id, result } = await conversationOf(strict, { name: "clock", id: "c-1" }, { more: [clock] });
+    // Even a policy that gates nothing parks a tool the runtime knows no tier of.
+    const lax = notesUnder(() => false);
+    expect(gatedIn(lax, "clock")).toBe(true);
+    const { harness, id, result } = await conversationOf(lax, { name: "clock", id: "c-1" }, { more: [clock] });
+    await slot(harness, id, "c-1", "sleeping");
+    expect(await decideOne(lax, harness, id, { toolCallId: "c-1", approved: true })).toEqual({
+      toolCallId: "c-1",
+      outcome: "applied",
+    });
     expect(await result()).toMatchObject({
       role: "toolResult",
       isError: false,
       content: [{ type: "text", text: "noon" }],
     });
-    expect(await decisionsOf(harness, id)).toEqual({});
+    expect(await decisionsOf(harness, id)).toEqual({ "c-1": { approved: true, at: expect.any(Number) } });
   });
 
   it("parks a gated call until it is approved, then runs it and records the decision", async () => {
@@ -259,7 +274,8 @@ describe("the approval gate", () => {
   it("applies a batch whole or not at all: one call not waiting refuses every decision of it", async () => {
     const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" });
     await slot(harness, id, "rm-1", "sleeping");
-    const error = await decide(notes, harness, id, undefined, [
+    const gated = (name: string) => gatedIn(notes, name);
+    const error = await decide(harness, id, gated, [
       { toolCallId: "rm-1", approved: true },
       { toolCallId: "ghost", approved: true },
     ]).catch((caught: unknown) => caught);
@@ -268,13 +284,13 @@ describe("the approval gate", () => {
     expect(await decisionsOf(harness, id)).toEqual({});
     expect(deleted).toEqual([]);
     await expect(
-      decide(notes, harness, id, undefined, [
+      decide(harness, id, gated, [
         { toolCallId: "rm-1", approved: true },
         { toolCallId: "rm-1", approved: false },
       ]),
     ).rejects.toBeInstanceOf(TypeError);
 
-    expect(await decide(notes, harness, id, undefined, [{ toolCallId: "rm-1", approved: true }])).toEqual([
+    expect(await decide(harness, id, gated, [{ toolCallId: "rm-1", approved: true }])).toEqual([
       { toolCallId: "rm-1", outcome: "applied" },
     ]);
     expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted a" }] });
@@ -283,12 +299,13 @@ describe("the approval gate", () => {
 
 describe("a session's own approval rule", () => {
   it("replaces the agent's policy with exactly its tiers, or adds and removes tiers of it", () => {
-    expect([isGated(notes, "remove", []), isGated(notes, "lookup", [])]).toEqual([false, false]);
-    expect([isGated(notes, "remove", ["read"]), isGated(notes, "lookup", ["read"])]).toEqual([false, true]);
-    expect(isGated(notes, "lookup", { add: ["read"] })).toBe(true);
-    expect(isGated(notes, "remove", { remove: ["write"] })).toBe(false);
-    expect(isGated(notes, "remove", { add: ["read"] })).toBe(true);
-    expect(isGated(notes, "clock", ["read", "write"])).toBe(false);
+    expect([gatedIn(notes, "remove", []), gatedIn(notes, "lookup", [])]).toEqual([false, false]);
+    expect([gatedIn(notes, "remove", ["read"]), gatedIn(notes, "lookup", ["read"])]).toEqual([false, true]);
+    expect(gatedIn(notes, "lookup", { add: ["read"] })).toBe(true);
+    expect(gatedIn(notes, "remove", { remove: ["write"] })).toBe(false);
+    expect(gatedIn(notes, "remove", { add: ["read"] })).toBe(true);
+    // No rule lets a tool of unknown tier run without a decision.
+    expect([gatedIn(notes, "clock", []), gatedIn(notes, "clock", { remove: ["read", "write"] })]).toEqual([true, true]);
   });
 
   it("parks a call the session's rule gates, which the agent's policy alone would run", async () => {

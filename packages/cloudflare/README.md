@@ -278,7 +278,7 @@ queues calls, fails the ones a close cut off, and follows again on every `open`.
 
 The socket carries Motoko's call protocol, the calls and errors of
 [`@chia1104/motoko-wire`](../wire#the-call-protocol): `createSession`, `listSessions`, `submit`,
-`approve`, `reply`, `abort`, `withdraw` and `deleteSession`, with their params, results and error codes, run on the
+`continue`, `approve`, `reply`, `abort`, `withdraw`, `compact` and `deleteSession`, with their params, results and error codes, run on the
 instance by `@chia1104/motoko-core`'s `runCall`. What the socket adds is its framing, and the two calls
 and one error that exist because one socket follows several sessions.
 
@@ -371,7 +371,7 @@ reply still goes out when the call has run, and `subscribe`'s still before its f
 instance.
 
 A connection the SDK marks readonly only follows: `subscribe`, `unsubscribe` and `listSessions` run,
-and `createSession`, `submit`, `approve`, `reply`, `abort`, `withdraw` and `deleteSession` are answered `forbidden` before
+and `createSession`, `submit`, `continue`, `approve`, `reply`, `abort`, `withdraw`, `compact` and `deleteSession` are answered `forbidden` before
 `authorize` is asked. Motoko reads the mark off `connections`: an `Agent`'s `isConnectionReadonly`
 (set with `shouldConnectionBeReadonly` or `setConnectionReadonly`), or the `WebSockets` capability's
 `isReadonly` (its `readonly` option or `setReadonly`), so `connections: this` and

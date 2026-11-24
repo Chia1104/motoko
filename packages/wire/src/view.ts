@@ -1,7 +1,15 @@
 import * as z from "zod";
 
 import { UNKNOWN_TIER } from "./events.ts";
-import type { AgentWireEvent, AgentWireEventOf, QueuedInput, RunEndReason, ToolEndStatus, Usage } from "./events.ts";
+import type {
+  AgentWireEvent,
+  AgentWireEventOf,
+  CompactionReason,
+  QueuedInput,
+  RunEndReason,
+  ToolEndStatus,
+  Usage,
+} from "./events.ts";
 
 export interface MessageItem {
   readonly kind: "user" | "assistant";
@@ -66,6 +74,11 @@ export type SessionViewItem = MessageItem | ToolItem | CompactionItem | RunNotic
 
 export type RunStatus = "idle" | "running" | "awaiting_approval";
 
+/** A compaction going on, or why the newest one failed. */
+export type CompactionState =
+  | { readonly status: "running"; readonly reason: CompactionReason }
+  | { readonly status: "failed"; readonly error: string };
+
 export interface AgentSessionView {
   readonly items: readonly SessionViewItem[];
   /** Tool call ids waiting for a decision, in the order they asked. */
@@ -75,6 +88,8 @@ export interface AgentSessionView {
   readonly retrying?: { readonly error: string; readonly at: number };
   /** The inputs waiting for a run, in the order they were submitted; absent while none waits. */
   readonly queued?: readonly QueuedInput[];
+  /** A compaction going on, or the newest one's failure until a later one succeeds; absent otherwise. */
+  readonly compaction?: CompactionState;
 }
 
 export const emptySessionView = (): AgentSessionView => ({
@@ -355,6 +370,15 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     case "queue": {
       const { queued: _queued, ...rest } = view;
       return event.items.length === 0 ? rest : { ...rest, queued: event.items };
+    }
+
+    case "compaction:start":
+      return { ...view, compaction: { status: "running", reason: event.reason } };
+
+    case "compaction:end": {
+      if (event.error !== undefined) return { ...view, compaction: { status: "failed", error: event.error } };
+      const { compaction: _compaction, ...rest } = view;
+      return rest;
     }
 
     case "session:compacted": {

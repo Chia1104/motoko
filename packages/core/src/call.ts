@@ -34,6 +34,7 @@ const handlers: {
       ...(whenBusy !== undefined && { whenBusy }),
       ...(replyTo !== undefined && { replyTo }),
     }),
+  continue: (instance, { sessionId, requestId }) => instance.session(sessionId).continue({ requestId }),
   approve: (instance, { sessionId, decisions }) =>
     instance.session(sessionId).approve(
       decisions.map(({ toolCallId, approved, comment }) => ({
@@ -49,6 +50,10 @@ const handlers: {
     return null;
   },
   withdraw: (instance, { sessionId, submissionId }) => instance.session(sessionId).withdraw(submissionId),
+  compact: async (instance, { sessionId, instructions }) => {
+    await instance.session(sessionId).compact(instructions === undefined ? {} : { instructions });
+    return null;
+  },
   deleteSession: async (instance, { sessionId }) => {
     await instance.session(sessionId).delete();
     return null;

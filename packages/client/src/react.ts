@@ -7,6 +7,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import type {
   ApprovalDecision,
   ApprovalOutcome,
+  ContinueOptions,
   MotokoClient,
   MotokoSessionState,
   SubmitInput,
@@ -20,10 +21,14 @@ export interface MotokoSessionHandle extends MotokoSessionState {
    * `whenBusy: "steer"` to have the run going on read it after its current tool round.
    */
   submit(text: string, options?: Partial<Omit<SubmitInput, "text">>): Promise<SubmitResult>;
+  /** Carries on a run that ended without an answer; `requestId` defaults to a fresh one. */
+  continue(options?: Partial<ContinueOptions>): Promise<SubmitResult>;
   /** Takes back an input waiting in `view.queued`. */
   withdraw(submissionId: string): Promise<WithdrawResult>;
   decide(decisions: readonly ApprovalDecision[]): Promise<ApprovalOutcome[]>;
   abort(): Promise<void>;
+  /** Summarizes the session's older messages; `view.compaction` shows it going on, or why it failed. */
+  compact(instructions?: string): Promise<void>;
 }
 
 /**
@@ -43,7 +48,12 @@ export function useMotokoSession(client: MotokoClient, sessionId: string): Motok
     (decisions: readonly ApprovalDecision[]) => client.approve(sessionId, decisions),
     [client, sessionId],
   );
+  const carryOn = useCallback(
+    (options?: Partial<ContinueOptions>) => client.continue(sessionId, options),
+    [client, sessionId],
+  );
   const withdraw = useCallback((submissionId: string) => client.withdraw(sessionId, submissionId), [client, sessionId]);
   const abort = useCallback(() => client.abort(sessionId), [client, sessionId]);
-  return { ...state, submit, withdraw, decide, abort };
+  const compact = useCallback((instructions?: string) => client.compact(sessionId, instructions), [client, sessionId]);
+  return { ...state, submit, continue: carryOn, withdraw, decide, abort, compact };
 }

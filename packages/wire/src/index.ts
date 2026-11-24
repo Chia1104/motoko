@@ -1,5 +1,6 @@
 export {
   agentWireEventSchema,
+  compactionReasonSchema,
   deltaChannelSchema,
   queuedInputSchema,
   runEndReasonSchema,
@@ -11,6 +12,7 @@ export type {
   AgentWireEvent,
   AgentWireEventOf,
   AgentWireEventType,
+  CompactionReason,
   DeltaChannel,
   QueuedInput,
   RunEndReason,
@@ -23,6 +25,7 @@ export { applyEvent, delegateDetailsSchema, delegateOf, emptySessionView, foldEv
 export type {
   AgentSessionView,
   CompactionItem,
+  CompactionState,
   DelegateDetails,
   MessageItem,
   RunNoticeItem,

@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep, RegisterFauxProviderOptions } from "@earendil-works/pi-ai/providers/faux";
+import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
 
@@ -14,7 +15,7 @@ import {
   InvalidCursorError,
   SessionNotFoundError,
 } from "../src/index.ts";
-import type { AgentSession, AgentRuntime, AgentRuntimeOptions, ToolContext } from "../src/index.ts";
+import type { AgentSession, AgentRuntime, AgentRuntimeOptions, StorageScope, ToolContext } from "../src/index.ts";
 import { heldStreams } from "../src/runtime.ts";
 
 import {
@@ -375,14 +376,15 @@ describe("reconnecting with a cursor", () => {
     // Event for event, cursor for cursor, what the client that stayed read.
     expect([...dropping.items, ...back.items]).toEqual(always.items);
     expect(new Set(always.items.map((item) => item.cursor)).size).toBe(always.items.length);
-    // Resuming from the last cursor yields nothing but what comes next, and the queue it may hold stated again.
+    // Resuming from the last cursor yields nothing but what comes next, and the queue and compaction state it may hold
+    // stated again.
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     const after: AgentWireEvent[] = [];
     for await (const item of session.events({ from: always.items.at(-1)!.cursor, signal: controller.signal })) {
       after.push(item.event);
     }
-    expect(after).toEqual([{ type: "queue", items: [] }]);
+    expect(after).toEqual([{ type: "queue", items: [] }, { type: "compaction:end" }]);
   });
 
   it("carries on from committed state once its run has left the log, without a full replay", async () => {
@@ -737,5 +739,69 @@ describe("idempotent submit", () => {
     expect(items.filter((item) => item.event.type === "user")).toHaveLength(1);
     expect(faux.state.callCount).toBe(1);
     expect(faux.getPendingResponseCount()).toBe(1);
+  });
+});
+
+type Telemetry = NonNullable<HarnessOptions["telemetry"]>;
+type TelemetrySpan = Parameters<Parameters<Telemetry["startSpan"]>[1]>[0];
+
+/** A telemetry adapter that records the name of every span it starts, child spans included. */
+function recordingTelemetry(names: string[]): Telemetry {
+  const telemetry: Telemetry = {
+    async startSpan(options, callback) {
+      names.push(options.name);
+      const span: TelemetrySpan = {
+        ...telemetry,
+        addLink: () => undefined,
+        addEvent: () => undefined,
+        setAttributes: () => undefined,
+        setStatus: () => undefined,
+      };
+      return callback(span);
+    },
+  };
+  return telemetry;
+}
+
+describe("telemetry", () => {
+  it("hands each instance the telemetry `telemetryFor` gives its scope, which receives pi-durable's spans", async () => {
+    const { faux, models, model } = fauxModels();
+    const scopes: StorageScope[] = [];
+    const spans = new Map<string, string[]>();
+    runtime = createAgentRuntime({
+      agents: [notesAgent],
+      host: memoryHost(),
+      models,
+      ports: { notes: new Map(), deleted: [] },
+      defaultModel: model,
+      telemetryFor: (scope) => {
+        scopes.push(scope);
+        const names: string[] = [];
+        spans.set(scope.name, names);
+        return recordingTelemetry(names);
+      },
+    });
+    const alice = runtime.get(notesAgent, "alice");
+    const bob = runtime.get(notesAgent, "bob");
+    const aliceSession = alice.session((await alice.createSession()).id);
+    const bobSession = bob.session((await bob.createSession()).id);
+    expect(scopes).toEqual([
+      { kind: "notes", name: "alice" },
+      { kind: "notes", name: "bob" },
+    ]);
+
+    faux.setResponses([fauxAssistantMessage("Hi, Alice.")]);
+    await aliceSession.submit({ text: "Hi", requestId: "a" });
+    await readUntil(aliceSession, isRunEnd);
+    expect(spans.get("alice")).toContain("pi.durable.submit");
+    expect(spans.get("alice")).toContain("pi.durable.phase");
+    expect(spans.get("bob")).not.toContain("pi.durable.submit");
+
+    faux.setResponses([fauxAssistantMessage("Hi, Bob.")]);
+    await bobSession.submit({ text: "Hi", requestId: "b" });
+    await readUntil(bobSession, isRunEnd);
+    expect(spans.get("bob")).toContain("pi.durable.submit");
+    // One call per open.
+    expect(scopes).toHaveLength(2);
   });
 });

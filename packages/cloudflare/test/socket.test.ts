@@ -458,8 +458,8 @@ describe("a socket client of an Agent with Motoko installed", () => {
       { kind: "assistant", text: "Second." },
     ]);
 
-    // Evicted again, and woken this time by the socket's own call: the queue the follow may hold, stated again as a
-    // resumed follow is, then the run's events, and nothing of the runs before.
+    // Evicted again, and woken this time by the socket's own call: the queue and the compaction state the follow may
+    // hold, stated again as a resumed follow is, then the run's events, and nothing of the runs before.
     await stub.script([{ text: "Third." }]);
     const third = socket.eventsOf(sessionId).length;
     await evictDurableObject(agent(name));
@@ -467,6 +467,7 @@ describe("a socket client of an Agent with Motoko installed", () => {
     await runEnded(socket, sessionId, 3);
     expect(socket.eventsOf(sessionId, third).map((event) => event.type)).toEqual([
       "queue",
+      "compaction:end",
       "run:start",
       "user",
       "assistant:end",

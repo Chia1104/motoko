@@ -203,7 +203,7 @@ async function catchUp(session: Session, from?: Position): Promise<Transcribed[]
   const transcriber = session.transcriber();
   if (from !== undefined) expect(await transcriber.restore(from)).toBe(true);
   const to = newestOf(session.view);
-  const sent: Transcribed[] = [...transcriber.queue(session.view)];
+  const sent: Transcribed[] = [...transcriber.standing(session.view)];
   for await (const page of transcriber.replay(to)) sent.push(...page);
   sent.push(...(await transcriber.catchUp(to, session.view)));
   return sent;
@@ -264,8 +264,9 @@ describe("a client resuming mid-run", () => {
     const back = await catchUp(s, cursor);
     const stream = streamIdOf(events(back));
     expect(events(back)).toEqual([
-      // It may still show inputs it saw queued: none waits.
+      // It may still show inputs it saw queued, or a compaction going on: neither is.
       { type: "queue", items: [] },
+      { type: "compaction:end" },
       { type: "tool:end", toolCallId: "b1", toolName: "build", status: "ok", details: { ok: true } },
       // The client may still show a retry wait from before it left: none is going on.
       { type: "retry:end" },
@@ -400,6 +401,25 @@ describe("a run that no entry the stream reads starts", () => {
     await expectEveryResumeFolds(s, live.sent);
   });
 
+  it("ends with no_credentials when its failed reply found no credential for the provider", async () => {
+    const { s, live, input } = await opened();
+    await live.commit(async (tx, pi) => {
+      pi.run = { taskId: TASK, inputs: [await input(tx)], turns: 0 };
+    });
+    await live.commit(async (tx, pi) => {
+      await s.reply(tx, { ...reply([], "error"), errorMessage: "Provider is not configured: keyed" });
+      delete pi.run;
+    });
+
+    expect(events(live.sent).at(-1)).toEqual({
+      type: "run:end",
+      reason: "error",
+      code: "no_credentials",
+      error: "Provider is not configured: keyed",
+    });
+    await expectEveryResumeFolds(s, live.sent);
+  });
+
   it("starts before its first reply too, when the commit that starts it stores that reply", async () => {
     const { s, live, input } = await opened();
     let asked: EntryId | undefined;
@@ -484,9 +504,11 @@ describe("a call parked at the gate", () => {
     });
     const seen = live.sent.findIndex(({ event }) => event.type === "approval:request") + 1;
     const back = events(await catchUp(s, at));
-    // The queue it may hold, then the question, for a client that missed it, then its answer, then the call's end.
+    // The queue and compaction state it may hold, then the question, for a client that missed it, then its answer, then
+    // the call's end.
     expect(back).toEqual([
       { type: "queue", items: [] },
+      { type: "compaction:end" },
       { type: "approval:request", toolCallId: "r1", toolName: "remove", tier: "write", args: { key: "a" } },
       { type: "approval:resolved", toolCallId: "r1", approved: true },
       { type: "tool:end", toolCallId: "r1", toolName: "remove", status: "ok" },
@@ -585,7 +607,8 @@ describe("a retry wait", () => {
       }),
     ).toEqual([waiting]);
     const noQueue = { type: "queue", items: [] } as const;
-    expect(events(await catchUp(s, at))).toEqual([noQueue, waiting]);
+    const noCompaction = { type: "compaction:end" } as const;
+    expect(events(await catchUp(s, at))).toEqual([noQueue, noCompaction, waiting]);
 
     const sent = await live.commit(async (_tx, pi) => {
       pi.generation = { attempt: 2, message: reply([text("Hel")], "pending") };
@@ -597,7 +620,7 @@ describe("a retry wait", () => {
       { type: "assistant:delta", messageId: stream, channel: "text", delta: "Hel" },
     ];
     expect(sent).toEqual(resent);
-    expect(events(await catchUp(s, at))).toEqual([noQueue, ...resent]);
+    expect(events(await catchUp(s, at))).toEqual([noQueue, noCompaction, ...resent]);
 
     let answer: EntryId | undefined;
     expect(
@@ -846,8 +869,8 @@ describe("inputs placed by a generation", () => {
     };
   }
 
-  async function replayed(entries: readonly EntryRecord[], endings: Endings): Promise<AgentWireEvent[]> {
-    const transcriber = new Transcriber(history(entries, endings), info);
+  async function replayed(entries: readonly EntryRecord[], inputs: Endings["inputs"]): Promise<AgentWireEvent[]> {
+    const transcriber = new Transcriber(history(entries, { inputs, continues: new Map() }), info);
     const sent: Transcribed[] = [];
     for await (const page of transcriber.replay(entries.at(-1)!.id)) sent.push(...page);
     return events(sent);

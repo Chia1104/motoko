@@ -19,7 +19,7 @@ import { InvalidCursorError } from "../errors.ts";
 
 import { decisionsOf } from "./approvals.ts";
 import { callsOf } from "./calls.ts";
-import { inboxOf, isInput, joinsRun, liveOf, Transcriber } from "./transcriber.ts";
+import { ContinueEntry, inboxOf, isInput, joinsRun, liveOf, Transcriber } from "./transcriber.ts";
 import type { Endings, History, Position, RunEnding, ToolInfo, Transcribed } from "./transcriber.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -62,8 +62,9 @@ async function entryAt(conversation: Conversation, id: number): Promise<EntryRec
 }
 
 /**
- * The input at or before `at` that started the run going on at `at`, if one did: the newest input that joined no run
- * (`joinsRun`), told from the entry before it and the newest reply before it, read backwards a page at a time.
+ * The entry at or before `at` that started the run going on at `at`, if one did: the newest continue's marker, or input
+ * that joined no run (`joinsRun`), told from the entry before it and the newest reply before it, read backwards a page
+ * at a time.
  */
 async function runStartBefore(conversation: Conversation, at: number): Promise<number | undefined> {
   if (at < 1) return undefined;
@@ -75,6 +76,7 @@ async function runStartBefore(conversation: Conversation, at: number): Promise<n
   for (;;) {
     for (; next < read.length; next += 1) {
       const entry = read[next]!;
+      if (ContinueEntry.is(entry)) return entry.id;
       if (!isInput(entry)) continue;
       const previous = read[next + 1];
       const reply = read.slice(next + 1).find((before) => AssistantEntry.is(before));
@@ -94,13 +96,14 @@ async function runStartBefore(conversation: Conversation, at: number): Promise<n
 const ORPHANED = new Set(["missing_task", "task_too_old", "migration_failed"]);
 
 /**
- * How each run of the conversation that ended without an answer ended, by its user entry: its
- * inputs' settlement, which pi-durable commits with the run's end and keeps, whereas `pi.live`
- * keeps only the newest run's. pi-durable scans submissions only on the Storage, so this reads the
+ * How each run of the conversation that ended without an answer ended, by its input or its continue:
+ * their settlement, which pi-durable commits with the run's end and keeps, whereas `pi.live` keeps
+ * only the newest run's. pi-durable scans submissions only on the Storage, so this reads the
  * instance's Storage (committed records; the Harness stores a run's end before it is shown).
  */
 async function endingsOf(storage: Storage, conversation: Conversation): Promise<Endings> {
-  const endings = new Map<number, RunEnding>();
+  const inputs = new Map<number, RunEnding>();
+  const continues = new Map<number, RunEnding>();
   let cursor: PiCursor | undefined;
   do {
     const page = await storage.scanSubmissions(
@@ -110,18 +113,17 @@ async function endingsOf(storage: Storage, conversation: Conversation): Promise<
       context,
     );
     for (const record of page.items) {
-      if (record.type !== "input" || record.status !== "unanswered" || record.entry === undefined) continue;
+      if (record.status !== "unanswered") continue;
       const detail = typeof record.detail === "string" ? record.detail : undefined;
-      endings.set(
-        record.entry,
-        ORPHANED.has(record.reason)
-          ? { reason: "orphaned", detail: record.reason }
-          : { reason: record.reason, ...(detail !== undefined && { detail }) },
-      );
+      const ending: RunEnding = ORPHANED.has(record.reason)
+        ? { reason: "orphaned", detail: record.reason }
+        : { reason: record.reason, ...(detail !== undefined && { detail }) };
+      if (record.type === "input" && record.entry !== undefined) inputs.set(record.entry, ending);
+      else if (record.type === "continue") continues.set(record.id, ending);
     }
     cursor = page.next;
   } while (cursor !== undefined);
-  return endings;
+  return { inputs, continues };
 }
 
 /** A session's history as its transcribers read it: its conversation's entries, its Harness's documents, its Storage. */
@@ -460,8 +462,8 @@ export class SessionWatch {
         transcriber = new Transcriber(this.#history, info);
         yield { cursor: this.#cursor({ entry: 0 }), event: { type: "stream:reset" } };
       }
-      // The queue first; the end of the catch-up states it again if it changed meanwhile.
-      hold(transcriber.queue(this.#view));
+      // The queue and the compaction state first; the end of the catch-up states them again if they changed meanwhile.
+      hold(transcriber.standing(this.#view));
       // History, a page at a time, outside the commit chain: live readers wait for none of it.
       for await (const page of transcriber.replay(this.#newest)) {
         hold(page);

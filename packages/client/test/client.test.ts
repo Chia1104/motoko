@@ -360,6 +360,15 @@ describe("motokoClient", () => {
     transport.last("submit").resolve({ submissionId: "s-3" });
     expect(await steered).toEqual({ submissionId: "s-3" });
 
+    const continued = client.continue("7", { requestId: "r-4" });
+    expect(transport.last("continue").params).toEqual({ sessionId: "7", requestId: "r-4" });
+    transport.last("continue").resolve({ submissionId: "s-4" });
+    expect(await continued).toEqual({ submissionId: "s-4" });
+    const fresh = client.continue("7");
+    expect(transport.last("continue").params).toEqual({ sessionId: "7", requestId: expect.any(String) });
+    transport.last("continue").resolve({ submissionId: "s-5" });
+    await fresh;
+
     const withdrawn = client.withdraw("7", "s-3");
     expect(transport.last("withdraw").params).toEqual({ sessionId: "7", submissionId: "s-3" });
     transport.last("withdraw").resolve({ outcome: "already_placed" });
@@ -369,6 +378,15 @@ describe("motokoClient", () => {
     expect(transport.last("abort").params).toEqual({ sessionId: "7" });
     transport.last("abort").resolve(null);
     await expect(aborted).resolves.toBeUndefined();
+
+    const compacted = client.compact("7", "Keep the decisions.");
+    expect(transport.last("compact").params).toEqual({ sessionId: "7", instructions: "Keep the decisions." });
+    transport.last("compact").resolve(null);
+    await expect(compacted).resolves.toBeUndefined();
+    const bare = client.compact("7");
+    expect(transport.last("compact").params).toEqual({ sessionId: "7" });
+    transport.last("compact").resolve(null);
+    await bare;
 
     const deleted = client.deleteSession("7");
     expect(transport.last("deleteSession").params).toEqual({ sessionId: "7" });

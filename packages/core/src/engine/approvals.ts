@@ -7,6 +7,7 @@ import type { AgentDefinition } from "../agent.ts";
 import { ApprovalNotPendingError } from "../errors.ts";
 
 import { callsOf, startedCall } from "./calls.ts";
+import type { GatedTool } from "./extensions.ts";
 import { SessionsDoc } from "./sessions.ts";
 import type { ApprovalRule } from "./sessions.ts";
 
@@ -67,17 +68,17 @@ export const ApprovalsDoc = defineDoc<{ decisions: Record<string, StoredDecision
 });
 
 /**
- * Whether a call of tool `name` needs approval: under the session's `rule` when it has one, else under the agent's
- * policy. Tools the agent does not have never do.
+ * Whether a call of `tool` in a session of `agent` needs approval: under the session's `rule` when it has one, else
+ * under the agent's policy. A tool of unknown tier always does, whatever either says.
  */
-export function isGated(agent: AgentDefinition, name: string, rule?: ApprovalRule): boolean {
-  const tool = agent.tool(name);
-  if (tool === undefined) return false;
-  if (rule === undefined) return agent.policy.requiresApproval(tool.tier, tool.name);
-  if (Array.isArray(rule)) return rule.includes(tool.tier);
+export function isGated(agent: AgentDefinition, tool: GatedTool, rule?: ApprovalRule): boolean {
+  const { tier, name } = tool;
+  if (tier === undefined) return true;
+  if (rule === undefined) return agent.policy.requiresApproval(tier, name);
+  if (Array.isArray(rule)) return rule.includes(tier);
   const { add, remove } = rule as Exclude<ApprovalRule, readonly string[]>;
-  if (remove?.includes(tool.tier)) return false;
-  return add?.includes(tool.tier) === true || agent.policy.requiresApproval(tool.tier, tool.name);
+  if (remove?.includes(tier)) return false;
+  return add?.includes(tier) === true || agent.policy.requiresApproval(tier, name);
 }
 
 /** The approval rule of session `conversationId`, if it has its own, from what `snapshot` reads of the sessions record. */
@@ -101,23 +102,21 @@ function declineText(comment: string | undefined): string {
  * passes, blocks, or parks again. A decision, once delivered, decides the call whatever the session's
  * rule says by then, so a rule changed while the call waited neither runs a declined call nor drops its
  * question. A declined call is blocked, and `afterTool` hands the model the operator's comment as the
- * call's result.
+ * call's result. It judges every call of a session of `agent`, the app's tools' too, as `toolOf` knows them.
  */
-export function approvalGate(agent: AgentDefinition): HookRegistration {
+export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
   return hook(ToolTask, {
     async beforeTool(call, api, context) {
-      if (agent.tool(call.name) === undefined) return undefined;
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state !== undefined) {
         if ("expired" in state) return { block: "No decision arrived for this call." };
         return state.value.approved ? undefined : { block: declineText(state.value.comment) };
       }
       const rule = ruleOf(await api.snapshot(SessionsDoc, context), api.conversationId);
-      if (!isGated(agent, call.name, rule)) return undefined;
+      if (!isGated(agent, toolOf(call.name), rule)) return undefined;
       return { sleep: { signals: [ApprovalSignal.key(call.id)] } };
     },
     async afterTool(call, result, api, context) {
-      if (agent.tool(call.name) === undefined) return undefined;
       if (!result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return undefined;
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state === undefined || !("value" in state) || state.value.approved) return undefined;
@@ -144,14 +143,13 @@ class Refused extends Error {
  * Decides calls of conversation `conversationId`, all in one transaction: every decision is delivered
  * and recorded, or none is. A call a decision reached first is `already_decided`. Rejects with
  * `ApprovalNotPendingError`, committing nothing, if any call is not waiting at the gate: neither parked
- * there nor about to reach it under the session's rule `rule`. A call that sleeps after it started, such as a
- * delegate's waiting for its child, is parked on its own work. A call named twice is a `TypeError`.
+ * there nor about to reach it, as `gated` judges a tool by name under the session's rule. A call that sleeps after it
+ * started, such as a delegate's waiting for its child, is parked on its own work. A call named twice is a `TypeError`.
  */
 export async function decide(
-  agent: AgentDefinition,
   harness: Harness,
   conversationId: ConversationId,
-  rule: ApprovalRule | undefined,
+  gated: (toolName: string) => boolean,
   decisions: readonly ApprovalDecision[],
 ): Promise<ApprovalOutcome[]> {
   const ids = new Set<string>();
@@ -168,9 +166,8 @@ export async function decide(
     const slot = live?.tools?.find((candidate) => candidate.callId === decision.toolCallId);
     const waiting =
       slot !== undefined &&
-      agent.tool(slot.name) !== undefined &&
       ((slot.status === "sleeping" && startedCall(calls, slot.callId, slot.taskId) === undefined) ||
-        (slot.status === "pending" && isGated(agent, slot.name, rule)));
+        (slot.status === "pending" && gated(slot.name)));
     if (!waiting || slot.taskId === undefined) throw new ApprovalNotPendingError(decision.toolCallId);
     return slot.taskId;
   });

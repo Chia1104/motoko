@@ -141,6 +141,9 @@ function script(faux: ReturnType<typeof fauxModels>["faux"], steps: Record<Role,
   return requests;
 }
 
+/** What a session runs with when nothing chose otherwise: the runtime's default model, pi's thinking level. */
+const runsWith = { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" };
+
 const delegateCall = (task: string, id = "d-1") =>
   fauxAssistantMessage(fauxToolCall("research", { task }, { id }), { stopReason: "toolUse" });
 
@@ -246,11 +249,12 @@ describe("a delegate", () => {
       child: [fauxAssistantMessage("a is apples")],
     });
     expect(await instance.session((await instance.createSession()).id).settings()).toEqual({
+      ...runsWith,
       tools: ["note", "research"],
     });
     // A child does not take its parent's choice of tools: they are another agent's.
     const parent = instance.session((await instance.createSession({ tools: ["research"] })).id);
-    expect(await parent.settings()).toEqual({ tools: ["research"] });
+    expect(await parent.settings()).toEqual({ ...runsWith, tools: ["research"] });
     await parent.submit({ text: "What is a?", requestId: "1" });
     await readUntil(parent, isRunEnd);
 
@@ -262,7 +266,10 @@ describe("a delegate", () => {
     expect(sub.tools).toEqual(["lookup", "remove"]);
     expect(sub.prompt).toContain(researcher.instructions);
     expect(sub.prompt).not.toContain(notes.instructions);
-    expect(await instance.session(await childOf(parent)).settings()).toEqual({ tools: ["lookup", "remove"] });
+    expect(await instance.session(await childOf(parent)).settings()).toEqual({
+      ...runsWith,
+      tools: ["lookup", "remove"],
+    });
   });
 
   it("runs the sub-agent on its own model when it names one, else on its parent's", async () => {
@@ -332,17 +339,21 @@ describe("a delegate", () => {
     const child = instance.session(await childOf(parent));
 
     await expect(child.submit({ text: "Again", requestId: "2" })).rejects.toBeInstanceOf(SessionOwnedError);
+    await expect(child.continue({ requestId: "c" })).rejects.toBeInstanceOf(SessionOwnedError);
     await expect(child.configure({ tools: null })).rejects.toBeInstanceOf(SessionOwnedError);
+    await expect(child.configure({ model: null, maxTurns: 2 })).rejects.toBeInstanceOf(SessionOwnedError);
     await expect(child.delete()).rejects.toBeInstanceOf(SessionOwnedError);
     for (const call of [
       { method: "submit", params: { sessionId: child.id, text: "Again", requestId: "3" } },
+      { method: "continue", params: { sessionId: child.id, requestId: "c" } },
+      { method: "compact", params: { sessionId: child.id } },
       { method: "deleteSession", params: { sessionId: child.id } },
     ] as const) {
       const error = await runCall(instance, call).catch((caught: unknown) => caught);
       expect(callErrorOf(error)).toMatchObject({ code: "session_owned" });
     }
     expect(fold(await readUntil(child, isRunEnd)).items.filter((item) => item.kind === "user")).toHaveLength(1);
-    expect(await child.settings()).toEqual({ tools: ["lookup", "remove"] });
+    expect(await child.settings()).toEqual({ ...runsWith, tools: ["lookup", "remove"] });
   });
 
   it("parks a sub-agent's gated call in the child, where it is decided, and then completes the parent", async () => {

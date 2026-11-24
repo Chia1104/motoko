@@ -28,6 +28,7 @@ export type { AgentHost, AgentStore, HostWake, Lease, StorageScope } from "./hos
 export { createAgentRuntime } from "./runtime.ts";
 export type { ApprovalDecision, ApprovalOutcome } from "./engine/approvals.ts";
 export type { DeliverReply, OutgoingReply } from "./engine/asks.ts";
+export type { AppExtension, ExtensionsResolver } from "./engine/extensions.ts";
 export type { ApprovalRule, ToolSelection } from "./engine/sessions.ts";
 export type { InstanceInspection, InstanceState } from "./engine/lifecycle.ts";
 export type { ReplyInput, ReplyResult } from "./engine/replies.ts";
@@ -40,6 +41,8 @@ export type {
   AgentRuntimeOptions,
   AgentRuntimePortsOption,
   AgentSession,
+  CompactOptions,
+  ContinueInput,
   EventsOptions,
   InstanceReport,
   AgentRuntimeInspection,

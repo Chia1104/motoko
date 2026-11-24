@@ -73,16 +73,14 @@ function stringsOf(value: unknown, what: string): string[] {
   return [...value];
 }
 
-/** The tiers the agent's tools carry. */
-const tiersOf = (agent: AgentDefinition) => new Set(agent.tools.map((tool) => tool.tier));
-
-/** `rule` as stored, after checking that it names only tiers the agent's tools carry. */
-export function storedRule(agent: AgentDefinition, rule: ApprovalRule): StoredRule {
-  const tiers = tiersOf(agent);
+/**
+ * `rule` as stored for a session of agent `kind`, after checking that it names only `tiers`, the tiers its tools carry:
+ * the agent's and its app tools'.
+ */
+export function storedRule(kind: string, tiers: ReadonlySet<string>, rule: ApprovalRule): StoredRule {
   const known = (list: readonly string[], what: string) => {
     for (const tier of list) {
-      if (!tiers.has(tier))
-        throw new TypeError(`${what} names tier \`${tier}\`, which no tool of \`${agent.kind}\` has`);
+      if (!tiers.has(tier)) throw new TypeError(`${what} names tier \`${tier}\`, which no tool of \`${kind}\` has`);
     }
     return [...list];
   };
