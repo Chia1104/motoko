@@ -3,6 +3,7 @@ import { ToolTask } from "@earendil-works/pi-durable";
 import type {
   Extension,
   HookRegistration,
+  JsonObject,
   ToolExecutionApi,
   ToolHooks,
   ToolRegistration,
@@ -93,7 +94,8 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
  *   and `approve()` would decide it;
  * - `arguments`: the first the hook gave this call, memoized under the hook's extension and place (an extension may
  *   hook the tool task more than once), since pi-durable runs the chain again at every wake, registry change and
- *   decision.
+ *   decision;
+ * - nothing, from a hook that gave `arguments` on an earlier run of the chain: those `arguments` still.
  */
 function appToolHooks(extension: string, index: number, registration: HookRegistration): HookRegistration {
   // SAFETY: a registration for the tool task holds its hooks, as `hook(ToolTask, ...)` types them.
@@ -110,7 +112,8 @@ function appToolHooks(extension: string, index: number, registration: HookRegist
         return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
       }
       if (decision?.arguments !== undefined) return { arguments: await api.memo(memo, decision.arguments, context) };
-      return decision;
+      const rewritten = await api.memo<JsonObject>(memo, context);
+      return rewritten === undefined ? decision : { arguments: rewritten };
     },
   };
   return { ...registration, handlers: hooks };

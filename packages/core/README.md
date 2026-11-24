@@ -910,7 +910,7 @@ const runtime = createAgentRuntime({
   it. A hook that needs something awaits it. pi-durable runs the whole chain again at every wake,
   registry change and decision, so the runtime memoizes the first `arguments` each hook gives a call:
   the call runs with those, through a decision and a restart, however the hook rewrites them later
-  (with the time, say).
+  (with the time, say), or if it gives none.
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
