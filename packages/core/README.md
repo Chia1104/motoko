@@ -904,6 +904,13 @@ const runtime = createAgentRuntime({
   sessions other app tools, run them as another agent. A call of an app tool that parks on its own
   work (its `execute` returns `{ sleep }`) is recorded in `runtime.calls` before it parks, so its
   sleep raises no question and `approve()` refuses it, as a deferred call's does.
+- **Hooks.** An app's `beforeTool` hook may watch a call, give it other `arguments` or `block` it. It
+  cannot make the call wait: only the gate parks a call before it runs, so a hook's `sleep` ends the
+  call as blocked, with an error saying an app hook cannot make a call wait, and nothing asks about
+  it. A hook that needs something awaits it. pi-durable runs the whole chain again at every wake,
+  registry change and decision, so the runtime memoizes the first `arguments` each hook gives a call:
+  the call runs with those, through a decision and a restart, however the hook rewrites them later
+  (with the time, say).
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides

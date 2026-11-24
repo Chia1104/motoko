@@ -1,5 +1,12 @@
 import type { Context } from "@earendil-works/chord/context";
-import type { Extension, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
+import { ToolTask } from "@earendil-works/pi-durable";
+import type {
+  Extension,
+  HookRegistration,
+  ToolExecutionApi,
+  ToolHooks,
+  ToolRegistration,
+} from "@earendil-works/pi-durable";
 
 import { UNKNOWN_TIER } from "@chia1104/motoko-wire";
 
@@ -78,6 +85,49 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
 });
 
 /**
+ * The tool hooks `registration`, the hook at `index` in app extension `extension`, as the instance installs them. What
+ * their `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
+ *
+ * - nothing, or a `block`: itself;
+ * - a `sleep`: a `block`. Only the gate parks a call before it runs: a call that sleeps there would show as a question,
+ *   and `approve()` would decide it;
+ * - `arguments`: the first the hook gave this call, memoized under the hook's extension and place (an extension may
+ *   hook the tool task more than once), since pi-durable runs the chain again at every wake, registry change and
+ *   decision.
+ */
+function appToolHooks(extension: string, index: number, registration: HookRegistration): HookRegistration {
+  // SAFETY: a registration for the tool task holds its hooks, as `hook(ToolTask, ...)` types them.
+  const handlers = registration.handlers as Partial<ToolHooks>;
+  const { beforeTool } = handlers;
+  if (beforeTool === undefined) return registration;
+  const memo = `motoko.args.${extension}.${index}`;
+  const hooks: Partial<ToolHooks> = {
+    ...handlers,
+    async beforeTool(call, api, context) {
+      const decision = await beforeTool.call(handlers, call, api, context);
+      if (decision?.block !== undefined) return decision;
+      if (decision?.sleep !== undefined) {
+        return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
+      }
+      if (decision?.arguments !== undefined) return { arguments: await api.memo(memo, decision.arguments, context) };
+      return decision;
+    },
+  };
+  return { ...registration, handlers: hooks };
+}
+
+/** App extension `extension` as the instance installs it, its tools' parks recorded and its tool hooks held. */
+const installable = (extension: Extension): Extension => ({
+  ...extension,
+  ...(extension.tools !== undefined && { tools: extension.tools.map(withParksRecorded) }),
+  ...(extension.hooks !== undefined && {
+    hooks: extension.hooks.map((registration, index) =>
+      registration.task === ToolTask.definition.name ? appToolHooks(extension.name, index, registration) : registration,
+    ),
+  }),
+});
+
+/**
  * The app's extensions `app` for the instance of `scope`, whose agent and sub-agents are `agents`. Throws a
  * `TypeError`, and the instance does not open, for an extension named like the runtime's (`runtime:` names) or like
  * another, a tool named like an agent's or like another extension's, or a wrap of an agent's tool: pi-durable runs the
@@ -122,12 +172,7 @@ export function appExtensions(
   }
 
   const selects = (entry: AppExtension, kind: string) => (entry.agents ?? [scope.kind]).includes(kind);
-  const installed = new Map(
-    app.map(({ extension }) => [
-      extension,
-      extension.tools === undefined ? extension : { ...extension, tools: extension.tools.map(withParksRecorded) },
-    ]),
-  );
+  const installed = new Map(app.map(({ extension }) => [extension, installable(extension)]));
 
   const kinds = new Map<string, { tools: Map<string, GatedTool>; tiers: Set<string> }>();
   for (const agent of agents.values()) {
