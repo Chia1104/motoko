@@ -1047,19 +1047,18 @@ task (`motoko.gate.args`). `approval:request.args` are those, and `approve()` re
 decision, since the memo goes when the task ends. So the live stream, a catch-up and a replay ask with
 the same arguments: the decision's, else the memo's, else, for a call the gate never saw park (one
 decided before it parked, or by an earlier Motoko), the model's. A call no app hook rewrote is asked
-about with the model's arguments. An approved call whose arguments are not the memoized ones when the
-gate wakes is blocked, with `The call's arguments changed after the operator was asked about it.`:
-the app hooks' memos keep that from happening, and this is the last check that what runs is what was
-approved.
+about with the model's arguments. An approved call runs with the memoized arguments, whatever the
+app's hooks give when the decision wakes it, so what runs is what the operator was asked about.
 
 A call may be decided before it parks: `approve()` also takes a call whose task exists and that the
 gate will gate but has not reached, such as the next call of a sequential round while its app hooks
 run. Its operator was asked about the model's arguments, so it runs only with those. The first app
 hook that rewrites a call memoizes the arguments pi handed it (`motoko.model.args`): the model's, as
 the tool repairs and coerces them, which no app hook has touched. The gate checks an approved call
-that has no memo of its own against these, and blocks it with the same message when it would run
-with others. pi's coercion is not a rewrite: a call no app hook rewrote runs, even when the model
-wrote `"42"` for a number or `null` for an optional property.
+that has no memo of its own against these, and blocks it when it would run with others, with
+`The call's arguments changed after the operator was asked about it.` pi's coercion is not a
+rewrite: a call no app hook rewrote runs, even when the model wrote `"42"` for a number or `null`
+for an optional property.
 
 ## What Motoko owns, and what is pi's
 

@@ -140,10 +140,11 @@ function declineText(comment: string | undefined): string {
  * call's result. It judges every call of a session of `agent`, the app's tools' too, as `toolOf` knows them.
  *
  * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
- * An approved call whose arguments are not those any more is blocked. The app hooks' memos keep their rewrites fixed,
- * so this should never happen; it is the last check that the operator approved what runs. A call decided before it
- * parked has no such memo: the operator was asked about the model's arguments, so it is blocked if an app hook rewrote
- * them (`MODEL_ARGS`).
+ * pi-durable runs the whole chain again at every wake, registry change and decision, and an app hook may rewrite the
+ * call anew each time (with the time, say), or not at all; an approved call runs with the memo, whatever the hooks
+ * before the gate give on that pass. A call that never parks has no memo, and runs with what the chain gives it. A
+ * call decided before it parked has no memo either: the operator was asked about the model's arguments, so it is
+ * blocked if an app hook rewrote them (`MODEL_ARGS`).
  */
 export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
   return hook(ToolTask, {
@@ -152,9 +153,10 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       if (state !== undefined) {
         if ("expired" in state) return { block: "No decision arrived for this call." };
         if (!state.value.approved) return { block: declineText(state.value.comment) };
-        const asked =
-          (await api.memo<JsonObject>(GATE_ARGS, context)) ?? (await api.memo<JsonObject>(MODEL_ARGS, context));
-        return asked === undefined || sameJson(asked, call.arguments)
+        const asked = await api.memo<JsonObject>(GATE_ARGS, context);
+        if (asked !== undefined) return { arguments: asked };
+        const model = await api.memo<JsonObject>(MODEL_ARGS, context);
+        return model === undefined || sameJson(model, call.arguments)
           ? undefined
           : { block: "The call's arguments changed after the operator was asked about it." };
       }
