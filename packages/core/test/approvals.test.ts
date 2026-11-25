@@ -387,17 +387,18 @@ describe("the arguments a decision is made on", () => {
     });
   });
 
-  it("block an approved call whose arguments changed since it parked", async () => {
+  it("run an approved call, however a hook rewrites it after it parked", async () => {
     const more = [rewriting((pass) => ({ key: `b${pass}` }))];
     const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" }, { more });
     await slot(harness, id, "rm-1", "sleeping");
     await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true });
+    // The decision ran the chain again, and the hook rewrote the call to `b2`: it runs with what the operator saw.
     expect(await result()).toMatchObject({
       role: "toolResult",
-      isError: true,
-      content: [{ type: "text", text: expect.stringContaining("arguments changed after the operator was asked") }],
+      isError: false,
+      content: [{ type: "text", text: "deleted b1" }],
     });
-    expect(deleted).toEqual([]);
+    expect(deleted).toEqual(["b1"]);
     expect(await decisionsOf(harness, id)).toEqual({
       "rm-1": { approved: true, args: { key: "b1" }, at: expect.any(Number) },
     });
