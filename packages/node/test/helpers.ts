@@ -2,7 +2,6 @@ import type { AgentSession } from "@chia1104/motoko-core";
 import { foldEvents } from "@chia1104/motoko-wire";
 import type { AgentSessionView, StreamItem } from "@chia1104/motoko-wire";
 
-/** A client reading a session's stream in the background, from `from`, until it stops. */
 export function follow(session: AgentSession, from?: string) {
   const controller = new AbortController();
   const items: StreamItem[] = [];
@@ -20,7 +19,6 @@ export function follow(session: AgentSession, from?: string) {
   };
 }
 
-/** Waits until `condition` holds, checking every few milliseconds; fails after `timeoutMs`. */
 export async function eventually(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -29,7 +27,6 @@ export async function eventually(condition: () => boolean, timeoutMs = 10_000): 
   }
 }
 
-/** Lets in-flight commits reach every reader. */
 export const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 export const fold = (...lists: (readonly StreamItem[])[]): AgentSessionView =>

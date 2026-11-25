@@ -1,7 +1,3 @@
-// A process that starts a run and is then killed with SIGKILL by `crash.test.ts`. A client in it
-// follows the session's stream; once the run reached the point the scenario names, the process
-// prints that client's items (`ITEMS <json>`) and `READY <sessionId>`, then waits forever.
-
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
@@ -10,7 +6,7 @@ import type { StreamItem } from "@chia1104/motoko-wire";
 
 import { nodeHost, sqliteStorage } from "../../src/index.ts";
 
-import { crashAgent, crashState } from "./crash-agent.ts";
+import { crashAgent, indexStarted } from "./crash-agent.ts";
 
 const [directory, scenario] = process.argv.slice(2);
 if (directory === undefined || (scenario !== "tool" && scenario !== "approval")) {
@@ -46,7 +42,7 @@ const check = (): void => {
   ready = true;
   process.stdout.write(`ITEMS ${JSON.stringify(items)}\nREADY ${id}\n`);
 };
-crashState.started = () => {
+indexStarted.notify = () => {
   started = true;
   check();
 };

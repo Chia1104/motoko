@@ -18,7 +18,6 @@ interface Ports {
   readonly log: string[];
 }
 
-/** Blocks its first runs until stopped; once `release()` is called, it finishes. */
 function blockingTool(name: string, replay: "safe" | "unsafe") {
   const state = { runs: 0, released: false, started: (): void => undefined };
   const tool = defineTool({
@@ -80,7 +79,6 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-/** A runtime as a fresh process would make one: same file, new Harness. */
 function openRuntime() {
   const runtime = createAgentRuntime({
     agents: [agent],
@@ -139,7 +137,6 @@ describe("restart recovery on a real SQLite file", () => {
     await first.session(id).submit({ text: "Make the report", requestId: "r1" });
     await started;
     const before = await readUntil(first.session(id), (event) => event.type === "tool:start");
-    // The process stops mid-call.
     await runtimes.shift()!.close();
 
     slowSafe.state.released = true;
@@ -151,8 +148,6 @@ describe("restart recovery on a real SQLite file", () => {
     expect(ports.log).toEqual(["slow_safe:report"]);
     expect(slowSafe.state.runs).toBe(2);
     expect(JSON.stringify(lastResult.value)).toContain("report finished");
-    // The client that followed the first process resumes from its cursor: the events of what was
-    // committed after it, no reset and no full replay, folding into the same transcript.
     const resumed = await readUntil(session, isRunEnd, before.at(-1)!.cursor);
     expect(resumed.some((item) => item.event.type === "stream:reset" || item.event.type === "user")).toBe(false);
     expect(foldEvents([...before, ...resumed].map((item) => item.event))).toEqual(
@@ -207,7 +202,6 @@ describe("restart recovery on a real SQLite file", () => {
     expect(liveBefore.pendingApprovals).toEqual(["send-1"]);
     await runtimes.shift()!.close();
 
-    // The new process shows the same pending question, from storage alone.
     const second = openRuntime();
     const session = second.session(id);
     const replayed = await readUntil(session, (event) => event.type === "approval:request");
@@ -226,7 +220,6 @@ describe("restart recovery on a real SQLite file", () => {
       approval: { approved: true },
     });
 
-    // A third process replays the finished transcript, decision included, as the live client saw it.
     await runtimes.shift()!.close();
     const third = openRuntime();
     const final = await readUntil(third.session(id), isRunEnd);

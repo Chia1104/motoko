@@ -19,10 +19,8 @@ import type { AgentRuntime, Lease, StorageScope } from "@chia1104/motoko-core";
 import { nodeHost, scopeFile, scopeFileSegment, sqliteStorage } from "../src/index.ts";
 import type { NodeStore } from "../src/index.ts";
 
-/** A fresh in-memory pi storage at every open: nothing outlives the instance. */
 const memoryStorage = async () => new MemoryStorage();
 
-/** A lease narrower than `Lease`, as a storage that fences its commits with its own lease takes. */
 interface TokenLease extends Lease {
   readonly token: number;
 }
@@ -57,7 +55,6 @@ describe("the lease", () => {
 
     await expect(second.get(agent, "x").open()).rejects.toBeInstanceOf(LeaseHeldError);
     await expect(second.get(agent, "x").createSession()).rejects.toBeInstanceOf(LeaseHeldError);
-    // Another scope is another writer.
     await second.get(agent, "y").open();
 
     await first.close();
@@ -81,7 +78,6 @@ describe("the lease", () => {
     faux.setResponses([fauxAssistantMessage("Hi.")]);
     const instance = runtime.get(agent, "x");
     const { id } = await instance.createSession();
-    // A client is following the (still empty) session when the lease goes.
     const reading = instance.session(id).events()[Symbol.asyncIterator]().next();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -90,9 +86,7 @@ describe("the lease", () => {
     await expect(instance.session(id).submit({ text: "x", requestId: "x" })).rejects.toBeInstanceOf(
       InstanceClosedError,
     );
-    // Its stream ends.
     expect(await reading).toEqual({ done: true, value: undefined });
-    // The lease was released, so the scope can be opened again, by a fresh instance.
     const reopened = runtime.get(agent, "x");
     expect(reopened).not.toBe(instance);
     await reopened.open();
@@ -174,7 +168,6 @@ describe("idle instances on SQLite", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
-    // Another runtime on the same file and leases takes the scope, then lets it go.
     const other = runtimeOn(nodeHost({ storage: sqliteStorage({ directory }), lease: leases }));
     expect(await other.get(agent, "idle").listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
     await other.get(agent, "idle").close();

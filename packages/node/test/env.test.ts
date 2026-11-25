@@ -1,5 +1,4 @@
-// An instance's execution environment on a real shell: `envFor` gives the scope pi-durable's Node environment, and
-// an app extension's `bash` runs in its working directory, as the core README's "The runtime" says.
+// The core README's "The runtime".
 
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,7 +17,6 @@ import type { AgentWireEvent, StreamItem } from "@chia1104/motoko-wire";
 
 import { nodeHost, sqliteStorage } from "../src/index.ts";
 
-// Its policy gates no tier, so the `exec` call runs without asking.
 const agent = defineAgent({ kind: "coder", instructions: "You code.", tools: [] });
 const shell = defineExtension({ name: "shell", tools: [createBashTool()] });
 
@@ -90,7 +88,6 @@ describe("an instance's execution environment", () => {
       toolName: "bash",
       status: "ok",
     });
-    // A call that succeeds shows no output at its end: its result is what the model read.
     expect(read).toMatchObject({
       role: "toolResult",
       toolCallId: "b-1",

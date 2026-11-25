@@ -87,14 +87,12 @@ describe("nodeListener", () => {
     const client = new AbortController();
     const response = await fetch(base, { signal: client.signal });
 
-    // The client reads nothing: once the buffers between them fill, the body is pulled no more.
     await wait(300);
     const stalled = pulled;
     await wait(300);
     expect(pulled).toBe(stalled);
     expect(stalled).toBeLessThan(512);
 
-    // Reading drains them, and the body is pulled again.
     const reader = response.body!.getReader();
     for (let read = 0; read < 4 * 1024 * 1024;) read += (await reader.read()).value?.length ?? 0;
     await eventually(() => pulled > stalled);

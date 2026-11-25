@@ -1,7 +1,7 @@
 import * as z from "zod";
 
 import { callErrorOf, InstanceClosedError, runCall, SessionNotFoundError } from "@chia1104/motoko-core";
-import type { AgentDefinition, AgentInstance, AgentRuntime } from "@chia1104/motoko-core";
+import type { AgentDefinition, AgentInstance, AgentRuntime, StorageScope } from "@chia1104/motoko-core";
 import { LeaseHeldError } from "@chia1104/motoko-core/store";
 import { callSchemas, cursorSchema, decodeCursor, sessionIdSchema } from "@chia1104/motoko-wire";
 import type { Call, CallError, CallErrorCode, CallMethod, Cursor } from "@chia1104/motoko-wire";
@@ -9,50 +9,44 @@ import type { Call, CallError, CallErrorCode, CallMethod, Cursor } from "@chia11
 import { forwarder } from "./forward.ts";
 import type { ClusterOptions } from "./forward.ts";
 
-/**
- * The call protocol of `@chia1104/motoko-wire` over HTTP, as one Fetch handler the app mounts under a base path: a call
- * is a JSON request, and following a session is a request answered with its wire events as server-sent events.
- */
-
-/** The instance a request is for, as `resolve` answers it; anything else of the app's on it reaches `authorize`. */
+/** The instance a request is for, as `resolve` answers it. Any other field the app puts on it reaches `authorize`. */
 export interface MotokoTarget {
   readonly agent: AgentDefinition | string;
   readonly name: string;
 }
 
-/** Following a session's events after `from` (default: from its start), which `GET .../events` asks. */
+/** A request to follow a session's events after `from`, or from the session's start without `from`. */
 export interface FollowCall {
   readonly method: "follow";
   readonly params: { readonly sessionId: string; readonly from?: Cursor };
 }
 
-/** What a request asks of its instance, as `authorize` decides on it: one of the protocol's calls, or a follow. */
+/** What a request asks of its instance, as `authorize` decides on it. It is one of the protocol's calls or a follow. */
 export type HttpCall = Call | FollowCall;
 
 export interface MotokoHandlerOptions<T extends MotokoTarget> {
   /** The path the routes are under, such as `/motoko`. Default: the root. */
   readonly basePath?: string;
   /**
-   * The instance `request` is for. It is where the app authenticates: a `Response` it answers (a 401, say) is sent as
-   * it is, and nothing runs.
+   * The instance `request` is for. The app authenticates here. A `Response` it returns, such as a 401, is sent as is,
+   * and nothing runs.
    */
   readonly resolve: (request: Request) => T | Response | Promise<T | Response>;
-  /** Decides whether `request` may make `call`; one it refuses is answered `forbidden` and runs nothing. */
+  /** Decides whether `request` may make `call`. A call it refuses is answered `forbidden` and runs nothing. */
   readonly authorize?: (request: Request, call: HttpCall, target: T) => boolean | Promise<boolean>;
-  /** An error that is not the runtime's, such as a throw of `resolve`: its request is answered `internal`. */
+  /** Receives an error that is not the runtime's, such as one `resolve` throws. Its request is answered `internal`. */
   readonly onError?: (error: unknown) => void;
   /** How often a follow sends a comment line, in ms, so proxies keep a quiet stream open. Default: 15 000. */
   readonly heartbeatMs?: number;
-  /** The most bytes of a call's body the handler reads; a longer one is answered 413. Default: 1 MiB. */
+  /** The most bytes of a call's body the handler reads. A longer body is answered 413. Default: 1 MiB. */
   readonly maxBodyBytes?: number;
   /**
-   * Experimental. This node's place in a cluster of nodes on one shared-database store: a request whose instance
-   * cannot open here because a peer holds its lease is forwarded to that peer, its home.
+   * Experimental. This node's place in a cluster of nodes on one shared-database store. When a peer holds the lease
+   * of a request's instance, this node forwards the request to that peer, the instance's home.
    */
   readonly cluster?: ClusterOptions;
 }
 
-/** The status each call error is answered with. */
 const STATUS = {
   invalid_request: 400,
   invalid_cursor: 400,
@@ -69,7 +63,6 @@ const STATUS = {
 
 type Route = { readonly kind: "call" } | { readonly kind: "follow"; readonly segment: string };
 
-/** The HTTP method of each route. */
 const ROUTE_METHODS = { call: "POST", follow: "GET" } as const;
 
 const FOLLOW_PATH = /^\/sessions\/([^/]+)\/events$/;
@@ -90,8 +83,8 @@ const encoder = new TextEncoder();
 const HEARTBEAT = ": heartbeat\n\n";
 
 /**
- * Motoko's routes under `basePath` as a Fetch handler, for any framework that speaks `Request` and `Response`, or Node's
- * `http` through `nodeListener`:
+ * Motoko's routes under `basePath` as a Fetch handler, for any framework that uses `Request` and `Response`, or for
+ * Node's `http` through `nodeListener`:
  *
  * - `POST {basePath}/call`, a JSON `{ method, params }` of `callSchemas`, answered `{ result }` or `{ error }`;
  * - `GET {basePath}/sessions/:sessionId/events`, answered with the session's wire events as server-sent events, after
@@ -107,7 +100,6 @@ export function motokoHandler<T extends MotokoTarget>(
   const maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024;
   const forward = options.cluster === undefined ? undefined : forwarder(options.cluster);
 
-  /** Core's errors by their code; anything else is not the client's to read, so it is reported. */
   const errorOf = (error: unknown): CallError => {
     const known = callErrorOf(error);
     if (known !== undefined) return known;
@@ -120,12 +112,7 @@ export function motokoHandler<T extends MotokoTarget>(
 
   const instanceOf = (target: T) => runtime.get(target.agent, target.name);
 
-  /**
-   * What `serve` answers, unless the instance cannot open here because another node holds its lease. In a cluster the
-   * request then goes to that node, its home, with `body`; one it does not go to, or that cannot reach the home, is
-   * answered 503 `lease_held`.
-   */
-  async function served(request: Request, body: string | undefined, serve: () => Promise<Response>) {
+  async function serveOrForward(request: Request, body: string | undefined, serve: () => Promise<Response>) {
     try {
       return await serve();
     } catch (error) {
@@ -140,7 +127,9 @@ export function motokoHandler<T extends MotokoTarget>(
     if (read instanceof Response) return read;
     const { call, body } = read;
     if (!(await allowed(request, call, target))) return forbidden(call.method);
-    return served(request, body, async () => Response.json({ result: await runCall(instanceOf(target), call) }));
+    return serveOrForward(request, body, async () =>
+      Response.json({ result: await runCall(instanceOf(target), call) }),
+    );
   }
 
   async function follow(request: Request, url: URL, target: T, segment: string): Promise<Response> {
@@ -150,9 +139,9 @@ export function motokoHandler<T extends MotokoTarget>(
     if (from instanceof Response) return from;
     const call: FollowCall = { method: "follow", params: { sessionId, ...(from !== undefined && { from }) } };
     if (!(await allowed(request, call, target))) return forbidden(call.method);
-    return served(request, undefined, async () => {
-      // Before the stream starts, so a session that is gone, or an instance that cannot open here, is answered with
-      // its status: EventSource reconnects after a stream ends, but not after a refusal.
+    return serveOrForward(request, undefined, async () => {
+      // These checks run before the stream starts, so a session that is gone, or an instance that cannot open here,
+      // is answered with its status. EventSource reconnects after a stream ends, but not after a refusal.
       const instance = instanceOf(target);
       const sessions = await instance.listSessions();
       if (!sessions.some(({ id }) => id === sessionId)) throw new SessionNotFoundError(sessionId);
@@ -196,10 +185,6 @@ function failure(error: CallError, status: number = STATUS[error.code], headers?
 const forbidden = (method: HttpCall["method"]) =>
   failure({ code: "forbidden", message: `This request may not ${method}` });
 
-/**
- * 503 `lease_held`, with `Retry-After` when the store says when the lease expires: the earliest a retry can take the
- * instance over, as the holder last renewed the lease, by this node's clock against the database's.
- */
 function leaseHeld(error: LeaseHeldError): Response {
   const { expiresAt } = error;
   const seconds =
@@ -215,9 +200,8 @@ function invalid(error: z.ZodError): Response {
   return failure({ code: "invalid_request", message: z.prettifyError(error) });
 }
 
-/** The call a request's body sends, with the body as it came, or the refusal of one that is not a call. */
 async function callOf(request: Request, maxBytes: number): Promise<{ call: Call; body: string } | Response> {
-  // Only JSON: a cross-site form cannot send it without the browser asking the server first (CORS).
+  // Only JSON is accepted. A cross-site form cannot send JSON unless the browser first asks the server, through CORS.
   const type = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (type !== "application/json") {
     return failure({ code: "invalid_request", message: "A call's body is application/json" }, 415);
@@ -238,14 +222,9 @@ async function callOf(request: Request, maxBytes: number): Promise<{ call: Call;
   const { method } = parsed.data;
   const params = callSchemas[method].params.safeParse(parsed.data.params);
   if (!params.success) return invalid(params.error);
-  // SAFETY: `params` is `method`'s, parsed with its own schema.
   return { call: { method, params: params.data } as Call, body: text };
 }
 
-/**
- * The request's body as text, or `undefined` once it is longer than `maxBytes`, as it declares or as it streams. Then
- * the body is cancelled, and nothing more of it is read.
- */
 async function textOf(request: Request, maxBytes: number): Promise<string | undefined> {
   const reader = request.body?.getReader();
   if (reader === undefined) return "";
@@ -270,15 +249,10 @@ function sessionIdOf(segment: string): string | undefined {
     const parsed = sessionIdSchema.safeParse(decodeURIComponent(segment));
     return parsed.success ? parsed.data : undefined;
   } catch {
-    // A malformed escape.
     return undefined;
   }
 }
 
-/**
- * The cursor a follow resumes after: `Last-Event-ID`, which EventSource sends when it reconnects, else the `from` query
- * parameter, which a client sets for its first connection. Anything but a cursor of the session is refused.
- */
 function cursorOf(request: Request, url: URL, sessionId: string): Cursor | undefined | Response {
   const raw = request.headers.get("last-event-id") || url.searchParams.get("from") || undefined;
   if (raw === undefined) return undefined;
@@ -287,13 +261,6 @@ function cursorOf(request: Request, url: URL, sessionId: string): Cursor | undef
   return failure({ code: "invalid_cursor", message: `Not a cursor of session ${sessionId}` });
 }
 
-/**
- * The session's events after `from` as server-sent events, until `signal` aborts. A stream that ends with the client
- * still there is read again from where it stopped, which says why it ended. A deleted session fails then, and the
- * follow ends with an `ended` event. An instance that closed (the server is shutting down, or lost the lease) fails
- * too, and the stream ends without one: the client reconnects after its last cursor, and whatever serves the instance
- * then answers it. Two reads in a row that end with nothing sent count as that.
- */
 async function* framesOf(
   instance: AgentInstance,
   sessionId: string,
@@ -302,8 +269,9 @@ async function* framesOf(
   errorOf: (error: unknown) => CallError,
 ): AsyncGenerator<string, void, undefined> {
   let cursor = from;
+  const endRead = closeAfterTwoEmptyReads(instance.scope);
   try {
-    for (let retried = false; ;) {
+    for (;;) {
       const events = instance.session(sessionId).events({ ...(cursor !== undefined && { from: cursor }), signal });
       let sent = false;
       for await (const item of events) {
@@ -313,8 +281,7 @@ async function* framesOf(
         cursor = item.cursor;
       }
       if (signal.aborted) return;
-      if (!sent && retried) throw new InstanceClosedError(instance.scope, "closed");
-      retried = !sent;
+      endRead(sent);
     }
   } catch (error) {
     if (signal.aborted || error instanceof InstanceClosedError) return;
@@ -322,11 +289,14 @@ async function* framesOf(
   }
 }
 
-/**
- * `frames` as a response body, read only as fast as the client takes them, with a heartbeat comment every
- * `heartbeatMs`. Once `signal` aborts (the client went away, or the body was cancelled), the reader stops wherever it
- * is, so the instance can close once idle.
- */
+function closeAfterTwoEmptyReads(scope: StorageScope): (sent: boolean) => void {
+  let lastWasEmpty = false;
+  return (sent) => {
+    if (!sent && lastWasEmpty) throw new InstanceClosedError(scope, "closed");
+    lastWasEmpty = !sent;
+  };
+}
+
 function eventStream(
   frames: AsyncGenerator<string, void, undefined>,
   signal: AbortSignal,
@@ -346,7 +316,6 @@ function eventStream(
   return new ReadableStream<Uint8Array>({
     start(controller) {
       heartbeat = setInterval(() => {
-        // Nothing piles up for a client that is not reading.
         if ((controller.desiredSize ?? 0) > 0) controller.enqueue(encoder.encode(HEARTBEAT));
       }, heartbeatMs);
     },

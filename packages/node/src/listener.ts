@@ -8,15 +8,16 @@ export type FetchHandler = (request: Request) => Promise<Response>;
 
 export interface NodeListenerOptions {
   /**
-   * The handler rejected, or its response's body failed. The request is answered 500, or its connection is cut once
-   * its response has begun.
+   * Called when the handler rejects or its response's body fails. The request is then answered 500, or its connection
+   * is cut once its response has begun.
    */
   readonly onError?: (error: unknown) => void;
 }
 
 /**
- * `handler` as a request listener of Node's `http.createServer` (or `https`'s): each request becomes a `Request` whose
- * `signal` aborts when the client goes away, and its `Response` is written back only as fast as the client reads it.
+ * `handler` as a request listener of Node's `http.createServer` or `https.createServer`. Each request becomes a
+ * `Request` whose `signal` aborts when the client goes away, and its `Response` is written back only as fast as the
+ * client reads it.
  */
 export function nodeListener(
   handler: FetchHandler,
@@ -49,10 +50,9 @@ async function serve(handler: FetchHandler, req: IncomingMessage, res: ServerRes
     res.end();
     return;
   }
-  // The headers go out now: an event stream may send its first event much later.
+  // The headers are sent now, because an event stream may send its first event much later.
   res.flushHeaders();
   try {
-    // `pipeline` reads the body as `res` drains, and cancels it if `res` closes first.
     await pipeline(Readable.fromWeb(response.body), res);
   } catch (error) {
     if (!gone.signal.aborted) throw error;
@@ -66,7 +66,8 @@ function requestInit(req: IncomingMessage, signal: AbortSignal): RequestInit {
   }
   const method = req.method ?? "GET";
   if (method === "GET" || method === "HEAD") return { method, headers, signal };
-  // Not `Readable.toWeb`: on Node 22.19 it enqueues a chunk that arrives after the body was cancelled (a call refused
-  // 413 while the client still sends), which throws out of the socket's read, uncaught, and cuts the answer off.
+  // This uses `ReadableStream.from`, not `Readable.toWeb`. On Node 22.19, `Readable.toWeb` enqueues a chunk that
+  // arrives after the body was cancelled, as when a call is refused 413 while the client still sends. That enqueue
+  // throws out of the socket's read, uncaught, and cuts the answer off.
   return { method, headers, signal, body: ReadableStream.from(req), duplex: "half" };
 }

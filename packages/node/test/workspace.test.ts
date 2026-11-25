@@ -1,6 +1,3 @@
-// Guards for the workspace's boundaries, checked on the sources: what each package may import, and
-// that each README's usage example is the typechecked example file, verbatim.
-
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,8 +61,6 @@ describe("package boundaries", () => {
     const manifest = JSON.parse(await readFile(join(packages, "core", "package.json"), "utf8")) as {
       exports: Record<string, unknown>;
     };
-    // The runtime, the host conformance suite (which imports pi's test helpers but hands none of them on), the
-    // shared-database store and its suite (likewise), and the statements every store on SQLite erases with.
     expect(Object.keys(manifest.exports)).toEqual([".", "./testing", "./store", "./store/testing", "./sqlite"]);
     for (const [file] of await importsOf("core")) {
       const text = await readFile(file, "utf8");
