@@ -1,6 +1,6 @@
 // The core README's "The runtime".
 
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,8 +30,7 @@ const model = { provider: faux.provider.id, modelId: faux.getModel().id };
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "agent-runtime-env-"));
-  // macOS's temp directory is a link into `/private`, which `pwd` prints resolved.
-  workspace = await realpath(await mkdtemp(join(tmpdir(), "agent-runtime-workspace-")));
+  workspace = await mkdtemp(join(tmpdir(), "agent-runtime-workspace-"));
 });
 
 afterEach(async () => {
@@ -71,7 +70,9 @@ describe("an instance's execution environment", () => {
     });
     let read: unknown;
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }, { id: "b-1" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo here > marker && cat marker" }, { id: "b-1" }), {
+        stopReason: "toolUse",
+      }),
       (request) => {
         read = request.messages.at(-1);
         return fauxAssistantMessage("Done.");
@@ -92,8 +93,9 @@ describe("an instance's execution environment", () => {
       role: "toolResult",
       toolCallId: "b-1",
       isError: false,
-      content: [{ type: "text", text: `${alice}\n` }],
+      content: [{ type: "text", text: "here\n" }],
     });
+    expect(await readFile(join(alice, "marker"), "utf8")).toBe("here\n");
     expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
   });
 });
