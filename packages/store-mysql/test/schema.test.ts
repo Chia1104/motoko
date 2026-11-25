@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -31,7 +32,8 @@ import { MYSQL_URL, mysqlBackend, newPool, temporaryDatabase, uniqueName } from 
 import type { Backend } from "./helpers.ts";
 
 const run = promisify(execFile);
-const PACKAGE = new URL("..", import.meta.url).pathname;
+const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
+const DRIZZLE_KIT = join(PACKAGE, "node_modules", "drizzle-kit", "bin.js");
 const context = BACKGROUND_CONTEXT;
 const scope = { kind: "agent", name: "one" };
 const latest = supportedMigrations().at(-1) as string;
@@ -61,8 +63,8 @@ describe("the shipped migrations", () => {
       await cp(join(PACKAGE, "migrations"), out, { recursive: true });
       const before = await readdir(out);
       const { stdout } = await run(
-        "pnpm",
-        ["exec", "drizzle-kit", "generate", "--dialect", "mysql", "--schema", "./src/schema.ts", "--out", out],
+        process.execPath,
+        [DRIZZLE_KIT, "generate", "--dialect", "mysql", "--schema", "./src/schema.ts", "--out", out],
         { cwd: PACKAGE },
       );
       expect(stdout).toMatch(/No schema changes/);

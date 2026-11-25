@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { PGlite } from "@electric-sql/pglite";
@@ -25,7 +26,8 @@ import {
 import { DATABASE_URL, newPool, temporaryDatabase } from "./helpers.ts";
 
 const run = promisify(execFile);
-const PACKAGE = new URL("..", import.meta.url).pathname;
+const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
+const DRIZZLE_KIT = join(PACKAGE, "node_modules", "drizzle-kit", "bin.js");
 const scope = { kind: "agent", name: "one" };
 const latest = supportedMigrations().at(-1) as string;
 
@@ -45,8 +47,8 @@ describe("the shipped migrations", () => {
       await cp(join(PACKAGE, "migrations"), out, { recursive: true });
       const before = await readdir(out);
       const { stdout } = await run(
-        "pnpm",
-        ["exec", "drizzle-kit", "generate", "--dialect", "postgresql", "--schema", "./src/schema.ts", "--out", out],
+        process.execPath,
+        [DRIZZLE_KIT, "generate", "--dialect", "postgresql", "--schema", "./src/schema.ts", "--out", out],
         { cwd: PACKAGE },
       );
       expect(stdout).toMatch(/No schema changes/);
