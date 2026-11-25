@@ -113,6 +113,14 @@ interface AgentRuntimeCommonOptions<Ports> {
    */
   readonly closeIdleAfterMs?: number;
   /**
+   * How long a nested call, one a tool makes through pi-durable's `executeTool()` (a code mode script's, say), waits at
+   * the approval gate for a decision, in ms, from when it first parks. The tool that made it awaits it, so its
+   * invocation runs and the instance does not close idle meanwhile. With no decision by then, the nested call fails for
+   * that tool with `No decision arrived in time.` A call of the model's holds no process while it waits, and waits until
+   * it is decided. Default: an hour.
+   */
+  readonly nestedApprovalTimeoutMs?: number;
+  /**
    * pi-durable's `HarnessOptions.settings` (such as `progress`), passed to every instance's Harness, read at each use
    * as pi-durable reads it. `extensions` is the runtime's: a session selects the app's extensions and its own agent's.
    */
@@ -597,6 +605,7 @@ class Instance implements AgentInstance {
         ports: this.#portsOf,
         portsFailed: this.#portsFailed,
         app,
+        nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
       });
       for (const extension of extensions.values()) registry.install(extension);
       for (const extension of app.installed) registry.install(extension);
@@ -1286,6 +1295,11 @@ class Session implements AgentSession {
   }
 }
 
+const HOUR = 60 * 60 * 1000;
+
+/** How long a nested call waits at the gate for a decision under `options`. */
+const nestedApprovalTimeoutOf = (options: AgentRuntimeOptions<unknown>) => options.nestedApprovalTimeoutMs ?? HOUR;
+
 /**
  * The runtime: agent definitions bound to a host, model access and the app's ports. Each named
  * instance of an agent is one pi-durable Harness over the storage the host opens for its scope,
@@ -1310,6 +1324,10 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
   const idle = options.closeIdleAfterMs;
   if (idle !== undefined && !(Number.isFinite(idle) && idle > 0)) {
     throw new TypeError("`closeIdleAfterMs` must be a positive number of milliseconds");
+  }
+  const nested = nestedApprovalTimeoutOf(options);
+  if (!(Number.isFinite(nested) && nested > 0)) {
+    throw new TypeError("`nestedApprovalTimeoutMs` must be a positive number of milliseconds");
   }
   let closed = false;
   // A handle the app holds stays the instance of its scope, also once closed for idleness; one

@@ -4,7 +4,8 @@
 // "Durable approval" says: a gated call waits for its decision, an approved one runs, a declined one
 // hands the model the operator's words as its result, and the decision is recorded with the arguments
 // the gate saw. A nested call, one a tool makes through `executeTool()`, is decided the same way, and a
-// declined one hands the operator's words to the tool that made it.
+// declined one hands the operator's words to the tool that made it; one no decision reaches by its
+// deadline fails for that tool, while a call of the model's has none.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -143,12 +144,18 @@ afterEach(async () => {
 /**
  * A conversation of `agent` whose first reply asks for `call`, and what the model reads after it. With `rule`, the
  * conversation is a session with that approval rule of its own, recorded as the runtime records it. The extensions
- * `more` run before the agent's, as an app's do, and the app's extensions `app` too, with the tiers they give.
+ * `more` run before the agent's, as an app's do, and the app's extensions `app` too, with the tiers they give. A nested
+ * call waits `nestedApprovalTimeoutMs` for a decision, an hour by default, as the runtime's.
  */
 async function conversationOf(
   agent: AgentDefinition<Ports>,
   call: { name: string; id: string },
-  { rule, more = [], app = [] }: { rule?: ApprovalRule; more?: Extension[]; app?: AppExtension[] } = {},
+  {
+    rule,
+    more = [],
+    app = [],
+    nestedApprovalTimeoutMs = 3_600_000,
+  }: { rule?: ApprovalRule; more?: Extension[]; app?: AppExtension[]; nestedApprovalTimeoutMs?: number } = {},
 ) {
   const { faux, models, model } = fauxModels();
   const deleted: string[] = [];
@@ -158,6 +165,7 @@ async function conversationOf(
     ports: () => ({ deleted }),
     portsFailed: () => undefined,
     app: appOf(agent, app),
+    nestedApprovalTimeoutMs,
   });
   for (const extension of [...more, ...app.map(({ extension }) => extension)]) registry.install(extension);
   for (const extension of extensions.values()) registry.install(extension);
@@ -506,5 +514,41 @@ describe("a nested call", () => {
     expect(await decisionsOf(harness, id)).toEqual({
       "sc-1/1": { approved: false, comment: "Keep a.", args: { key: "a" }, at: expect.any(Number) },
     });
+  });
+
+  it("with no decision by its deadline, fails for its caller, and cannot be decided then", async () => {
+    const { harness, id, deleted, result } = await conversationOf(
+      notes,
+      { name: "script", id: "sc-1" },
+      { app: [scripting], nestedApprovalTimeoutMs: 50 },
+    );
+    // The caller reads the gate's words, as an error diagnostic of its nested call's.
+    expect(await result()).toMatchObject({
+      role: "toolResult",
+      isError: true,
+      content: [{ type: "text", text: "No decision arrived in time." }],
+    });
+    expect(deleted).toEqual([]);
+    expect(await decisionsOf(harness, id)).toEqual({});
+    await expect(decideOne(notes, harness, id, { toolCallId: "sc-1/1", approved: true })).rejects.toBeInstanceOf(
+      ApprovalNotPendingError,
+    );
+  });
+
+  it("has a deadline a call of the model's does not: that one waits on", async () => {
+    const { harness, id, deleted, result } = await conversationOf(
+      notes,
+      { name: "remove", id: "rm-1" },
+      { nestedApprovalTimeoutMs: 20 },
+    );
+    await slot(harness, id, "rm-1", "sleeping");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await slot(harness, id, "rm-1", "sleeping");
+    expect(await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true })).toEqual({
+      toolCallId: "rm-1",
+      outcome: "applied",
+    });
+    expect(await result()).toMatchObject({ isError: false, content: [{ type: "text", text: "deleted a" }] });
+    expect(deleted).toEqual(["a"]);
   });
 });

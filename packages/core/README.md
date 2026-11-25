@@ -255,6 +255,7 @@ createAgentRuntime({
   models | modelsFor,      // exactly one: one Models for every instance, or one per instance
   ports | portsFor,        // exactly one: one ports object, or ports per tool call
   closeIdleAfterMs?,       // close an instance idle this long; default never
+  nestedApprovalTimeoutMs?, // how long a nested call waits for a decision; default an hour
   settings?,               // pi-durable's settings; the runtime sets `extensions`
   extensionsFor?,          // (scope) => AppExtension[]: the app's pi-durable extensions for an instance; default none
   telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
@@ -537,8 +538,9 @@ end, a reader's end, any change to pi-durable's task graph):
 
 A call parked for an approval does not count: it is committed state, needs no process until its
 decision arrives, and `approve()` on a closed instance reopens it and delivers the decision. A nested
-call parked for one counts, through the call that awaits it (see "Durable approval"). Inputs
-a failed run left queued wait for the next input either way, which reopens the instance.
+call parked for one counts, through the call that awaits it, until it is decided or
+`nestedApprovalTimeoutMs` passes (see "Durable approval"). Inputs a failed run left queued wait for
+the next input either way, which reopens the instance.
 
 **Sleeping work.** pi-durable's own timers wake sleeping tasks only while their Harness is open. An
 instance whose earliest sleep is due within `closeIdleAfterMs` stays open, and pi-durable wakes it.
@@ -1076,9 +1078,17 @@ after that call ended shows neither. A declined nested call fails, for the tool 
 which a code mode script's call rejects with.
 
 A nested call waiting for a decision holds a process, unlike a call of the model's: the tool that made
-it awaits it, so that call's invocation runs, and the instance does not close idle meanwhile. A
-restart cuts the invocation off. A replay-safe tool, as code mode is, runs again after it and finds
-its nested call still waiting, so the question and its decision carry on.
+it awaits it, so that call's invocation runs, and the instance does not close idle meanwhile (on
+Cloudflare, its Durable Object stays awake). So it waits `nestedApprovalTimeoutMs` at most (default an
+hour), from when it first parks; a restart does not move that deadline. With no decision by then, it
+fails for the tool that made it with `No decision arrived in time.` as its error (an error diagnostic,
+code `no_decision`), its question ends as a declined one's, with an `approval:resolved` that carries
+`approved: false` and those words as its `comment`, and `approve()` refuses it with
+`ApprovalNotPendingError`. A call of the model's has no such deadline. A restart cuts the invocation
+off. A replay-safe tool, as code mode is, runs again after it and finds its nested call still
+waiting, so the question and its decision carry on. A code mode script can also bound itself, waits
+for decisions included: its `// @options` line's `timeout_ms` is code mode's `timeoutMs` for that
+script, which has none by default.
 
 ## What Motoko owns, and what is pi's
 

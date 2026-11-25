@@ -45,6 +45,8 @@ interface BindOptions {
   readonly portsFailed: (target: PortsTarget, error: unknown) => void;
   /** The app's extensions this open installs: what each agent's sessions select with its own, and their tools. */
   readonly app: AppExtensions;
+  /** How long a nested call waits at the gate for a decision, in ms, before it fails for the tool that made it. */
+  readonly nestedApprovalTimeoutMs: number;
 }
 
 /**
@@ -298,7 +300,9 @@ export function agentExtensions(
           }
         }),
         sections: [section("agent", () => agent.instructions, { tag: false })],
-        hooks: [approvalGate(agent, (name) => options.app.catalog.tool(agent.kind, name))],
+        hooks: [
+          approvalGate(agent, (name) => options.app.catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
+        ],
       }),
     );
   }

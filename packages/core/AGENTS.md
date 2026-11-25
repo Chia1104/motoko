@@ -9,7 +9,9 @@ store-postgres and store-mysql build on.
 - Everything a client sees comes from committed state, through the transcriber. What only `pi.live` shows (a streaming
   reply, a retry wait) is superseded by the stored events that follow it.
 - A wait parks in committed state and holds no process. An approval, a delegate's child, a deferred call's reply and
-  a sleep all park this way, so an idle close, a restart or an evicted Durable Object loses nothing.
+  a sleep all park this way, so an idle close, a restart or an evicted Durable Object loses nothing. The one exception
+  is a nested call's approval: it waits inside the invocation of the call that made it, so it holds a process until it
+  is decided or `nestedApprovalTimeoutMs` passes.
 - Core runs in a browser, Electron or a Durable Object: no `node:*` import and no Node global. Reach Node through a
   host.
 - The `exports` map is exactly `.`, `./testing`, `./store`, `./store/testing` and `./sqlite`, and no module re-exports

@@ -102,6 +102,15 @@ export function ruleOf(
  */
 const GATE_ARGS = "motoko.gate.args";
 
+/**
+ * The gate's memo of a nested call's deadline, epoch ms, from when it first parked: it waits for a decision until then.
+ * A nested call's wait holds the invocation of the call that made it, which awaits it, so it may not wait for ever.
+ */
+const GATE_UNTIL = "motoko.gate.until";
+
+/** Why a nested call failed that no decision reached by its deadline: its caller reads it, and its question ends so. */
+export const NO_DECISION_IN_TIME = "No decision arrived in time.";
+
 const isObject = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -140,6 +149,10 @@ function declineText(comment: string | undefined): string {
  * call's result, or, for a nested call, the tool that made it, as the result's error. It judges every call of a session
  * of `agent`, the app's tools' too, and the calls they make, as `toolOf` knows them.
  *
+ * A nested call waits `nestedTimeoutMs` at most, from when it first parked (`GATE_UNTIL`): the tool that made it awaits
+ * it, and holds a process meanwhile. Its park's key expires then, so no decision reaches it any more; it is blocked,
+ * and its caller reads `NO_DECISION_IN_TIME` as its error. A call of the model's waits until it is decided.
+ *
  * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
  * pi-durable runs the whole chain again at every wake, registry change and decision, and an app hook may rewrite the
  * call anew each time (with the time, say), or not at all; an approved call runs with the memo, whatever the hooks
@@ -147,12 +160,18 @@ function declineText(comment: string | undefined): string {
  * call decided before it parked has no memo either: the operator was asked about the model's arguments, so it is
  * blocked if an app hook rewrote them (`MODEL_ARGS`).
  */
-export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
+export function approvalGate(
+  agent: AgentDefinition,
+  toolOf: (name: string) => GatedTool,
+  nestedTimeoutMs: number,
+): HookRegistration {
   return hook(ToolTask, {
     async beforeTool(call, api, context) {
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state !== undefined) {
-        if ("expired" in state) return { block: "No decision arrived for this call." };
+        if ("expired" in state) {
+          return { block: call.parent === undefined ? "No decision arrived for this call." : NO_DECISION_IN_TIME };
+        }
         if (!state.value.approved) return { block: declineText(state.value.comment) };
         const asked = await api.memo<JsonObject>(GATE_ARGS, context);
         if (asked !== undefined) return { arguments: asked };
@@ -165,12 +184,25 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       if (!isGated(agent, toolOf(call.name), rule)) return undefined;
       // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
       await api.memo(GATE_ARGS, call.arguments as JsonObject, context);
-      return { sleep: { signals: [ApprovalSignal.key(call.id)] } };
+      const signals = [ApprovalSignal.key(call.id)];
+      if (call.parent === undefined) return { sleep: { signals } };
+      const until = await api.memo(GATE_UNTIL, api.now() + nestedTimeoutMs, context);
+      return api.now() < until ? { sleep: { signals, until } } : { block: NO_DECISION_IN_TIME };
     },
     async afterTool(call, result, api, context) {
       if (!result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return undefined;
       const state = await api.readSignal(ApprovalSignal, call.id, context);
-      if (state === undefined || !("value" in state) || state.value.approved) return undefined;
+      if (state === undefined || "expired" in state) {
+        const until = call.parent === undefined ? undefined : await api.memo<number>(GATE_UNTIL, context);
+        if (until === undefined || api.now() < until) return undefined;
+        // As a declined nested call's: its caller reads the words alone, as its error.
+        return {
+          output: [{ type: "text", text: NO_DECISION_IN_TIME }],
+          isError: true,
+          diagnostics: [{ severity: "error", code: "no_decision", message: NO_DECISION_IN_TIME }],
+        };
+      }
+      if (state.value.approved) return undefined;
       const text = declineText(state.value.comment);
       // The model reads the operator's words, not the harness's report of a blocked call. The tool that made a nested
       // call reads no output of an error, only its error diagnostics, so there the words are one.

@@ -23,6 +23,7 @@ import type {
 
 import type { AgentWireEvent, AgentWireEventOf, CursorPosition, QueuedInput, Usage } from "@chia1104/motoko-wire";
 
+import { NO_DECISION_IN_TIME } from "./approvals.ts";
 import type { Decisions } from "./approvals.ts";
 import { startedCall } from "./calls.ts";
 import type { Calls } from "./calls.ts";
@@ -283,6 +284,20 @@ function nestedOf(live: LiveState | undefined): { slot: NestedToolSlot; call: As
     return { slot, call: { name: slot.name, args: slot.arguments, parent } };
   });
 }
+
+/** How a question ends: its decision, or the gate's when none came in time. */
+interface Answer {
+  readonly approved: boolean;
+  readonly comment?: string;
+}
+
+/**
+ * The end of the question of a nested call that no decision reached by its deadline, from how its slot says it ended:
+ * the gate failed it with `NO_DECISION_IN_TIME`, so it is declined with those words. Its task, and the gate's memos with
+ * it, are gone by then; its slot shows while the call it was made under runs, so a resumed stream reads the same.
+ */
+const lapsed = (slot: NestedToolSlot): Answer | undefined =>
+  slot.summary?.error === NO_DECISION_IN_TIME ? { approved: false, comment: NO_DECISION_IN_TIME } : undefined;
 
 /** A deferred call's record while it is parked on its reply: it sleeps, and no reply reached it yet. */
 function awaitedReply(slot: ToolSlot, calls: Calls) {
@@ -770,9 +785,16 @@ export class Transcriber {
     this.#awaiting.clear();
   }
 
-  /** The stored decision of a call, after its question if that has not gone out: a decision answers one. */
-  #decision(toolCallId: string, decisions: Decisions, call = this.#open.get(toolCallId)) {
-    const decision = decisions[toolCallId];
+  /**
+   * The stored decision of a call, or how else its question ended (`decision`), after its question if that has not gone
+   * out: a decision answers one.
+   */
+  #decision(
+    toolCallId: string,
+    decisions: Decisions,
+    call = this.#open.get(toolCallId),
+    decision: Answer | undefined = decisions[toolCallId],
+  ) {
     if (decision === undefined || this.#resolved.has(toolCallId)) return;
     this.#ask(toolCallId, call, decisions);
     this.#resolved.add(toolCallId);
@@ -951,14 +973,17 @@ export class Transcriber {
 
   /**
    * Questions for the nested calls `live` shows at the gate, and decisions for those that moved on from it, while the
-   * call they were made under runs. A nested call that has not reached the gate yet may be decided, but its decision
-   * goes out as it moves on, so a resumed stream says what a live one does.
+   * call they were made under runs: the operator's, or, for one the gate failed at its deadline, a decline with the
+   * gate's words. A nested call that has not reached the gate yet may be decided, but its decision goes out as it moves
+   * on, so a resumed stream says what a live one does.
    */
   #nested(live: LiveState | undefined, decisions: Decisions, calls: Calls, gateArgs: GateArgs) {
     for (const { slot, call } of nestedOf(live)) {
       if (!this.#open.has(call.parent)) continue;
       if (atGate(slot, calls)) this.#ask(slot.callId, call, decisions, gateArgs);
-      else if (slot.status !== "pending") this.#decision(slot.callId, decisions, call);
+      else if (slot.status !== "pending") {
+        this.#decision(slot.callId, decisions, call, decisions[slot.callId] ?? lapsed(slot));
+      }
     }
   }
 
