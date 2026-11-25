@@ -93,23 +93,20 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
 export const MODEL_ARGS = "motoko.model.args";
 
 /**
- * The tool hooks `registration`, the hook at `index` in app extension `extension`, as the instance installs them. What
- * their `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
+ * The tool hooks `registration`, a hook of app extension `extension`, as the instance installs them. What their
+ * `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
  *
- * - nothing, or a `block`: itself;
+ * - nothing, a `block` or `arguments`: itself. pi-durable runs the chain again at every wake, registry change and
+ *   decision, and the hook may rewrite a call anew each time; the gate holds the arguments it saw when the call parked.
+ *   The first app hook to rewrite a call memoizes the arguments it was handed (`MODEL_ARGS`);
  * - a `sleep`: a `block`. Only the gate parks a call before it runs: a call that sleeps there would show as a question,
- *   and `approve()` would decide it;
- * - `arguments`: the first the hook gave this call, memoized under the hook's extension and place (an extension may
- *   hook the tool task more than once), since pi-durable runs the chain again at every wake, registry change and
- *   decision. The first app hook to rewrite a call also memoizes the arguments it was handed (`MODEL_ARGS`);
- * - nothing, from a hook that gave `arguments` on an earlier run of the chain: those `arguments` still.
+ *   and `approve()` would decide it.
  */
-function appToolHooks(extension: string, index: number, registration: HookRegistration): HookRegistration {
+function appToolHooks(extension: string, registration: HookRegistration): HookRegistration {
   // SAFETY: a registration for the tool task holds its hooks, as `hook(ToolTask, ...)` types them.
   const handlers = registration.handlers as Partial<ToolHooks>;
   const { beforeTool } = handlers;
   if (beforeTool === undefined) return registration;
-  const memo = `motoko.args.${extension}.${index}`;
   const hooks: Partial<ToolHooks> = {
     ...handlers,
     async beforeTool(call, api, context) {
@@ -119,14 +116,11 @@ function appToolHooks(extension: string, index: number, registration: HookRegist
         return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
       }
       if (decision?.arguments !== undefined) {
-        // Before the rewrite's own memo, so a held rewrite always has them. No hook before this one rewrote the call,
-        // or its memo would hold them already.
+        // The first write wins: a hook before this one that rewrote the call memoized the arguments it was handed.
         // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
         await api.memo(MODEL_ARGS, call.arguments as JsonObject, context);
-        return { arguments: await api.memo(memo, decision.arguments, context) };
       }
-      const rewritten = await api.memo<JsonObject>(memo, context);
-      return rewritten === undefined ? decision : { arguments: rewritten };
+      return decision;
     },
   };
   return { ...registration, handlers: hooks };
@@ -137,8 +131,8 @@ const installable = (extension: Extension): Extension => ({
   ...extension,
   ...(extension.tools !== undefined && { tools: extension.tools.map(withParksRecorded) }),
   ...(extension.hooks !== undefined && {
-    hooks: extension.hooks.map((registration, index) =>
-      registration.task === ToolTask.definition.name ? appToolHooks(extension.name, index, registration) : registration,
+    hooks: extension.hooks.map((registration) =>
+      registration.task === ToolTask.definition.name ? appToolHooks(extension.name, registration) : registration,
     ),
   }),
 });
