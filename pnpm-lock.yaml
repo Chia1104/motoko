@@ -228,6 +228,9 @@ catalogs:
     '@earendil-works/pi-ai':
       specifier: ~1.6.0
       version: 1.6.0
+    '@earendil-works/pi-codemode':
+      specifier: ~1.6.0
+      version: 1.6.0
     '@earendil-works/pi-durable':
       specifier: ~1.6.0
       version: 1.6.0
@@ -438,6 +441,9 @@ importers:
       '@earendil-works/pi-ai':
         specifier: catalog:pi
         version: 1.6.0(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1(supports-color@10.2.2))(supports-color@10.2.2)(undici@7.30.2)(ws@8.23.0)(zod@4.6.7)
+      '@earendil-works/pi-codemode':
+        specifier: catalog:pi
+        version: 1.6.0
       '@earendil-works/pi-durable':
         specifier: catalog:pi
         version: 1.6.0(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(google-auth-library@10.9.1(supports-color@10.2.2))(react@19.3.1)(supports-color@10.2.2)(undici@7.30.2)(ws@8.23.0)(zod@4.6.7)

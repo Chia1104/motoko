@@ -52,6 +52,7 @@
   "devDependencies": {
     "@earendil-works/chord": "catalog:pi",
     "@earendil-works/pi-ai": "catalog:pi",
+    "@earendil-works/pi-codemode": "catalog:pi",
     "@earendil-works/pi-durable": "catalog:pi",
     "@earendil-works/pi-schema": "catalog:pi",
     "typescript": "catalog:",

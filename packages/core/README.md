@@ -255,6 +255,7 @@ createAgentRuntime({
   models | modelsFor,      // exactly one: one Models for every instance, or one per instance
   ports | portsFor,        // exactly one: one ports object, or ports per tool call
   closeIdleAfterMs?,       // close an instance idle this long; default never
+  nestedApprovalTimeoutMs?, // how long a nested call waits for a decision; default an hour
   settings?,               // pi-durable's settings; the runtime sets `extensions`
   extensionsFor?,          // (scope) => AppExtension[]: the app's pi-durable extensions for an instance; default none
   telemetryFor?,           // (scope) => TelemetryContext: an instance's pi-telemetry; default pi's, which records nothing
@@ -536,8 +537,10 @@ end, a reader's end, any change to pi-durable's task graph):
 - no sleep due within `closeIdleAfterMs` (`harness.wake().at`).
 
 A call parked for an approval does not count: it is committed state, needs no process until its
-decision arrives, and `approve()` on a closed instance reopens it and delivers the decision. Inputs
-a failed run left queued wait for the next input either way, which reopens the instance.
+decision arrives, and `approve()` on a closed instance reopens it and delivers the decision. A nested
+call parked for one counts, through the call that awaits it, until it is decided or
+`nestedApprovalTimeoutMs` passes (see "Durable approval"). Inputs a failed run left queued wait for
+the next input either way, which reopens the instance.
 
 **Sleeping work.** pi-durable's own timers wake sleeping tasks only while their Harness is open. An
 instance whose earliest sleep is due within `closeIdleAfterMs` stays open, and pi-durable wakes it.
@@ -904,6 +907,16 @@ const runtime = createAgentRuntime({
   sessions other app tools, run them as another agent. A call of an app tool that parks on its own
   work (its `execute` returns `{ sleep }`) is recorded in `runtime.calls` before it parks, so its
   sleep raises no question and `approve()` refuses it, as a deferred call's does.
+- **Hooks.** An app's `beforeTool` hook may watch a call, give it other `arguments` or `block` it. It
+  cannot make the call wait: only the gate parks a call before it runs, so a hook's `sleep` ends the
+  call as blocked, with an error saying an app hook cannot make a call wait, and nothing asks about
+  it. A hook that needs something awaits it. pi-durable runs the whole chain again at every wake,
+  registry change and decision, so the gate, which runs after every app hook, memoizes the arguments
+  it sees when it first parks a call: an approved call runs with those, through a decision and a
+  restart, however a hook rewrites it later (with the time, say), or if it gives none. A call that
+  never parks runs with what the chain gives it. A gated call is asked about with them
+  (`approval:request.args`, see "Durable approval"), and one approved before it reached the gate,
+  asked about with the model's arguments, ends blocked when a hook rewrites them.
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides
@@ -918,8 +931,9 @@ const runtime = createAgentRuntime({
 - **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
   before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
   throws `SessionBusyError`, and an input that queues starts once they end.
-- **Nested calls.** A call a tool makes through pi-durable's `executeTool()` passes the gate too. One
-  the gate holds raises no question yet and cannot be decided; aborting the run ends it.
+- **Nested calls.** A call a tool makes through pi-durable's `executeTool()`, such as a code mode
+  script's, passes the gate too, and is asked about and decided under the call that made it (see
+  "Durable approval").
 
 A session whose `tools` an earlier Motoko stored, as pi-durable's list of exactly those tools, runs
 none of the app's until `configure({ tools })` sets them again.
@@ -957,8 +971,8 @@ overwriting their bytes (`PRAGMA secure_delete`) is the store's to arrange where
 
 Each session's stream is derived from committed state by one transcriber, with one set of rules for
 history and for each new commit: the entries (`pi.user`, `pi.assistant`, `pi.tool-result`,
-`pi.compaction`, and the runtime's `motoko.steer` and `motoko.continue`), the `pi.live` document and
-the runtime's approval record. Stored facts (messages, tool calls, results, decisions, run ends) come
+`pi.compaction`, and the runtime's `motoko.steer` and `motoko.continue`), the `pi.live` document,
+the runtime's approval record, and the gate's memo of the arguments of a call waiting at it. Stored facts (messages, tool calls, results, decisions, run ends) come
 from entries and documents; what only `pi.live` shows (a streaming reply, drafts, running output, a
 retry wait, a parked question, a compaction going on or the newest one's failure) is superseded by
 the stored events that follow it.
@@ -1031,6 +1045,50 @@ discarded and nothing is decided (`ApprovalNotPendingError` names that call). Re
 reinstalling the registry or the decision arriving reruns the gate, which reads the signal first and
 passes, or blocks a declined call, whatever the session's rule says by then; an `afterTool` hook then
 hands the model `The operator declined this call: <comment>` as the call's result.
+
+The operator is asked about the arguments the call runs with. The gate is the last `beforeTool` hook,
+after the app's, and when a call first parks it memoizes the arguments it sees on the call's tool
+task (`motoko.gate.args`). `approval:request.args` are those, and `approve()` records them with the
+decision, since the memo goes when the task ends. So the live stream, a catch-up and a replay ask with
+the same arguments: the decision's, else the memo's, else, for a call the gate never saw park (one
+decided before it parked, or by an earlier Motoko), the model's. A call no app hook rewrote is asked
+about with the model's arguments. An approved call runs with the memoized arguments, whatever the
+app's hooks give when the decision wakes it, so what runs is what the operator was asked about.
+
+A call may be decided before it parks: `approve()` also takes a call whose task exists and that the
+gate will gate but has not reached, such as the next call of a sequential round while its app hooks
+run. Its operator was asked about the model's arguments, so it runs only with those. The first app
+hook that rewrites a call memoizes the arguments pi handed it (`motoko.model.args`): the model's, as
+the tool repairs and coerces them, which no app hook has touched. The gate checks an approved call
+that has no memo of its own against these, and blocks it when it would run with others, with
+`The call's arguments changed after the operator was asked about it.` pi's coercion is not a
+rewrite: a call no app hook rewrote runs, even when the model wrote `"42"` for a number or `null`
+for an optional property.
+
+A nested call, one a tool makes through pi-durable's `executeTool()` (a code mode script's
+`tools.remove({ key: "a" })`, say), passes the gate as a call of the model's does, and `approve()`
+decides it the same way, by its id: `<callId>/<key>`, as `pi.live.nestedTools` shows it. Its
+`approval:request` carries `parentToolCallId`, the model's call it was made under, directly or
+through other nested calls, and its `args` in the same order: the decision's, else the memo's, else
+those the tool made it with. Its `approval:resolved` goes out as it moves on from the gate, so a
+client resuming anywhere folds what a client connected all along does. A nested call has no
+`tool:start` or `tool:end` of its own: its question ends with the call it was made under, and a replay
+after that call ended shows neither. A declined nested call fails, for the tool that made it, with
+`The operator declined this call: <comment>` as its error (an error diagnostic, code `declined`),
+which a code mode script's call rejects with.
+
+A nested call waiting for a decision holds a process, unlike a call of the model's: the tool that made
+it awaits it, so that call's invocation runs, and the instance does not close idle meanwhile (on
+Cloudflare, its Durable Object stays awake). So it waits `nestedApprovalTimeoutMs` at most (default an
+hour), from when it first parks; a restart does not move that deadline. With no decision by then, it
+fails for the tool that made it with `No decision arrived in time.` as its error (an error diagnostic,
+code `no_decision`), its question ends as a declined one's, with an `approval:resolved` that carries
+`approved: false` and those words as its `comment`, and `approve()` refuses it with
+`ApprovalNotPendingError`. A call of the model's has no such deadline. A restart cuts the invocation
+off. A replay-safe tool, as code mode is, runs again after it and finds its nested call still
+waiting, so the question and its decision carry on. A code mode script can also bound itself, waits
+for decisions included: its `// @options` line's `timeout_ms` is code mode's `timeoutMs` for that
+script, which has none by default.
 
 ## What Motoko owns, and what is pi's
 

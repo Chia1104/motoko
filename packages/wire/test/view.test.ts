@@ -64,6 +64,25 @@ describe("applyEvent", () => {
     expect(resolved.pendingApprovals).toEqual([]);
   });
 
+  it("shows a call with the arguments its question carries, which the call runs with", () => {
+    // An app's hook rewrote the `{ path: "/x" }` the call started with.
+    const rewritten = { path: "/x", at: "noon" };
+    const question: AgentWireEvent = {
+      type: "approval:request",
+      toolCallId: "c1",
+      toolName: "rm",
+      tier: "write",
+      args: rewritten,
+    };
+    const asked = foldEvents([...live.slice(0, 8), question]);
+    expect(asked.items.find((item) => item.kind === "tool")).toMatchObject({
+      args: rewritten,
+      status: "awaiting_approval",
+    });
+    // Sent again to a resumed client, the question changes nothing.
+    expect(applyEvent(asked, question)).toEqual(asked);
+  });
+
   it("ends what a run left open, and notes a run that did not finish", () => {
     const view = foldEvents([...live.slice(0, 6), { type: "run:end", reason: "aborted", code: "aborted" }]);
     // The reply that streamed was never stored and the draft never became a call.
@@ -204,6 +223,73 @@ describe("a deferred call", () => {
   it("ignores a wait for a call the view does not hold", () => {
     const view = foldEvents([{ type: "run:start" }]);
     expect(applyEvent(view, wait)).toEqual(view);
+  });
+});
+
+describe("a nested call's question", () => {
+  const start: AgentWireEvent = {
+    type: "tool:start",
+    toolCallId: "cm-1",
+    toolName: "codemode",
+    label: "Code mode",
+    tier: "exec",
+    args: { code: "..." },
+  };
+  const question: AgentWireEvent = {
+    type: "approval:request",
+    toolCallId: "cm-1/c1",
+    toolName: "remove",
+    tier: "write",
+    args: { key: "a" },
+    parentToolCallId: "cm-1",
+  };
+  const decision: AgentWireEvent = { type: "approval:resolved", toolCallId: "cm-1/c1", approved: false, comment: "no" };
+  const end = (status: "ok" | "aborted"): AgentWireEvent => ({
+    type: "tool:end",
+    toolCallId: "cm-1",
+    toolName: "codemode",
+    status,
+  });
+  const script = (view: AgentSessionView) => view.items.find((item): item is ToolItem => item.kind === "tool")!;
+  const asked = foldEvents([{ type: "run:start" }, start, question]);
+
+  it("waits under the call it was made under, which runs on, until it is decided", () => {
+    expect(asked.items).toHaveLength(1);
+    expect(script(asked)).toMatchObject({
+      status: "running",
+      nestedApprovals: [{ toolCallId: "cm-1/c1", toolName: "remove", tier: "write", args: { key: "a" } }],
+    });
+    expect(asked).toMatchObject({ status: "awaiting_approval", pendingApprovals: ["cm-1/c1"] });
+
+    const decided = applyEvent(asked, decision);
+    expect(script(decided)).toMatchObject({
+      status: "running",
+      nestedApprovals: [{ toolCallId: "cm-1/c1", approval: { approved: false, comment: "no" } }],
+    });
+    expect(decided).toMatchObject({ status: "running", pendingApprovals: [] });
+    // A resumed stream sends the question again, or the decision: nothing changes.
+    expect(applyEvent(asked, question)).toEqual(asked);
+    expect(applyEvent(decided, question)).toEqual(decided);
+    expect(applyEvent(decided, decision)).toEqual(decided);
+  });
+
+  it("ends with the call it was made under, decided or not, and with the run", () => {
+    const ended = foldEvents([end("ok")], asked);
+    expect(script(ended)).toEqual({ ...script(foldEvents([start])), status: "ok" });
+    expect(ended).toMatchObject({ status: "running", pendingApprovals: [] });
+    expect(foldEvents([decision, end("ok")], asked)).toEqual(ended);
+    // A question or a decision for a call whose caller ended changes nothing.
+    expect(foldEvents([question, decision], ended)).toEqual(ended);
+
+    const aborted = applyEvent(asked, { type: "run:end", reason: "aborted" });
+    expect(script(aborted)).toEqual({ ...script(foldEvents([start])), status: "aborted" });
+    expect(aborted).toMatchObject({ status: "idle", pendingApprovals: [] });
+  });
+
+  it("is dropped when the view does not hold the call it was made under", () => {
+    const view = foldEvents([{ type: "run:start" }]);
+    expect(applyEvent(view, question)).toEqual(view);
+    expect(agentWireEventSchema.parse(question)).toEqual(question);
   });
 });
 

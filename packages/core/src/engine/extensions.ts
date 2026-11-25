@@ -1,5 +1,13 @@
 import type { Context } from "@earendil-works/chord/context";
-import type { Extension, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
+import { ToolTask } from "@earendil-works/pi-durable";
+import type {
+  Extension,
+  HookRegistration,
+  JsonObject,
+  ToolExecutionApi,
+  ToolHooks,
+  ToolRegistration,
+} from "@earendil-works/pi-durable";
 
 import { UNKNOWN_TIER } from "@chia1104/motoko-wire";
 
@@ -78,6 +86,58 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
 });
 
 /**
+ * The arguments pi hands the chain of a call that an app hook rewrites: the model's, as the tool repairs and coerces
+ * them, which no app hook has touched. The first app hook to rewrite the call memoizes them on its tool task, and the
+ * gate checks a call decided before it parked against them, since the operator was asked about the model's arguments.
+ */
+export const MODEL_ARGS = "motoko.model.args";
+
+/**
+ * The tool hooks `registration`, a hook of app extension `extension`, as the instance installs them. What their
+ * `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
+ *
+ * - nothing, a `block` or `arguments`: itself. pi-durable runs the chain again at every wake, registry change and
+ *   decision, and the hook may rewrite a call anew each time; the gate holds the arguments it saw when the call parked.
+ *   The first app hook to rewrite a call memoizes the arguments it was handed (`MODEL_ARGS`);
+ * - a `sleep`: a `block`. Only the gate parks a call before it runs: a call that sleeps there would show as a question,
+ *   and `approve()` would decide it.
+ */
+function appToolHooks(extension: string, registration: HookRegistration): HookRegistration {
+  // SAFETY: a registration for the tool task holds its hooks, as `hook(ToolTask, ...)` types them.
+  const handlers = registration.handlers as Partial<ToolHooks>;
+  const { beforeTool } = handlers;
+  if (beforeTool === undefined) return registration;
+  const hooks: Partial<ToolHooks> = {
+    ...handlers,
+    async beforeTool(call, api, context) {
+      const decision = await beforeTool.call(handlers, call, api, context);
+      if (decision?.block !== undefined) return decision;
+      if (decision?.sleep !== undefined) {
+        return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
+      }
+      if (decision?.arguments !== undefined) {
+        // The first write wins: a hook before this one that rewrote the call memoized the arguments it was handed.
+        // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
+        await api.memo(MODEL_ARGS, call.arguments as JsonObject, context);
+      }
+      return decision;
+    },
+  };
+  return { ...registration, handlers: hooks };
+}
+
+/** App extension `extension` as the instance installs it, its tools' parks recorded and its tool hooks held. */
+const installable = (extension: Extension): Extension => ({
+  ...extension,
+  ...(extension.tools !== undefined && { tools: extension.tools.map(withParksRecorded) }),
+  ...(extension.hooks !== undefined && {
+    hooks: extension.hooks.map((registration) =>
+      registration.task === ToolTask.definition.name ? appToolHooks(extension.name, registration) : registration,
+    ),
+  }),
+});
+
+/**
  * The app's extensions `app` for the instance of `scope`, whose agent and sub-agents are `agents`. Throws a
  * `TypeError`, and the instance does not open, for an extension named like the runtime's (`runtime:` names) or like
  * another, a tool named like an agent's or like another extension's, or a wrap of an agent's tool: pi-durable runs the
@@ -122,12 +182,7 @@ export function appExtensions(
   }
 
   const selects = (entry: AppExtension, kind: string) => (entry.agents ?? [scope.kind]).includes(kind);
-  const installed = new Map(
-    app.map(({ extension }) => [
-      extension,
-      extension.tools === undefined ? extension : { ...extension, tools: extension.tools.map(withParksRecorded) },
-    ]),
-  );
+  const installed = new Map(app.map(({ extension }) => [extension, installable(extension)]));
 
   const kinds = new Map<string, { tools: Map<string, GatedTool>; tiers: Set<string> }>();
   for (const agent of agents.values()) {
