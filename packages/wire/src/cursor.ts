@@ -4,16 +4,16 @@ import { agentWireEventSchema } from "./events.ts";
 import type { AgentWireEvent } from "./events.ts";
 
 /**
- * A position in one session's event stream: the point right after an event. Opaque to clients, who
- * store the last one they folded and hand it back to resume.
+ * A position in one session's event stream, at the point right after an event. Opaque to clients,
+ * who store the last one they folded and hand it back to resume.
  *
- * It names committed state, so it outlives the process that handed it out: the session, the newest
- * stored entry whose events the client has folded, and the run the client is in. A cursor from the
- * current run of a live stream also names its place in the server's in-memory log of that run, so
- * resuming in the same process is exact, event for event. Anywhere else (after a restart, in another
- * process on the same storage, or once that log is gone) the server sends the events of what was
- * committed after the entry, then the current in-flight state, which fold into the view a client
- * connected all along has.
+ * It names committed state, so it outlives the process that handed it out. It holds the session, the
+ * newest stored entry whose events the client has folded, and the run the client is in. A cursor
+ * from the current run of a live stream also names its place in the server's in-memory log of that
+ * run, so resuming in the same process is exact, event for event. Anywhere else, such as after a
+ * restart, in another process on the same storage, or once that log is gone, the server sends the
+ * events of what was committed after the entry and then the current in-flight state. These fold into
+ * the view that a client connected all along has.
  */
 export type Cursor = string & { readonly __brand: "Cursor" };
 
@@ -23,9 +23,9 @@ export interface CursorPosition {
   /** The newest stored entry whose events the client has, all of them; 0 before the first. */
   readonly entry: number;
   /**
-   * The run the client is in: the entry that started it (its user message's, or the marker of the
-   * `continue` that started it), or `"*"` for a run that started without one. Absent while the client
-   * sees no run going.
+   * The run the client is in. It is the entry that started the run, which is its user message's
+   * entry or the marker of the `continue` that started it, or `"*"` for a run that started without
+   * one. Absent while the client sees no run going.
    */
   readonly run?: number | "*";
   /** The cursor's place in one server log: the log's `epoch` and the event's sequence number in it. */
