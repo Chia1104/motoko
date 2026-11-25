@@ -1,6 +1,6 @@
 // An input's metadata, as the README's "Input metadata" says: `submit` stores it on the input's entry, an app hook reads
-// the run's inputs back with `runInputs`, and a run resumed after a restart reads the same. The stream is the one an
-// input without metadata gives.
+// the run's inputs back with `runInputs` and finds their messages with `locateInputs`, and a run resumed after a restart
+// reads the same. The stream is the one an input without metadata gives.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
@@ -12,7 +12,15 @@ import * as z from "zod";
 
 import type { StreamItem } from "@chia1104/motoko-wire";
 
-import { createAgentRuntime, defineAgent, defineTool, InvalidRequestError, runInputs, scopeKey } from "../src/index.ts";
+import {
+  createAgentRuntime,
+  defineAgent,
+  defineTool,
+  InvalidRequestError,
+  locateInputs,
+  runInputs,
+  scopeKey,
+} from "../src/index.ts";
 import type { AgentRuntime, AgentSession, RunInput, SubmitInput } from "../src/index.ts";
 
 import {
@@ -52,19 +60,12 @@ const agent = defineAgent({ kind: "writer", instructions: "You write.", tools: [
 /** What the app's hook saw at each request: the run's inputs, as `runInputs` read them. */
 let seen: (readonly RunInput[])[] = [];
 
-/** Each input's `metadata.context` as a user message right after the input, as an app puts its volatile context. */
-function withContext(messages: readonly Message[], inputs: readonly RunInput[]): Message[] {
-  const pending = [...inputs];
-  return messages.flatMap((message) => {
-    const input = pending[0];
-    if (input === undefined || message.role !== "user" || message.timestamp !== input.at) return [message];
-    pending.shift();
-    const text = input.metadata?.context;
-    if (typeof text !== "string") return [message];
-    const added: UserMessage = { role: "user", content: [{ type: "text", text }], timestamp: input.at };
-    return [message, added];
-  });
-}
+/** A user message, as a request holds one. */
+const userMessage = (text: string, timestamp: number): UserMessage => ({
+  role: "user",
+  content: [{ type: "text", text }],
+  timestamp,
+});
 
 /** The app's extension: its `beforeRequest` puts each input's context after it, in every request of the run. */
 const volatile = defineExtension({
@@ -74,7 +75,13 @@ const volatile = defineExtension({
       async beforeRequest({ messages }, api, hookContext) {
         const inputs = await runInputs(api, hookContext);
         seen.push(inputs);
-        return { messages: withContext(messages, inputs) };
+        const next = [...messages];
+        // From the last, so each insert leaves the places before it as they are.
+        for (const { index, at, metadata } of locateInputs(messages, inputs).toReversed()) {
+          const text = metadata?.context;
+          if (index !== undefined && typeof text === "string") next.splice(index + 1, 0, userMessage(text, at));
+        }
+        return { messages: next };
       },
     }),
   ],
@@ -301,5 +308,44 @@ describe("an input's metadata", () => {
     await session.submit({ text: "Hi", requestId: "1", metadata });
     await readUntil(session, isRunEnd);
     expect(seen).toEqual([[expect.objectContaining({ metadata })]]);
+  });
+});
+
+describe("locateInputs", () => {
+  const answer = fauxAssistantMessage("Done.");
+
+  it("gives inputs that share a time that time's messages in entry order", () => {
+    const messages = [userMessage("A", 1), answer, userMessage("B", 5), userMessage("C", 5)];
+    const b: RunInput = { entryId: 3, at: 5, steer: false, metadata: { n: "b" } };
+    const c: RunInput = { entryId: 4, at: 5, steer: false, metadata: { n: "c" } };
+
+    expect(locateInputs(messages, [b, c])).toEqual([
+      { entryId: 3, at: 5, steer: false, metadata: { n: "b" }, index: 2 },
+      { entryId: 4, at: 5, steer: false, metadata: { n: "c" }, index: 3 },
+    ]);
+  });
+
+  it("gives an input whose message the request does not hold no index, and finds the inputs before it", () => {
+    // An earlier hook dropped B's message.
+    const messages = [userMessage("A", 1), answer, userMessage("C", 3)];
+    const inputs: RunInput[] = [
+      { entryId: 1, at: 1, steer: false },
+      { entryId: 3, at: 2, steer: true },
+      { entryId: 5, at: 3, steer: true },
+    ];
+
+    expect(locateInputs(messages, inputs)).toEqual([
+      { entryId: 1, at: 1, steer: false, index: 0 },
+      { entryId: 3, at: 2, steer: true, index: undefined },
+      { entryId: 5, at: 3, steer: true, index: 2 },
+    ]);
+  });
+
+  it("takes the run's message, not an earlier run's of the same time", () => {
+    const messages = [userMessage("Earlier", 5), answer, userMessage("Now", 5)];
+
+    expect(locateInputs(messages, [{ entryId: 7, at: 5, steer: false }])).toEqual([
+      { entryId: 7, at: 5, steer: false, index: 2 },
+    ]);
   });
 });

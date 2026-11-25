@@ -969,11 +969,14 @@ none of the app's until `configure({ tools })` sets them again.
 
 `submit({ metadata })` stores a JSON object on the input's entry, as it is, for the app's hooks: what
 the app works out for the turn when the input arrives, such as drafts, memory or the time. A hook
-reads the inputs of the run going on with `runInputs`, in entry order:
+reads the inputs of the run going on with `runInputs`, in entry order, and finds each one's user
+message in the request with `locateInputs`:
 
 ```ts
 runInputs(api: HookApi, context: Context): Promise<readonly RunInput[]>  // [] with no run going
 interface RunInput { entryId: number; at: number; steer: boolean; metadata?: JsonObject }
+locateInputs(messages: readonly Message[], inputs: readonly RunInput[]): readonly LocatedInput[]
+interface LocatedInput extends RunInput { index: number | undefined }
 ```
 
 ```ts
@@ -982,23 +985,35 @@ const volatile = defineExtension({
   hooks: [
     hook(GenerationTask, {
       async beforeRequest({ messages }, api, context) {
-        const inputs = await runInputs(api, context);
-        return { messages: withContext(messages, inputs) };  // each input's context after its message
+        const next = [...messages];
+        // From the last, so each insert leaves the places before it as they are.
+        for (const { index, metadata } of locateInputs(messages, await runInputs(api, context)).toReversed()) {
+          if (index !== undefined && metadata !== undefined) next.splice(index + 1, 0, contextMessage(metadata));
+        }
+        return { messages: next };
       },
     }),
   ],
 });
 ```
 
-- **Where.** `at` is the timestamp of the input's user message, which finds it in `beforeRequest`'s
-  `messages`. A boundary gives the inputs it places one time, so inputs in a row may share it.
-  `steer` is the `user` event's: the input joined the run after one of its tool rounds.
+- **Where.** `at` is the timestamp of the input's user message. A boundary gives the inputs it places
+  one time, so inputs in a row may share it. `locateInputs` gives each input the `index` of its user
+  message in `messages`: the user message of its time, matched from the end, as the run's inputs are
+  the newest user messages, so an earlier run's of the same time is not taken. Inputs that share a
+  time take that time's messages in entry order. `index` is `undefined` when `messages` does not hold
+  the message: compaction summarized it, or an earlier hook dropped it. The inputs come back in the
+  order given. `steer` is the `user` event's: the input joined the run after one of its tool rounds.
 - **Which.** The run's inputs start at pi-durable's `run.first`; a continue's are those of the failed
   run it carries on, then its own.
 - **Durable.** The metadata is committed with its input, so every request of the run, and a run
   resumed after a restart, reads the same. A hook that puts it in each request puts it in the same
   place, and the provider's prefix cache holds. Nothing the hook adds is stored, and the stream shows
   no metadata.
+- **Cache.** `runInputs` holds only the current run's inputs. When the next run starts, the context a
+  hook put after an earlier run's input leaves the request, so the provider's prefix cache breaks from
+  the previous run's input onward. An app that needs its context to stay across runs puts it in the
+  input's own content instead.
 - **When.** An input that waits in the queue carries the metadata of its `submit`, not of the moment
   its run starts; a steer carries its own.
 - **Refused.** `metadata` that is not a JSON object (finite numbers, plain objects, no `undefined`),
@@ -1161,7 +1176,7 @@ script, which has none by default.
 Motoko exports what it adds: `defineTool` (zod parameters, ports, tiers), `defineDelegate`,
 `defineDeferredTool`, `defineAgent`, the host contract with `assertScope`, `scopeKey`, `inProcessLeases` and
 the `@chia1104/motoko-core/testing` suite, `createAgentRuntime`, the session, approval, reply and recovery
-API, `runInputs` for the app's hooks, the error classes (which hide pi's own, such as `ConversationBusy`), the wire events, and
+API, `runInputs` and `locateInputs` for the app's hooks, the error classes (which hide pi's own, such as `ConversationBusy`), the wire events, and
 `eraseConversations` of `@chia1104/motoko-core/sqlite`. Everything else is pi's and comes from
 `@earendil-works/*`: `createModels` and the providers from `@earendil-works/pi-ai`, `MemoryStorage`,
 `SqliteStorage` and the `Storage`, `Wake`, `ModelRef` and `Report` types from `@earendil-works/pi-durable`,
