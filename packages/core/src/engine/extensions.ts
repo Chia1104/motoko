@@ -51,7 +51,7 @@ export interface ToolCatalog {
   tiers(kind: string): ReadonlySet<string>;
 }
 
-/** What an instance makes of the app's extensions when it opens. */
+/** What an instance makes of the app's extensions when it opens, and again on each refresh. */
 export interface AppExtensions {
   readonly catalog: ToolCatalog;
   /** The extensions to install in the instance's registry. */

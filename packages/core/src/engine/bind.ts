@@ -43,8 +43,11 @@ interface BindOptions {
   readonly ports: (target: PortsTarget) => unknown;
   /** The ports of a call could not be resolved; the call fails with a `PortsUnavailableError`. */
   readonly portsFailed: (target: PortsTarget, error: unknown) => void;
-  /** The app's extensions this open installs: what each agent's sessions select with its own, and their tools. */
-  readonly app: AppExtensions;
+  /**
+   * The app's extensions as the open last resolved them, read at each use: what each agent's sessions select with its
+   * own, and their tools.
+   */
+  readonly app: () => AppExtensions;
   /** How long a nested call waits at the gate for a decision, in ms, before it fails for the tool that made it. */
   readonly nestedApprovalTimeoutMs: number;
 }
@@ -128,7 +131,7 @@ async function delegateResult(
 function toDelegate(
   tool: DelegateDefinition,
   extensions: ReadonlyMap<string, Extension>,
-  app: AppExtensions,
+  app: () => AppExtensions,
 ): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
   const { agent } = tool;
@@ -155,7 +158,7 @@ function toDelegate(
         // select the sub-agent, all of its tools, and its model when it names one.
         await configure(tx, id, {
           // SAFETY: the instance installs an extension for every agent its delegates reach.
-          extensions: app.selectionOf(agent.kind, extensions.get(agent.kind)!),
+          extensions: app().selectionOf(agent.kind, extensions.get(agent.kind)!),
           tools: null,
           ...(agent.model !== undefined && { model: agent.model }),
         });
@@ -301,7 +304,7 @@ export function agentExtensions(
         }),
         sections: [section("agent", () => agent.instructions, { tag: false })],
         hooks: [
-          approvalGate(agent, (name) => options.app.catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
+          approvalGate(agent, (name) => options.app().catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
         ],
       }),
     );

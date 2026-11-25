@@ -269,7 +269,7 @@ runtime.close()
 instance.state                                // dormant · opening · open · closing · closed · lease_lost · failed
 instance.open() · createSession({ model?, thinkingLevel?, maxTurns?, tools?, requiresApproval?, requestId? })
 instance.listSessions() · session(id)
-instance.resume() · refreshModels() · close()
+instance.resume() · refreshModels() · refreshExtensions() · close()
 session.submit({ text, requestId, whenBusy?, replyTo? })  // idempotent on requestId; replyTo makes an ask
 session.continue({ requestId })                 // carries on a run that ended without an answer; idempotent
 session.withdraw(submissionId)                  // { outcome: "withdrawn" | "already_placed" | "settled" }
@@ -309,6 +309,9 @@ type InstanceReport =
         | "reopen_failed" | "erase_failed" }
   | { source: "runtime"; scope: StorageScope; error: unknown;
       kind: "ports_failed"; sessionId: string; toolCallId: string; toolName: string }
+  | { source: "runtime"; scope: StorageScope;
+      kind: "task_blocked"; sessionId: string; taskKind: string;
+      reason: "missing_task" | "task_too_old" | "migration_failed" }
   | { source: "runtime"; scope: StorageScope; error: unknown;
       kind: "reply_failed"; sessionId: string; requestId: string;
       to: { scope, sessionId, toolCallId };  // the reply address, without its token
@@ -318,6 +321,13 @@ type InstanceReport =
 `reply_failed` is an ask whose reply `deliverReply` failed to deliver: it is tried again unless
 `gaveUp`. It is also reported, with `gaveUp` and `attempt: 0`, for an ask whose request was first
 submitted without a reply address, whose run's answer therefore reaches no one.
+
+`task_blocked` is a task of the session `sessionId` that this open cannot run: no extension provides
+a definition of `taskKind` (`missing_task`), or the one that does is older than the task
+(`task_too_old`) or cannot migrate its state (`migration_failed`, which pi-durable reports too, with
+the error). It keeps its session busy until an open provides the definition again or the session is
+aborted (see [App extensions](#app-extensions)). Each open reports a task once: one already blocked
+or sleeping when the instance opens, as it opens, and one that becomes blocked while it is open, then.
 
 `telemetryFor(scope)` gives an instance its pi-telemetry `TelemetryContext`, which the runtime hands
 to pi-durable's `HarnessOptions.telemetry` each time the instance opens. It then receives pi-durable's
@@ -926,8 +936,24 @@ const runtime = createAgentRuntime({
   or a task its hook asked for, keep giving that extension, its tools and its tasks under the same
   names: register a tool whose backend is down, and fail in its `execute`. When the instance opens
   without it, a call waiting at the gate for its tool ends with `tool_unavailable`, and a task whose
-  definition is gone stays blocked, the session busy, until the extension is back or the session is
-  aborted.
+  definition is gone is reported to `onReport` as `task_blocked`, with its session and `taskKind`. It
+  stays blocked, the session busy, until the extension is back or the session is aborted.
+- **Refreshing.** `instance.refreshExtensions()` calls `extensionsFor` again and puts what it lists in
+  place while the instance stays open, for an app whose tools change, such as an MCP server that
+  connects. An extension of a name already installed replaces the installed one, and a new one is
+  added: the next model request offers their tools, also in a run already under way, and
+  `tool_search` finds their deferred ones. One it no longer lists is no longer selected but stays
+  installed until the instance closes, so a task its hook asked for runs to its end. A call waiting
+  at the gate for a tool the refresh drops ends with `tool_unavailable` (an `error` whose message
+  says `Tool … is not available`): at once when the refresh installs any extension, as pi-durable
+  then asks every waiting call again, else when its decision comes. A call of it that parked on its
+  own work ends so too, when it wakes. Top-level sessions follow the refresh; a delegate's child
+  session keeps the selection it stored when it was made, so a refresh adds nothing to it. A refresh
+  is refused, and changes nothing, for what an open is refused for: a throw of `extensionsFor`, the
+  names above, and pi-durable's own errors, such as two tasks of one name. For pi-durable's, an
+  extension the refresh no longer lists counts too, as it is still installed. Refreshes take effect
+  one at a time, in call order. One called while the instance opens waits for the open; one called
+  while it is not open does nothing, as its next open calls `extensionsFor` anyway.
 - **`afterRun`.** A run whose session selects an `afterRun` hook answers, and its `run:end` goes out,
   before the tasks the hook asks for run. Until they end the session is busy: `whenBusy: "reject"`
   throws `SessionBusyError`, and an input that queues starts once they end.
