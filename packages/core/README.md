@@ -908,9 +908,10 @@ const runtime = createAgentRuntime({
   cannot make the call wait: only the gate parks a call before it runs, so a hook's `sleep` ends the
   call as blocked, with an error saying an app hook cannot make a call wait, and nothing asks about
   it. A hook that needs something awaits it. pi-durable runs the whole chain again at every wake,
-  registry change and decision, so the runtime memoizes the first `arguments` each hook gives a call:
-  the call runs with those, through a decision and a restart, however the hook rewrites them later
-  (with the time, say), or if it gives none.
+  registry change and decision, so the gate, which runs after every app hook, memoizes the arguments
+  it sees when it first parks a call: an approved call runs with those, through a decision and a
+  restart, however a hook rewrites it later (with the time, say), or if it gives none. A call that
+  never parks runs with what the chain gives it.
 - **Names.** The open fails with a `TypeError` for an extension named `runtime:…` or like another, a
   tool named like an agent's (the instance's agent's or a sub-agent's its delegates reach) or like
   another extension's, or a wrap of an agent's tool. pi-durable runs the last extension that provides

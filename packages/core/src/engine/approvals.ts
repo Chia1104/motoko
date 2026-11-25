@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineSignal, hook, LiveDoc, ToolTask } from "@earendil-works/pi-durable";
-import type { ConversationId, Harness, HookRegistration } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, HookRegistration, JsonObject } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 
 import type { AgentDefinition } from "../agent.ts";
@@ -89,6 +89,12 @@ export function ruleOf(
   return sessions?.sessions[String(conversationId)]?.requiresApproval;
 }
 
+/**
+ * The gate's memo of the arguments it saw when a call first parked. The gate runs last in the chain, after every app
+ * hook, so these are the arguments the call runs with. A memo lives on the call's tool task while the task can run.
+ */
+const GATE_ARGS = "motoko.gate.args";
+
 function declineText(comment: string | undefined): string {
   return comment === undefined || comment.trim().length === 0
     ? "The operator declined this call."
@@ -103,6 +109,11 @@ function declineText(comment: string | undefined): string {
  * rule says by then, so a rule changed while the call waited neither runs a declined call nor drops its
  * question. A declined call is blocked, and `afterTool` hands the model the operator's comment as the
  * call's result. It judges every call of a session of `agent`, the app's tools' too, as `toolOf` knows them.
+ *
+ * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
+ * pi-durable runs the whole chain again at every wake, registry change and decision, and an app hook may rewrite the
+ * call anew each time (with the time, say), or not at all; an approved call runs with the memo, whatever the hooks
+ * before the gate give on that pass. A call that never parks has no memo, and runs with what the chain gives it.
  */
 export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => GatedTool): HookRegistration {
   return hook(ToolTask, {
@@ -110,10 +121,14 @@ export function approvalGate(agent: AgentDefinition, toolOf: (name: string) => G
       const state = await api.readSignal(ApprovalSignal, call.id, context);
       if (state !== undefined) {
         if ("expired" in state) return { block: "No decision arrived for this call." };
-        return state.value.approved ? undefined : { block: declineText(state.value.comment) };
+        if (!state.value.approved) return { block: declineText(state.value.comment) };
+        const asked = await api.memo<JsonObject>(GATE_ARGS, context);
+        return asked === undefined ? undefined : { arguments: asked };
       }
       const rule = ruleOf(await api.snapshot(SessionsDoc, context), api.conversationId);
       if (!isGated(agent, toolOf(call.name), rule)) return undefined;
+      // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
+      await api.memo(GATE_ARGS, call.arguments as JsonObject, context);
       return { sleep: { signals: [ApprovalSignal.key(call.id)] } };
     },
     async afterTool(call, result, api, context) {
