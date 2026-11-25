@@ -95,7 +95,8 @@ export interface MotokoClient {
   /**
    * Idempotent by `requestId`: submitting one again returns the first submission. While a run is going, `whenBusy`
    * says what the input does: `queue` (default) waits for the run's answer, `steer` joins the run after its current
-   * tool round, `reject` refuses it (`session_busy`). A waiting input shows in the view's `queued`.
+   * tool round, `reject` refuses it (`session_busy`), also while the view shows `wrappingUp`. A waiting input shows in
+   * the view's `queued`.
    */
   submit(sessionId: string, input: SubmitInput): Promise<SubmitResult>;
   /**

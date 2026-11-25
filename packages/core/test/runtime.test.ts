@@ -376,15 +376,15 @@ describe("reconnecting with a cursor", () => {
     // Event for event, cursor for cursor, what the client that stayed read.
     expect([...dropping.items, ...back.items]).toEqual(always.items);
     expect(new Set(always.items.map((item) => item.cursor)).size).toBe(always.items.length);
-    // Resuming from the last cursor yields nothing but what comes next, and the queue and compaction state it may hold
-    // stated again.
+    // Resuming from the last cursor yields nothing but what comes next, and the queue, compaction and wrap-up state it
+    // may hold stated again.
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     const after: AgentWireEvent[] = [];
     for await (const item of session.events({ from: always.items.at(-1)!.cursor, signal: controller.signal })) {
       after.push(item.event);
     }
-    expect(after).toEqual([{ type: "queue", items: [] }, { type: "compaction:end" }]);
+    expect(after).toEqual([{ type: "queue", items: [] }, { type: "compaction:end" }, { type: "wrapup:end" }]);
   });
 
   it("carries on from committed state once its run has left the log, without a full replay", async () => {

@@ -49,7 +49,7 @@ export class SessionOwnedError extends AgentRuntimeError {
   }
 }
 
-/** `submit` with `whenBusy: "reject"` while a run is going. */
+/** `submit` with `whenBusy: "reject"` while a run is going, or after its answer while its `afterRun` tasks run. */
 export class SessionBusyError extends AgentRuntimeError {
   override readonly name = "SessionBusyError";
   readonly sessionId: string;

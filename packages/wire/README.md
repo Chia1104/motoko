@@ -61,6 +61,8 @@ export class SessionClient {
 | `session:compacted`        | `messageId`, `summary`, `at?`                                                     | A summary replaced older messages in what the model reads.                               |
 | `queue`                    | `items: [{ submissionId, text, whenBusy }]`                                       | The inputs waiting for a run, all of them, whenever that changes.                        |
 | `run:end`                  | `reason` (`done`/`aborted`/`error`/`interrupted`), `code?`, `error?`              | The run ended; `code` is the engine's reason.                                            |
+| `wrapup:start`             |                                                                                   | The run answered; the session still runs its `afterRun` tasks and takes no input yet.    |
+| `wrapup:end`               |                                                                                   | The `afterRun` tasks ended: the session takes a new input.                               |
 | `stream:reset`             |                                                                                   | Transport-level: the cursor cannot be honoured; discard the view, a full replay follows. |
 
 `StreamItem` is `{ cursor, event }`; `cursor` is the position right after `event`. A call's `tier` is
@@ -101,6 +103,23 @@ boundary), or with the newest one's `error` when it failed, which pi-durable kee
 compaction succeeds. A compaction that finds nothing to summarize sends no `session:compacted`, and
 leaves an earlier failure standing. Both come from `pi.live`, so a stream that replays the session shows only the compaction state as it is now.
 
+### Wrap-ups
+
+A run whose session selects an app's `afterRun` hook (see core's
+[App extensions](../core#app-extensions)) answers, and its `run:end` goes out, before the tasks the
+hook asks for run, such as naming the session. `wrapup:start` follows that `run:end`, and
+`wrapup:end` comes once the tasks end, before the next run's `run:start`. In between the view's
+`status` is `idle`, but the session takes no new input: `submit` with `whenBusy: "reject"` is
+refused (`session_busy`), and an input that queues shows in `queue` and starts its run after
+`wrapup:end`. How to show that, and whether to let a user type meanwhile, is the client's choice.
+
+Both come from `pi.live`, like the compaction state: history keeps no wrap-up, so a stream that
+replays the session shows only a wrap-up going on now. A stream resumed from a cursor it cannot
+continue exactly states the wrap-up as it is, since one a client saw may be over: before the next
+`run:start` it replays, else at the end of its catch-up. So a resumed stream may send one
+`wrapup:end`, even for an agent with no `afterRun` hook; a stream read from the session's start
+sends none for such an agent.
+
 ### Cursors
 
 A cursor names a position in committed state, so it outlives the process that handed it out:
@@ -120,7 +139,8 @@ cursors as opaque. Resuming from a cursor whose log place the server still holds
 events after it, no duplicates and no gaps. Any other cursor (after a restart, from another process
 on the same storage, or once its run has left the log) yields the queue and the compaction state as
 they are (a `queue` event, then `compaction:start` or `compaction:end`), the events of what was
-committed after `entry`, then the current in-flight state (see below), then the live stream; no
+committed after `entry`, then the current in-flight state (see below) and the wrap-up state (see
+Wrap-ups), then the live stream; no
 `stream:reset`, no replay of the session. The resumed events need not be the ones a connected client got, but they fold
 into the same view. Only a cursor naming an entry the session's storage does not hold gets
 `stream:reset` and a full replay.
@@ -131,7 +151,9 @@ into the same view. Only a cursor naming an entry the session's storage does not
 approval, compaction notes, notices for runs that did not finish), `pendingApprovals` (tool call
 ids), `status` (`idle`, `running`, `awaiting_approval`), `retrying`, `queued`, the inputs
 waiting for a run, absent while none waits, and `compaction`, `{ status: "running", reason }` while a
-compaction goes on or `{ status: "failed", error }` after one failed, absent otherwise. A user message that steered its run has `steer: true`.
+compaction goes on or `{ status: "failed", error }` after one failed, absent otherwise, and
+`wrappingUp`, `true` from `wrapup:start` to `wrapup:end`, absent otherwise; `run:start` and
+`run:end` leave it as it is. A user message that steered its run has `steer: true`.
 Every event that names an item upserts it.
 
 A tool call's `args` are those the model wrote (`tool:start`) until its `approval:request`, whose `args`
@@ -154,7 +176,7 @@ a client may already hold idempotently: a stored message or call it has, `approv
 call still waiting (and none for a call that ended or was decided), nested calls' too, `reply:wait` for a call still
 parked on its reply, `tool:update` only for a call still running, the reply streamed so far as
 `assistant:start` and one delta, `retry:wait` or `retry:end`, `queue`, `compaction:start` or
-`compaction:end`, and `run:end` only while the view shows a run.
+`compaction:end`, `wrapup:start` or `wrapup:end`, and `run:end` only while the view shows a run.
 
 ### Following a delegate's child
 
@@ -294,3 +316,4 @@ feature this milestone does not have.
 | solyx   | `named`                              | **dropped**                                                                                                     | Title generation is out of scope.                                                                                                                                                                                                                                                       |
 | runtime | `stream:reset`                       | **added**                                                                                                       | A cursor storage cannot honour must be answered honestly (see Cursors).                                                                                                                                                                                                                 |
 | runtime | `queue`, `user`'s `steer`            | **added**                                                                                                       | pi-durable queues an input a busy session gets, and places a steer into the run going on; a client shows what waits and takes it back (see Steering and the queue).                                                                                                                     |
+| runtime | `wrapup:start`, `wrapup:end`         | **added**                                                                                                       | A session that answered still runs its `afterRun` tasks, and refuses or holds new input meanwhile; a client shows why (see Wrap-ups).                                                                                                                                                   |
