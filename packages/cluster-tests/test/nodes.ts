@@ -1,7 +1,3 @@
-// Motoko nodes in one process on one database, as separate machines would run them: each node has its own store (a
-// lease `holder` of its own, over a connection of its own), runtime, handler and HTTP server. Leases are rows, so two
-// stores with different holders contend for an instance as two machines do.
-
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -24,7 +20,6 @@ import {
   migrate as migratePGlite,
 } from "@chia1104/motoko-store-postgres/pglite";
 
-/** What a run's `send` call did, and on which node. */
 export interface Sent {
   readonly node: string;
   readonly to: string;
@@ -46,11 +41,9 @@ const send = defineTool({
   },
 });
 
-/** A Motoko client of the node at `base`, as user `user`: the same credentials a browser of theirs sends. */
 const clientAt = (base: string, user: string) =>
   motokoClient(httpTransport({ baseUrl: base, headers: { authorization: `Bearer ${user}` } }));
 
-/** A deferred tool: it asks session `sessionId` of `user`'s instance, through the node the call runs on. */
 const ask = defineDeferredTool({
   name: "ask",
   description: "Ask another user's agent",
@@ -68,7 +61,6 @@ export const agent = defineAgent({
   policy: { requiresApproval: ["external"] },
 });
 
-/** What a node's `deliverReply` answered: `refused` for a reply the asker refused for good. */
 export interface Replied {
   readonly node: string;
   readonly outcome: string;
@@ -81,10 +73,8 @@ const defaultModel = { provider: faux.provider.id, modelId: faux.getModel().id }
 
 export const uniqueName = (prefix: string): string => `${prefix}-${randomBytes(4).toString("hex")}`;
 
-/** The scope of user `name`'s instance, as each node resolves it. */
 export const scopeOf = (name: string): StorageScope => ({ kind: agent.kind, name });
 
-/** The scope's lease row: who holds it, and whether it is unexpired by the database clock. */
 export interface LeaseRow {
   readonly holder: string | null;
   readonly held: boolean;
@@ -92,10 +82,6 @@ export interface LeaseRow {
 
 export interface Database {
   readonly name: string;
-  /**
-   * A store over a connection of its own, which `cut()` fails from then on, as a machine that died sends nothing;
-   * `lastAt()` is when its last statement came back, on `performance.now()`.
-   */
   store(options: PostgresStoreOptions): { store: PostgresStore; cut(): void; lastAt(): number };
   lease(scope: StorageScope): Promise<LeaseRow | undefined>;
   close(): Promise<void>;
@@ -104,7 +90,6 @@ export interface Database {
 const LEASE = `SELECT lease_holder AS holder, coalesce(lease_expires_at > clock_timestamp(), false) AS held
   FROM agent_runtime.scopes WHERE kind = $1 AND name = $2`;
 
-/** `client` with a `query` that fails unsent once `cut()` is called: every statement the store sends is one `query`. */
 function cuttable<C extends object>(client: C): { client: C; cut(): void; lastAt(): number } {
   let cut = false;
   let lastAt = Number.NaN;
@@ -124,7 +109,6 @@ function cuttable<C extends object>(client: C): { client: C; cut(): void; lastAt
   return { client: proxy, cut: () => void (cut = true), lastAt: () => lastAt };
 }
 
-/** A fresh in-memory PGlite, migrated: one connection that every store shares, each through its own view. */
 export async function pgliteDatabase(): Promise<Database> {
   const pglite = await PGlite.create();
   await migratePGlite(pglite);
@@ -141,7 +125,6 @@ export async function pgliteDatabase(): Promise<Database> {
   };
 }
 
-/** A database of its own on the Postgres at `url`, migrated, which `close()` drops; each store gets its own pool. */
 export async function postgresDatabase(url: string): Promise<Database> {
   const name = `motoko_cluster_${randomBytes(6).toString("hex")}`;
   const admin = new pg.Client({ connectionString: url });
@@ -156,7 +139,7 @@ export async function postgresDatabase(url: string): Promise<Database> {
   const pools: pg.Pool[] = [];
   const pool = () => {
     const created = new pg.Pool({ connectionString: own.toString(), max: 4 });
-    // An idle client whose connection dies emits `error` on the pool; without a listener Node exits.
+    // An idle client whose connection drops emits `error` on the pool. Without a listener, Node exits.
     created.on("error", () => undefined);
     pools.push(created);
     return created;
@@ -185,46 +168,33 @@ export async function postgresDatabase(url: string): Promise<Database> {
   };
 }
 
-/** A request a node's server received, as its handler saw it. */
 export interface Received {
   readonly method: string;
   readonly path: string;
   readonly headers: Headers;
-  /** A call's `method`. */
   readonly call?: string;
 }
 
 export interface NodeOptions {
-  /** Default: every node of the cluster. */
   readonly peers?: ClusterOptions["peers"];
   readonly connectTimeoutMs?: number;
-  /** Default: the user named by `Authorization: Bearer <name>`, whose instance it is. */
   readonly resolve?: MotokoHandlerOptions<MotokoTarget>["resolve"];
   readonly authorize?: MotokoHandlerOptions<MotokoTarget>["authorize"];
   readonly ttlMs?: number;
 }
 
 export interface ClusterNode {
-  /** Its internal base URL: its `cluster.self`, and the holder its store's leases name. */
   readonly url: string;
   readonly runtime: AgentRuntime;
-  /** Every request its server received. */
   readonly received: Received[];
-  /** The scopes whose storage its runtime opened, as `scopeKey`s. */
   readonly opened: string[];
-  /** What its handler and server reported. */
   readonly reported: unknown[];
-  /** When its last database statement came back, on `performance.now()`: a lease renewal, for an idle node. */
   lastStatementAt(): number;
-  /** The next call of `method` runs, then its connection is cut before the answer goes out. */
   cutAfterRunning(method: string): void;
-  /** Its database connection cut and its server gone, its leases not released: a machine that died. */
   crash(): Promise<void>;
-  /** Its server closed, then its runtime, which releases its leases: a node shut down. */
   close(): Promise<void>;
 }
 
-/** The user `Authorization: Bearer <name>` names, whose own instance it is. */
 export function resolveUser(request: Request): MotokoTarget | Response {
   const name = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
   return name === undefined ? new Response("Sign in first", { status: 401 }) : { agent, name };
@@ -239,7 +209,6 @@ const callMethodOf = (body: string): string | undefined => {
   }
 };
 
-/** Nodes on `database`, each a peer of the others; `sent` is what their runs' `send` calls did. */
 export function cluster(database: Database) {
   const nodes: ClusterNode[] = [];
   const sent: Sent[] = [];
@@ -265,7 +234,6 @@ export function cluster(database: Database) {
           const response = await serve!(request);
           if (call === undefined || call !== cutting) return response;
           cutting = undefined;
-          // The call ran to its answer; the machine died before it sent it.
           await response.arrayBuffer();
           req.socket.destroy();
           return new Response(null, { status: 500 });
@@ -280,7 +248,6 @@ export function cluster(database: Database) {
       return new Promise<void>((resolve) => server.close(() => resolve()));
     };
 
-    // An ask's reply goes to this node, as the asker: a peer that is the asker's home gets it forwarded.
     const deliverReply: DeliverReply = async ({ to, text, isError }) => {
       const reply = { toolCallId: to.toolCallId, token: to.token, text, isError };
       try {

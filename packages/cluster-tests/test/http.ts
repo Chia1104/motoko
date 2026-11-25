@@ -1,5 +1,3 @@
-// A client of a node's routes over plain `fetch`, as a browser or a curl sends them, reading every header and frame.
-
 import { followedEventSchema } from "@chia1104/motoko-wire";
 import type { AgentWireEvent } from "@chia1104/motoko-wire";
 
@@ -7,11 +5,9 @@ export interface Answer {
   readonly status: number;
   readonly headers: Headers;
   readonly text: string;
-  /** The JSON body, or `undefined` for one that is not JSON. */
   readonly body: Record<string, unknown> | undefined;
 }
 
-/** One call to the node at `base`. */
 export async function call(
   base: string,
   method: string,
@@ -33,7 +29,6 @@ export async function call(
   return { status: response.status, headers: response.headers, text, body };
 }
 
-/** One server-sent event as EventSource reads it, or a comment line. */
 interface Frame {
   readonly id?: string;
   readonly event?: string;
@@ -59,7 +54,6 @@ async function* framesOf(body: ReadableStream<Uint8Array>): AsyncGenerator<Frame
   }
 }
 
-/** A follow of a session at the node at `base`, as a client connects; `disconnect()` goes away. */
 export async function follow(base: string, sessionId: string, headers: Record<string, string> = {}) {
   const controller = new AbortController();
   const response = await fetch(`${base}/sessions/${sessionId}/events`, { headers, signal: controller.signal });
@@ -70,14 +64,12 @@ export async function follow(base: string, sessionId: string, headers: Record<st
   };
 }
 
-/** A wire event as a follow received it: the frame's `id`, and its data's cursor and event. */
 export interface Received {
   readonly id: string | undefined;
   readonly cursor: string;
   readonly event: AgentWireEvent;
 }
 
-/** Reads wire events, skipping heartbeats, until one that `until` holds of; anything else fails. */
 export async function readUntil(
   frames: AsyncGenerator<Frame> | undefined,
   until: (event: AgentWireEvent) => boolean,
@@ -97,7 +89,6 @@ export async function readUntil(
 
 export const isRunEnd = (event: AgentWireEvent): boolean => event.type === "run:end";
 
-/** Waits until `condition` holds, checking every few milliseconds; fails after `timeoutMs`. */
 export async function eventually(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {

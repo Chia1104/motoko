@@ -1,6 +1,3 @@
-// Two nodes on one database: a call or follow sent to a node that is not the instance's home is forwarded to the home,
-// which authenticates it again; handover, graceful and after a crash; and what is never forwarded.
-
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -25,14 +22,12 @@ const databases = [
 
 const readersOf = (runtime: AgentRuntime) => runtime.inspect().instances.reduce((sum, { readers }) => sum + readers, 0);
 const types = (items: readonly StreamItem[]) => items.map((item) => item.event.type);
-/** Each event, with the committed position its cursor names, without the place in one process's log. */
 const committed = (items: readonly StreamItem[]) =>
   items.map(({ cursor, event }) => {
     const { log: _log, ...position } = decodeCursor(cursor)!;
     return { position, event };
   });
 
-/** A reader of a session on `runtime` directly, in the background, from `from`. */
 function reader(runtime: AgentRuntime, name: string, sessionId: string, from?: string) {
   const controller = new AbortController();
   const items: StreamItem[] = [];
@@ -51,7 +46,6 @@ function reader(runtime: AgentRuntime, name: string, sessionId: string, from?: s
   };
 }
 
-/** `transport`, keeping every event and drop its follows had. */
 function recording(transport: MotokoTransport) {
   const events: StreamItem[] = [];
   let drops = 0;
@@ -73,7 +67,6 @@ function recording(transport: MotokoTransport) {
   return { transport: recorder, events, drops: () => drops };
 }
 
-/** `fetch` whose follows wait while the door is shut; calls always go through. */
 function door() {
   let opened = Promise.resolve();
   let open = () => undefined as void;
@@ -106,7 +99,6 @@ for (const { name, open, skip } of databases) {
       await nodes.close();
     });
 
-    /** A user whose instance `home` holds, with the credentials that name them and a session of theirs. */
     async function userAt(home: ClusterNode) {
       const user = uniqueName("alice");
       const instance = home.runtime.get(agent, user);
@@ -141,7 +133,6 @@ for (const { name, open, skip } of databases) {
       await onB.stop();
       expect(await call(a.url, "listSessions", {}, as)).toMatchObject({ status: 200, body: { result: [session] } });
 
-      // Each ran once, on B, as the client sent it: with its credentials, and marked as A's forward.
       expect(nodes.sent).toEqual([{ node: b.url, to: "bob" }]);
       expect(b.received.map((request) => request.call)).toEqual(["createSession", "submit", "approve", "listSessions"]);
       for (const request of b.received) {
@@ -149,7 +140,6 @@ for (const { name, open, skip } of databases) {
         expect(request.headers.get(FORWARDED_BY)).toBe(a.url);
       }
       expect(await b.runtime.get(agent, user).listSessions()).toEqual([session]);
-      // A asked for the lease and was refused; it opened nothing.
       expect(a.opened).toEqual([]);
       expect(a.runtime.inspect().open).toBe(0);
       expect(await database.lease(scopeOf(user))).toEqual({ holder: b.url, held: true });
@@ -174,7 +164,6 @@ for (const { name, open, skip } of databases) {
       for (const { id, cursor } of relayed) expect(id).toBe(cursor);
       expect(b.received.filter((request) => request.headers.has(FORWARDED_BY))).toHaveLength(1);
 
-      // Two readers on B: the direct follow's and A's. A's client goes away, and A ends its request to B.
       expect(readersOf(b.runtime)).toBe(2);
       throughA.disconnect();
       await eventually(() => readersOf(b.runtime) === 1);
@@ -186,7 +175,6 @@ for (const { name, open, skip } of databases) {
       const signedOut = new Set<string>();
       const a = await nodes.start();
       const b = await nodes.start({
-        // B has heard of a sign-out that A has not: A lets the caller in, B does not.
         resolve(request) {
           const target = resolveUser(request);
           if (target instanceof Response || !signedOut.has(target.name)) return target;
@@ -247,7 +235,6 @@ for (const { name, open, skip } of databases) {
 
     it("forwards nothing to itself, nor to a holder that is not an http(s) URL", async () => {
       const a = await nodes.start({ peers: () => true });
-      // A lease that names A, left by A's process before this one, and one that names no URL: `hostname:pid`.
       const [stale, unnamed] = [
         database.store({ holder: a.url }).store,
         database.store({ holder: "worker-7:4242" }).store,
@@ -261,7 +248,6 @@ for (const { name, open, skip } of databases) {
             body: { error: { code: "lease_held" } },
           });
         }
-        // Only the two calls themselves: A never sent one to itself.
         expect(a.received.map((request) => request.headers.has(FORWARDED_BY))).toEqual([false, false]);
       } finally {
         await Promise.all(leases.map((lease) => lease.release()));
@@ -269,7 +255,7 @@ for (const { name, open, skip } of databases) {
     });
 
     it("answers 503 lease_held when the home cannot be reached in connectTimeoutMs", async () => {
-      // TEST-NET-1: nothing answers there, so a connect waits until it times out (or fails at once, offline).
+      // TEST-NET-1 has no host that answers, so a connect waits until it times out, or fails at once when offline.
       const unreachable = "http://192.0.2.1:9/motoko";
       const a = await nodes.start({ peers: [unreachable], connectTimeoutMs: 200 });
       const user = uniqueName("alice");
@@ -303,14 +289,12 @@ for (const { name, open, skip } of databases) {
       const before = events.length;
       const cursor = client.sessionState(session.id).cursor!;
 
-      // B shuts down: it releases the lease, and its follow ends without `ended`, so A's does too.
       gate.shut();
       const forwardedToB = b.received.length;
       await b.close();
       await eventually(() => drops() === 1);
       expect(client.sessionState(session.id).status).toBe("connecting");
 
-      // A's next call takes the lease and runs here.
       faux.setResponses([fauxAssistantMessage("Second.")]);
       await client.submit(session.id, { text: "Two", requestId: "s2" });
       expect(a.opened).toEqual([scopeKey(scopeOf(user))]);
@@ -320,8 +304,6 @@ for (const { name, open, skip } of databases) {
       gate.open();
       await eventually(() => types(events).filter((type) => type === "run:end").length === 2);
       stop();
-      // From its cursor, the client got what a reader of A from that cursor gets: run two, and nothing of run one. (Each
-      // reader joins A's log at a place of its own, which only the cursors' log part names.)
       expect(committed(events.slice(before))).toEqual(committed(missed));
       expect(types(missed).filter((type) => type === "run:start")).toHaveLength(1);
       expect(foldEvents(events.map((item) => item.event))).toEqual(
@@ -354,11 +336,9 @@ for (const { name, open, skip } of databases) {
 
       expect(answer).toMatchObject({ status: 200, body: { result: [session] } });
       expect(refusals.length).toBeGreaterThan(0);
-      // Retry-After: the whole seconds left of B's lease, which is at most ttlMs.
       for (const refusal of refusals) {
         expect(refusal).toEqual({ status: 503, code: "lease_held", retryAfter: expect.stringMatching(/^[01]$/) });
       }
-      // B's last renewal was at most a renewal interval (ttlMs / 3) before the crash, and its lease lasts ttlMs past it.
       expect(failoverMs).toBeGreaterThan(ttlMs - ttlMs / 3 - 50);
       expect(failoverMs).toBeLessThan(ttlMs + 500);
       expect(a.opened).toEqual([scopeKey(scopeOf(user))]);
@@ -372,7 +352,6 @@ for (const { name, open, skip } of databases) {
       const asker = a.runtime.get(agent, alice);
       const asking = await asker.createSession();
       const asked = await b.runtime.get(agent, bob).createSession();
-      // Alice's request, Bob's, then Alice's again: the runs ask the one model in this order.
       faux.setResponses([
         fauxAssistantMessage(fauxToolCall("ask", { user: bob, sessionId: asked.id, question: "Why?" }, { id: "q-1" }), {
           stopReason: "toolUse",
@@ -387,7 +366,6 @@ for (const { name, open, skip } of databases) {
       const result = foldEvents(items.map((item) => item.event)).items.find((item) => item.kind === "tool");
       expect(result).toMatchObject({ toolName: "ask", status: "ok" });
       expect(types(items)).toContain("reply:wait");
-      // The reply resumed the call before B's request for it was answered.
       await eventually(() => nodes.replied.length === 1);
       expect(nodes.replied).toEqual([{ node: b.url, outcome: "applied" }]);
       const bobs = await readDirectUntilRunEnd(b.runtime, bob, asked.id, undefined);
@@ -395,8 +373,6 @@ for (const { name, open, skip } of databases) {
         { kind: "user", text: "Why?" },
         { kind: "assistant", text: "Because." },
       ]);
-      // A's `start` asked through A, which forwarded the ask to Bob's home; B's reply went through B, which forwarded
-      // it to Alice's. Neither instance opened anywhere but at its home.
       expect(b.received.filter((request) => request.call === "submit")).toHaveLength(1);
       expect(b.received.find((request) => request.call === "submit")?.headers.get(FORWARDED_BY)).toBe(a.url);
       expect(a.received.find((request) => request.call === "reply")?.headers.get(FORWARDED_BY)).toBe(b.url);
@@ -416,7 +392,6 @@ for (const { name, open, skip } of databases) {
       const cut = await client.createSession({ requestId }).catch((error: unknown) => error);
       expect(cut).toBeInstanceOf(MotokoError);
       expect((cut as MotokoError).code).toBe("connection_closed");
-      // It ran on B before the connection was cut.
       expect(await instance.listSessions()).toHaveLength(2);
 
       const retried = await client.createSession({ requestId });
@@ -427,7 +402,6 @@ for (const { name, open, skip } of databases) {
   });
 }
 
-/** The events of a session on `runtime` after `from`, read there directly until `runs` runs end. */
 async function readDirectUntilRunEnd(
   runtime: AgentRuntime,
   name: string,
