@@ -1,10 +1,5 @@
-// The delay proxy's worker thread: a TCP proxy in front of Postgres that holds every chunk of bytes, either way, for
-// `oneWayMs` before forwarding it, in order. It runs in a thread of its own so that its timers never wait behind the
-// benchmark's event loop (nor the benchmark behind them), as a real network would not.
-//
-// What it models: a fixed propagation delay per direction, with no bandwidth limit, no jitter and no loss. A new
-// connection also waits one round trip before its first byte goes out, as the TCP handshake does; nothing else of
-// connection setup is added (the Postgres startup exchange runs through the delayed pipe like any other traffic).
+// The proxy runs in a thread of its own, so its timers never wait behind the benchmark's event loop, and the event loop
+// never waits behind them. A real network would make neither wait.
 
 import { connect, createServer } from "node:net";
 import type { Socket } from "node:net";
@@ -19,9 +14,8 @@ const { targetHost, targetPort } = workerData as { targetHost: string; targetPor
 let oneWayMs = 0;
 
 /**
- * One direction of one connection. A chunk is due `oneWayMs` after it arrived and never before the chunk ahead of it;
- * timers sleep until about 3 ms before the due time and `setImmediate` covers the rest, so delivery is late by well
- * under a millisecond instead of by the timer granularity (macOS fires timers a millisecond or more late).
+ * A timer sleeps until about 3 ms before the due time, and `setImmediate` covers the rest. Delivery is then late by
+ * well under a millisecond, not by the timer granularity. macOS fires timers a millisecond or more late.
  */
 class Pipe {
   readonly #to: Socket;
@@ -75,8 +69,8 @@ const server = createServer((client) => {
     socket.on("error", () => undefined);
     socket.on("close", () => sockets.delete(socket));
   }
-  // The client's first bytes leave one round trip after it connected: the TCP handshake.
-  const toServer = new Pipe(upstream, acceptedAt + 2 * oneWayMs);
+  const tcpHandshakeEndsAt = acceptedAt + 2 * oneWayMs;
+  const toServer = new Pipe(upstream, tcpHandshakeEndsAt);
   const toClient = new Pipe(client, 0);
   client.on("data", (data: Buffer) => toServer.push(data));
   upstream.on("data", (data: Buffer) => toClient.push(data));

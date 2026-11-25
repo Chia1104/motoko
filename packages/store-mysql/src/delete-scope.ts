@@ -9,14 +9,7 @@ import { epochMs, now, packet, scopeKey } from "./database.ts";
 import type { PoolDatabase } from "./database.ts";
 import { scopes } from "./schema.ts";
 
-/**
- * Delete everything `scope` owns: its row in `agent_runtime_scopes`, which cascades to every record, document, revision
- * and ID of the scope, unless a lease other than `lease` is unexpired. One round trip, a transaction of the DELETE and
- * a read of the row it left, which names the holder: a DELETE that refuses the row keeps it locked until COMMIT, so the
- * read finds it as the DELETE did. Resolves whether there was such a scope, or who holds it. A storage still open on the
- * scope fails its next commit (`ScopeDeletedError`); opening the scope again starts an empty one. The schema check is
- * the caller's.
- */
+/** A DELETE that refuses the row keeps it locked until COMMIT, so the read finds it as the DELETE did. */
 export async function deleteScope(
   db: PoolDatabase,
   scope: StorageScope,

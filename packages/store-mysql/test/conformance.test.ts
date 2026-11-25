@@ -1,9 +1,3 @@
-// pi-durable's own Storage conformance suite, unmodified, against the store's storage on MySQL, when TEST_MYSQL_URL is
-// set. Every case gets a fresh scope of one shared database, under the scope's lease as a host opens it, so each case
-// also runs beside the data of all the cases before it. Motoko's host suite runs on the same database, against
-// `nodeHost(store)` as an app hands it to `createAgentRuntime`, and so does the shared-database store suite, against
-// the store itself.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { registerStorageConformance } from "@earendil-works/pi-durable/testing";
 import { eq } from "drizzle-orm";
@@ -21,7 +15,6 @@ import * as schema from "../src/schema.ts";
 import { connectionReset, forceExpire, MYSQL_URL, mysqlBackend, newPool, statements } from "./helpers.ts";
 import type { Backend } from "./helpers.ts";
 
-/** Every table a scope's rows are in, its own row first. */
 const tables = [
   schema.scopes,
   schema.recordIds,
@@ -35,7 +28,6 @@ const tables = [
 
 const byKey = "scope_key = UNHEX(SHA2(CONCAT(?, X'00', ?), 256))";
 
-/** The store suite's view of `backend`: its store, and what the suite cannot do through it. */
 function storeTarget(backend: Backend): StoreConformanceTarget<MysqlStorage> {
   return {
     store: backend.store,
@@ -73,7 +65,6 @@ function storeTarget(backend: Backend): StoreConformanceTarget<MysqlStorage> {
         ? undefined
         : { active: row.wake_active === 1, at: row.wake_at === null ? undefined : Number(row.wake_at) };
     },
-    // Counted by the app's own Drizzle instance over the runtime's tables, from `@chia1104/motoko-store-mysql/schema`.
     rows: (storage) =>
       Promise.all(tables.map((table) => backend.app.$count(table, eq(table.scopeId, storage.scopeId)))),
     async otherProcess(options) {

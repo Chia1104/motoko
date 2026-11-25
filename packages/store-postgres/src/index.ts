@@ -1,19 +1,3 @@
-/**
- * `@chia1104/motoko-store-postgres`: Motoko's store on Postgres, through Drizzle (node-postgres). Many agent instances
- * (scopes) share one fixed set of tables in the `agent_runtime` schema; each gets a pi-durable `Storage` fenced by a
- * single-writer row lease.
- *
- * ```ts
- * const pool = new pg.Pool({ connectionString });
- * await migrate(pool); // or the `motoko-store-postgres` CLI at deploy time
- * const store = createPostgresStore(pool);
- * // `nodeHost` of `@chia1104/motoko-node` makes the store the host of a long-lived process.
- * const runtime = createAgentRuntime({ agents, host: nodeHost(store), models, ports });
- * ```
- *
- * PGlite is at `@chia1104/motoko-store-postgres/pglite`, the Drizzle tables at `@chia1104/motoko-store-postgres/schema`.
- */
-
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
@@ -31,7 +15,6 @@ export {
   SchemaVersionError,
   supportedMigrations,
 } from "./migrations.ts";
-// The shared-database store's errors are the core's, so `instanceof` holds across every such store.
 export {
   ConcurrentCommitError,
   LeaseHeldError,
@@ -44,22 +27,23 @@ export type { PostgresStorage } from "./storage.ts";
 export type { PostgresLease, PostgresStore, PostgresStoreOptions } from "./store.ts";
 
 /**
- * The store over `pool`: the runtime's store on the runtime's tables (`nodeHost(store)` is its host), and
- * `store.deleteScope` of any scope. The store does not own the pool. The database must be migrated (`migrate()` or
- * the CLI); every lease, storage open and delete checks it (`SchemaVersionError`).
+ * Creates the store over `pool`. It is the runtime's store on the runtime's tables, whose host is `nodeHost(store)`,
+ * and it serves `store.deleteScope` for any scope. The store does not own the pool. The database must be migrated by
+ * `migrate()` or the CLI. Every lease, storage open and delete checks that, and throws `SchemaVersionError` when it is
+ * not.
  */
 export function createPostgresStore(pool: Pool, options?: PostgresStoreOptions): PostgresStore {
   return createStore(drizzle({ client: pool }), options);
 }
 
 /**
- * Creates or upgrades the runtime's tables with the migrations this package ships, in one transaction, on one connection
- * of `pool` that a session advisory lock serializes against concurrent `migrate()` calls. Refuses
- * (`SchemaVersionError`, nothing changed) a database a newer release migrated.
+ * Creates or upgrades the runtime's tables with the migrations this package ships, in one transaction, on one
+ * connection of `pool`. A session advisory lock on that connection serializes concurrent `migrate()` calls. Throws
+ * `SchemaVersionError` for a database a newer release migrated, and changes nothing.
  */
 export async function migrate(pool: Pool): Promise<MigrateResult> {
   const client = await pool.connect();
-  // A dead connection emits `error` on its client; without a listener Node exits.
+  // A dead connection emits `error` on its client. Without a listener, Node exits.
   const ignore = () => undefined;
   client.on("error", ignore);
   try {
@@ -68,13 +52,17 @@ export async function migrate(pool: Pool): Promise<MigrateResult> {
     client.release();
     return result;
   } catch (error) {
-    // The connection may still hold the advisory lock (its unlock failed): destroy it rather than pool it.
+    // If its unlock failed, the connection may still hold the advisory lock, so it is destroyed, not returned to the
+    // pool.
     client.release(true);
     throw error;
   }
 }
 
-/** Throws `SchemaVersionError` unless the database is migrated to exactly this package's migrations. One round trip. */
+/**
+ * Throws `SchemaVersionError` unless the database is migrated to exactly this package's migrations. It costs one round
+ * trip.
+ */
 export function checkSchema(pool: Pool): Promise<void> {
   return checkSchemaOf(drizzle({ client: pool }));
 }

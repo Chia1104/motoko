@@ -15,11 +15,23 @@ BENCH_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres pnpm --filter @ch
 
 Without the URL only MemoryStorage and SQLite run. A run of the defaults takes about 15 minutes and
 prints the tables below (Markdown) and writes every sample as JSON to `bench/results/`. Options are
-environment variables, listed at the top of `run.ts`: `BENCH_RTTS` (default `0,2,10,40`), `BENCH_REPS`
-(7), `BENCH_BACKENDS` (`memory,sqlite,direct,postgres`), `BENCH_TPS` (100), `BENCH_POOL_MAX` (10),
-`BENCH_PROGRESS` (pi-durable `settings.progress`, passed through `createAgentRuntime({ settings })`), `BENCH_CONCURRENT` (also run
-that many instances streaming at once), `BENCH_ONLY` (scenario prefixes). `node --conditions=@chia1104/motoko-source
-bench/report.ts a.json [b.json]` prints a saved run again, or compares two.
+environment variables:
+
+| variable             | default                          | what                                                                                                                                                     |
+| -------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BENCH_DATABASE_URL` | none                             | A Postgres URL, of any database. The benchmark creates a database of its own and drops it. Without it, only MemoryStorage and SQLite run.                |
+| `BENCH_RTTS`         | `0,2,10,40`                      | The round trips to simulate, in ms.                                                                                                                      |
+| `BENCH_REPS`         | 7                                | Measured repetitions per scenario. One more unmeasured warm-up runs first.                                                                               |
+| `BENCH_BACKENDS`     | `memory,sqlite,direct,postgres`  | The backends to run. `direct` is Postgres without the proxy.                                                                                             |
+| `BENCH_TPS`          | 100                              | Tokens per second the model streams at.                                                                                                                  |
+| `BENCH_PROGRESS`     | pi-durable's                     | pi-durable `settings.progress` for the runtime, such as `partialIntervalMs=500,persistWithinMs=1000`, passed through `createAgentRuntime({ settings })`. |
+| `BENCH_POOL_MAX`     | 10, pg's default                 | The pg pool's size.                                                                                                                                      |
+| `BENCH_OUT`          | `bench/results/<timestamp>.json` | Where to write the JSON results.                                                                                                                         |
+| `BENCH_ONLY`         | all scenarios                    | Comma-separated scenario prefixes to run.                                                                                                                |
+| `BENCH_CONCURRENT`   | 0, not run                       | Also run that many instances streaming a turn at once.                                                                                                   |
+
+`node --conditions=@chia1104/motoko-source bench/report.ts a.json [b.json]` prints a saved run again, or
+compares two.
 
 A throwaway local cluster, as these numbers were taken:
 

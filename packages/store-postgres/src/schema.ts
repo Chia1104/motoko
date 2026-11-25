@@ -1,17 +1,10 @@
 /**
- * Motoko's tables, as a Drizzle schema in the fixed Postgres schema `agent_runtime`. Every scope (agent instance) shares
- * them: a new scope is one row in `scopes`, never DDL. Every other table is keyed by `scope_id` first and cascades
- * from `scopes`, so deleting a scope's row deletes everything it owns.
+ * An app may import this module, `@chia1104/motoko-store-postgres/schema`, to read the runtime's tables with its own
+ * Drizzle instance. Motoko writes them. An app that writes them bypasses the storage's checks and its lease.
  *
- * An app may import this module (`@chia1104/motoko-store-postgres/schema`) to read the runtime's tables with its own Drizzle
- * instance. Motoko writes them: an app that writes them bypasses the storage's checks and its lease.
- *
- * Changing this file needs a new migration: `pnpm db:generate` writes it to `migrations/`. Never edit a released
- * migration.
- *
- * Records are JSON in `text` columns, not `jsonb`: jsonb rejects `\u0000` and lone-surrogate escapes, which pi-durable
- * stores. Indexed strings hold the JSON encoding of the string (so lone surrogates survive) in `COLLATE "C"` columns,
- * which order and compare by bytes, as pi-durable's SQLite storage does.
+ * Records are JSON in `text` columns, not `jsonb`, because jsonb rejects `\u0000` and lone-surrogate escapes, which
+ * pi-durable stores. Indexed strings hold the JSON encoding of the string, so lone surrogates survive. Their columns
+ * are `COLLATE "C"`, which orders and compares by bytes, as pi-durable's SQLite storage does.
  */
 
 import { sql } from "drizzle-orm";
@@ -32,12 +25,10 @@ import {
 /** The Postgres schema the runtime's tables live in. */
 export const runtimeSchema = pgSchema("agent_runtime");
 
-/** `text COLLATE "C"`: byte order and byte equality, whatever the database's default collation. */
 const textC = customType<{ data: string; driverData: string }>({
   dataType: () => 'text COLLATE "C"',
 });
 
-/** Integers the runtime stores are at most 2^53 (IDs and seqs are safe integers), so they read back as `number`. */
 const int8 = (name: string) => bigint(name, { mode: "number" });
 
 const scopeId = () =>
@@ -46,11 +37,11 @@ const scopeId = () =>
     .references(() => scopes.scopeId, { onDelete: "cascade" });
 
 /**
- * One row per scope. `next_id` / `next_seq` are the scope's ID and commit-sequence counters; `lease_*` is its
- * single-writer lease: holder label, expiry by the database clock, and a fencing token that increases with every
- * acquisition. `wake_*` is what the scope's last holder left as it released the lease (pi-durable's `Wake`: work that
- * can run, and the earliest sleep, in epoch ms on the Harness clock): with a holder that never released it, what makes
- * a scope one `unfinished()` lists.
+ * One row per scope. `next_id` and `next_seq` are the scope's ID and commit-sequence counters. `lease_*` is its
+ * single-writer lease, made of a holder label, an expiry by the database clock, and a fencing token that increases with
+ * every acquisition. `wake_*` is what the scope's last holder left as it released the lease. It is pi-durable's `Wake`,
+ * the work that can run and the earliest sleep, in epoch ms on the Harness clock. A scope whose `wake_*` holds work, or
+ * whose holder never released the lease, is one that `unfinished()` lists.
  */
 export const scopes = runtimeSchema.table(
   "scopes",
@@ -172,8 +163,8 @@ export const submissions = runtimeSchema.table(
 );
 
 /**
- * One row per document incarnation. Its address is `(kind, scope_kind, owner_id, family, key_value)`; `family` 0 is
- * a keyless document, 1 a keyed one. `created_at` / `retired_at` are commit seqs.
+ * One row per document incarnation. Its address is `(kind, scope_kind, owner_id, family, key_value)`. `family` is 0 for
+ * a keyless document and 1 for a keyed one. `created_at` and `retired_at` are commit seqs.
  */
 export const documents = runtimeSchema.table(
   "documents",
@@ -207,7 +198,10 @@ export const documents = runtimeSchema.table(
   ],
 );
 
-/** A document's revisions at commit `seq`: a `base` (its JSON value) or a `delta` (chord ops) of `version`. */
+/**
+ * A document's revisions at commit `seq`. Each revision of `version` is a `base`, which holds the JSON value, or a
+ * `delta`, which holds chord ops.
+ */
 export const documentRevisions = runtimeSchema.table(
   "document_revisions",
   {

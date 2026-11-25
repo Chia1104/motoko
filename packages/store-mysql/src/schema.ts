@@ -1,23 +1,17 @@
 /**
- * Motoko's tables, as a Drizzle schema, in the database the app's pool connects to, each named `agent_runtime_*`.
- * Every scope (agent instance) shares them: a new scope is one row in `agent_runtime_scopes`, never DDL. Every other
- * table is keyed by `scope_id` first and cascades from the scope's row, so deleting it deletes everything it owns.
+ * An app may import this module, `@chia1104/motoko-store-mysql/schema`, to read the runtime's tables with its own
+ * Drizzle instance. Motoko writes them. An app that writes them bypasses the storage's checks and its lease.
  *
- * An app may import this module (`@chia1104/motoko-store-mysql/schema`) to read the runtime's tables with its own Drizzle
- * instance. Motoko writes them: an app that writes them bypasses the storage's checks and its lease.
- *
- * Changing this file needs a new migration: `pnpm db:generate` writes it to `migrations/`. Never edit a released
- * migration.
- *
- * - Records are JSON in `LONGTEXT` columns, not `JSON`: MySQL's JSON type rewrites the text (key order, numbers) and
- *   `TEXT` holds only 64 KB.
- * - Indexed strings hold the JSON encoding of the string (so lone surrogates survive) in `utf8mb4_0900_bin` columns,
- *   which order and compare by the bytes of their UTF-8 encoding and pad nothing, as pi-durable's SQLite storage
- *   does. An index key holds at most 3072 bytes, 4 per character, so each indexed string has the length its indexes
- *   leave it, counted in characters of its JSON encoding.
- * - A scope's kind and name hold up to 1024 characters each, more than an index key: their unique key is the SHA-256
- *   of the two, a generated column.
- * - Times of the database clock are `DATETIME(3)` in UTC (`UTC_TIMESTAMP(3)`), which no session `time_zone` converts.
+ * - Records are JSON in `LONGTEXT` columns, not `JSON`, because MySQL's JSON type rewrites the text, such as its key
+ *   order and numbers, and `TEXT` holds only 64 KB.
+ * - Indexed strings hold the JSON encoding of the string, so lone surrogates survive. Their columns are
+ *   `utf8mb4_0900_bin`, which orders and compares by the bytes of the UTF-8 encoding and pads nothing, as pi-durable's
+ *   SQLite storage does. An index key holds at most 3072 bytes, at 4 per character, so each indexed string gets the
+ *   length its indexes leave it, counted in characters of its JSON encoding.
+ * - A scope's kind and name hold up to 1024 characters each, more than an index key holds. So their unique key is a
+ *   generated column, the SHA-256 of the two.
+ * - Times of the database clock are `DATETIME(3)` in UTC, from `UTC_TIMESTAMP(3)`, which no session `time_zone`
+ *   converts.
  */
 
 import { sql } from "drizzle-orm";
@@ -39,7 +33,7 @@ import {
 } from "drizzle-orm/mysql-core";
 import type { AnyMySqlColumn } from "drizzle-orm/mysql-core";
 
-/** Every table's name: `agent_runtime_<name>`, beside the app's own tables in its database. */
+/** Every table is named `agent_runtime_<name>`, beside the app's own tables in its database. */
 export const runtimeTable = mysqlTableCreator((name) => `agent_runtime_${name}`);
 
 /** The most characters of each indexed string's JSON encoding that its indexes leave room for. */
@@ -50,27 +44,24 @@ export const INDEXED_LENGTHS = {
   documentKey: 500,
 } as const;
 
-/** `utf8mb4_0900_bin`: byte order and byte equality, no trailing-space padding, whatever the database's default. */
 const exact = (name: string, length: number) =>
   varchar(name, { length }).charSet("utf8mb4").collate("utf8mb4_0900_bin");
 
-/** A label from a fixed set, which a CHECK constraint names. */
 const label = (name: string, length: number) => varchar(name, { length }).charSet("ascii").collate("ascii_bin");
 
-/** A record's JSON text. */
 const json = (name: string) => longtext(name).charSet("utf8mb4").collate("utf8mb4_bin");
 
-/** Integers the runtime stores are at most 2^53 (IDs and seqs are safe integers), so they read back as `number`. */
 const int8 = (name: string) => bigint(name, { mode: "number" });
 
 /**
- * One row per scope. `next_id` / `next_seq` are the scope's ID and commit-sequence counters; `lease_*` is its
- * single-writer lease: holder label, expiry by the database clock (UTC), and a fencing token that increases with every
- * acquisition. `wake_*` is what the scope's last holder left as it released the lease (pi-durable's `Wake`: work that
- * can run, and the earliest sleep, in epoch ms on the Harness clock): with a holder that never released it, what makes
- * a scope one `unfinished()` lists, as the generated `unfinished` column says. `commit_nonce` is the random value the
- * last fenced transaction (a commit, an erase, an acquisition of the lease) stamped on the row with its first
- * statement; its later statements write only where the row holds it.
+ * One row per scope. `next_id` and `next_seq` are the scope's ID and commit-sequence counters. `lease_*` is its
+ * single-writer lease, made of a holder label, an expiry by the database clock in UTC, and a fencing token that
+ * increases with every acquisition. `wake_*` is what the scope's last holder left as it released the lease. It is
+ * pi-durable's `Wake`, the work that can run and the earliest sleep, in epoch ms on the Harness clock. A scope whose
+ * `wake_*` holds work, or whose holder never released the lease, is one that `unfinished()` lists, as the generated
+ * `unfinished` column says. `commit_nonce` is the random value that the last fenced transaction stamped on the row with
+ * its first statement. A fenced transaction is a commit, an erase or an acquisition of the lease. Its later statements
+ * write only where the row holds that value.
  */
 export const scopes = runtimeTable(
   "scopes",
@@ -78,7 +69,7 @@ export const scopes = runtimeTable(
     scopeId: int8("scope_id").autoincrement().primaryKey(),
     kind: exact("kind", 1024).notNull(),
     name: exact("name", 1024).notNull(),
-    /** SHA-256 of the kind's UTF-8, a NUL, and the name's UTF-8: no part holds a NUL. */
+    /** SHA-256 of the kind's UTF-8, a NUL, and the name's UTF-8. Neither the kind nor the name holds a NUL. */
     scopeKey: binary("scope_key", { length: 32 })
       .notNull()
       .generatedAlwaysAs(sql`unhex(sha2(concat(\`kind\`, x'00', \`name\`), 256))`, { mode: "stored" }),
@@ -103,7 +94,6 @@ export const scopes = runtimeTable(
 );
 
 const scopeIdColumn = () => int8("scope_id").notNull();
-/** Every table but `scopes` cascades from the scope's row. */
 const ownedBy = (name: string, scopeId: AnyMySqlColumn) =>
   foreignKey({ name: `${name}_scope`, columns: [scopeId], foreignColumns: [scopes.scopeId] }).onDelete("cascade");
 
@@ -146,7 +136,7 @@ export const conversations = runtimeTable(
 
 /**
  * `marker_id` is the entry's id when it is a head marker and NULL otherwise, so a range on its index visits head
- * markers only (Postgres's partial index).
+ * markers only, as Postgres's partial index does.
  */
 export const entries = runtimeTable(
   "entries",
@@ -212,8 +202,8 @@ export const submissions = runtimeTable(
 );
 
 /**
- * One row per document incarnation. Its address is `(kind, scope_kind, owner_id, family, key_value)`; `family` 0 is
- * a keyless document, 1 a keyed one. `created_at` / `retired_at` are commit seqs.
+ * One row per document incarnation. Its address is `(kind, scope_kind, owner_id, family, key_value)`. `family` is 0 for
+ * a keyless document and 1 for a keyed one. `created_at` and `retired_at` are commit seqs.
  */
 export const documents = runtimeTable(
   "documents",
@@ -240,7 +230,10 @@ export const documents = runtimeTable(
   ],
 );
 
-/** A document's revisions at commit `seq`: a `base` (its JSON value) or a `delta` (chord ops) of `version`. */
+/**
+ * A document's revisions at commit `seq`. Each revision of `version` is a `base`, which holds the JSON value, or a
+ * `delta`, which holds chord ops.
+ */
 export const documentRevisions = runtimeTable(
   "document_revisions",
   {

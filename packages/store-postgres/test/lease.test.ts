@@ -1,8 +1,3 @@
-// The single-writer lease, where it is Postgres's own: the statement that renews it, the options and the lease a
-// storage takes, and the cross-connection cases (another process, a dying connection, a network partition), which need
-// a real Postgres and run only with TEST_DATABASE_URL. What every shared-database store's lease does (refusal, release,
-// expiry, takeover, fencing) is in the store suite (`conformance.test.ts`).
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { EntryId, Storage } from "@earendil-works/pi-durable";
@@ -50,7 +45,6 @@ const rooted = async (store: PostgresStore, lease: PostgresLease) => {
   return storage;
 };
 
-/** Acquires `scope`'s lease once the current one expires. */
 async function acquireWhenFree(store: PostgresStore, scope: { kind: string; name: string }, timeoutMs = 3_000) {
   const started = Date.now();
   for (;;) {
@@ -78,7 +72,6 @@ describe("lease on PGlite", () => {
     const lease = await store.lease(scope);
     recording.reset();
     await sleep(600);
-    // Past the TTL, still held: each renewal was confirmed by the database.
     expect(lease.signal.aborted).toBe(false);
     expect(recording.statements.length).toBeGreaterThan(3);
     for (const sql of recording.statements)
@@ -95,9 +88,6 @@ describe("lease on PGlite", () => {
     await expect(backend.store.storage({ kind: "agent", name: "other" }, lease)).rejects.toThrow(
       "The lease is for scope",
     );
-    // A lease from anywhere else (an in-process lease) fences nothing in the database. `nodeHost` takes the store
-    // whole, and gives its default lease only to a storage that takes any lease, so splitting the store's pair does
-    // not type-check, and is refused at the open.
     expect(nodeHost(backend.store).wake).toEqual({ kind: "process" });
     expect(nodeHost({ storage: async () => new MemoryStorage() }).wake).toEqual({ kind: "process" });
     const splits = [
@@ -137,8 +127,6 @@ describe.skipIf(DATABASE_URL === undefined)("lease across connections on Postgre
       const storage = await rooted(storeA, lease);
       await writeEntry(storage, "one");
 
-      // Kill every connection process A holds. The lease is a row, not a connection: it stays held, the pool
-      // reconnects, and the storage's next commit goes through (a dead pooled connection is retried).
       const killed = await poolB.query(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'process-a'",
       );
@@ -175,7 +163,6 @@ describe.skipIf(DATABASE_URL === undefined)("lease across connections on Postgre
       const storage = await rooted(storeA, lease);
       await writeEntry(storage, "before");
 
-      // The partition starts between the commit's read and its write: the write statement is held in the network.
       recording.before = (sql) => {
         if (!statements.commitWrite.test(sql)) return;
         recording.before = undefined;
@@ -185,16 +172,13 @@ describe.skipIf(DATABASE_URL === undefined)("lease across connections on Postgre
       await until(() => lease.signal.aborted, 3_000);
       expect(reasonOf(lease.signal)).toBe("unreachable");
 
-      // Another process takes the scope once the lease expired, and writes.
       const next = await acquireWhenFree(backend.store, scope);
       const nextStorage = await backend.store.storage(scope, next);
       await writeEntry(nextStorage, "new-holder");
 
-      // The partition heals: the stale write arrives, and its guard refuses it.
       proxy.thaw();
       const error = await stale;
       expect(error).toBeInstanceOf(LeaseLostError);
-      // It was the write statement's guard that refused: the storage then read the scope row to explain why.
       const guard = recording.statements.findLastIndex((sql) => statements.commitWrite.test(sql));
       const diagnosis = recording.statements.findLastIndex((sql) => statements.guardDiagnosis.test(sql));
       expect(guard).toBeGreaterThan(-1);

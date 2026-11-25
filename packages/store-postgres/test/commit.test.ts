@@ -1,5 +1,3 @@
-// Round trips per commit, and what a commit does when its connection fails.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -25,10 +23,6 @@ for (const factory of backendFactories) {
       await backend?.close();
     });
 
-    /**
-     * A storage with a root, a running task and a document, as a streaming generation has them. Its statements are
-     * recorded; its lease comes from an unrecorded store, so lease renewals never show among them.
-     */
     async function streaming(options: PostgresStoreOptions = {}) {
       const scope = { kind: "agent", name: uniqueName("rt") };
       const { store, recording } = backend.recording(options);
@@ -68,7 +62,6 @@ for (const factory of backendFactories) {
         ],
         context,
       );
-      /** One streamed chunk: the live document's delta and the task's checkpoint. */
       const chunk = (n: number): StorageWrite[] => [
         {
           type: "document.change",
@@ -140,7 +133,6 @@ for (const factory of backendFactories) {
         context,
       );
       expect(result).toEqual({ stored: 3 });
-      // read, write of the two batches before the copy, read of the copy source, write of the copy batch
       const kinds = recording.statements.map(
         (sql) => Object.entries(statements).find(([, pattern]) => pattern.test(sql))?.[0],
       );
@@ -181,8 +173,6 @@ for (const factory of backendFactories) {
 
     it("never counts an unknown outcome as stored once another holder took the lease, even at the same seq", async () => {
       const { scope, storage, recording, chunk } = await streaming();
-      // The write fails unsent; meanwhile the lease expires, another holder takes it and commits one batch, which
-      // moves the scope's next_seq to exactly the value this write would have left.
       recording.before = async (sql) => {
         if (!statements.commitWrite.test(sql)) return;
         recording.before = undefined;
@@ -213,7 +203,6 @@ for (const factory of backendFactories) {
         `SELECT record FROM agent_runtime.tasks t JOIN agent_runtime.scopes s USING (scope_id) WHERE s.kind = $1 AND s.name = $2`,
         [scope.kind, scope.name],
       );
-      // The task still holds the checkpoint of the last stored chunk, not this one's.
       expect(rows.map((row) => JSON.parse(row.record).state.checkpoint)).toEqual([0]);
     });
 
@@ -241,7 +230,6 @@ for (const factory of backendFactories) {
       await lease.release();
     });
 
-    // That the guard refuses the write is in the store suite (`conformance.test.ts`); this is what the refusal costs.
     it("explains a write its guard refused in one more statement", async () => {
       const scope = { kind: "agent", name: uniqueName("two-writers") };
       const lease = await backend.store.lease(scope);
@@ -249,7 +237,6 @@ for (const factory of backendFactories) {
       await commitWrites(first, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
       const { store, recording } = backend.recording();
       const second = await store.storage(scope, lease);
-      // The first writer commits between the second's read and its write.
       recording.before = async (sql) => {
         if (!statements.commitWrite.test(sql)) return;
         recording.before = undefined;
@@ -271,7 +258,6 @@ for (const factory of backendFactories) {
           context,
         ),
       ).rejects.toThrow(ConcurrentCommitError);
-      // The guard refused, then the storage read the scope row to explain why: two more statements, no more.
       const [write, diagnosis] = recording.statements.slice(-2);
       expect(write).toMatch(statements.commitWrite);
       expect(diagnosis).toMatch(statements.guardDiagnosis);

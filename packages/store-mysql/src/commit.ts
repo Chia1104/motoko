@@ -1,11 +1,5 @@
-// A commit's statements on MySQL: two round trips, whatever its number of batches. The check state is read in one
-// statement (`readCheckState`), a single SELECT and so one snapshot. The plan is written in one transaction sent as one
-// multi-statement query (`writePlan`): the guard first, an UPDATE of the scope's row that advances its counters only
-// if the lease token is current and unexpired and `next_seq` is unchanged, which stamps a fresh nonce on the row and
-// locks it until COMMIT; then one multi-row statement per table the plan writes, each only where the row holds the
-// nonce; then a read of the row that says how the write ended. MySQL has no data-modifying CTEs or RETURNING, so the
-// tables cannot share a statement, but they can share a round trip. The checks between the read and the write are the
-// shared commit protocol's (`commitBatches`).
+// MySQL has no data-modifying CTEs or RETURNING, so the tables cannot share a statement, but they can share a round
+// trip.
 
 import type { DocumentCopySource, DocumentRecord, StoredDocument } from "@earendil-works/pi-durable";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
@@ -39,7 +33,6 @@ import {
   tasks,
 } from "./schema.ts";
 
-/** The commit port of one scope's storage; `readSource` is the storage's own read of a copy's source. */
 export function commitPort(
   db: PoolDatabase,
   scopeId: number,
@@ -53,15 +46,14 @@ export function commitPort(
   };
 }
 
-/** mysql2 parses a JSON column; a pool with `jsonStrings` returns its text. */
+/** mysql2 parses a JSON column. A pool with `jsonStrings` returns its text instead. */
 const jsonValue = <T>(value: unknown, empty: T): T =>
   value === null || value === undefined ? empty : typeof value === "string" ? (JSON.parse(value) as T) : (value as T);
 
-/** `scalar` when `values` is not empty, else NULL: MySQL has no empty `IN ()`. */
+/** `scalar` when `values` is not empty, else NULL, because MySQL has no empty `IN ()`. */
 const unlessEmpty = (values: readonly unknown[], scalar: () => SQL): SQL =>
   values.length === 0 ? sql`NULL` : scalar();
 
-/** The scope's counters and the stored state `query` names, in one statement (one snapshot). */
 async function readCheckState(db: Database, scopeId: number, query: CheckQuery): Promise<CheckState | undefined> {
   const ids = unlessEmpty(
     query.ids,
@@ -73,7 +65,6 @@ async function readCheckState(db: Database, scopeId: number, query: CheckQuery):
     () => sql`(SELECT JSON_ARRAYAGG(${documents.record}) FROM ${documents}
       WHERE ${and(eq(documents.scopeId, scopeId), inArray(documents.id, [...query.documents]))})`,
   );
-  // The latest revision's version of each queried document, one index lookup each.
   const versions = unlessEmpty(
     query.deltas,
     () => sql`(SELECT JSON_ARRAYAGG(JSON_ARRAY(q.id, (
@@ -143,24 +134,15 @@ async function readCheckState(db: Database, scopeId: number, query: CheckQuery):
   };
 }
 
-/**
- * Throws unless `value` (an indexed string's JSON encoding) fits its column. A column too short for its value would
- * reject it in a strict `sql_mode`, and truncate it in a lax one.
- */
+/** A column too short for its value would reject it in a strict `sql_mode`, and truncate it in a lax one. */
 function assertFits(value: string, length: number, what: string): void {
   if (value.length > length && [...value].length > length) {
     throw new Error(`${what} is too long for MySQL's index: at most ${length} characters of its JSON encoding`);
   }
 }
 
-/** A runtime table: every one but `scopes` is keyed by `scope_id` first. */
 type ScopedTable = MySqlTable & { scopeId: MySqlColumn };
 
-/**
- * `INSERT INTO table (scope_id, columns...)` of one row per element of `rows`, bound as a table value constructor
- * (`VALUES ROW(...), ...`), and only where `fence` holds; `undefined` when there are none. With `update`, rows whose key
- * exists replace those columns (`ON DUPLICATE KEY UPDATE`).
- */
 function insertRows<R>(
   table: ScopedTable,
   scopeId: number,
@@ -190,10 +172,6 @@ function insertRows<R>(
   return sql`INSERT INTO ${table} (${names}) SELECT * FROM (VALUES ${values}) AS v (${names}) WHERE ${fence}${upsert}`;
 }
 
-/**
- * The plan's statements after the guard, one per table it writes, in an order that keeps every key unique, each only
- * where `fence` holds.
- */
 function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
   for (const task of plan.tasks) assertFits(encodeIndexedString(task.kind), INDEXED_LENGTHS.taskKind, "A task's kind");
   for (const submission of plan.submissions) {
@@ -277,7 +255,6 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [submissions.conversationId, submissions.requestId, submissions.status, submissions.record],
     ),
-    // A created document is inserted, a stored one retired: one upsert writes both.
     insertRows(
       documents,
       scopeId,
@@ -296,7 +273,6 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [documents.retiredAt, documents.record],
     ),
-    // Before the new revisions: none of them is among the ones cleared.
     plan.cleared.length === 0
       ? undefined
       : sql`DELETE FROM ${documentRevisions}
@@ -319,15 +295,6 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
   return statements.filter((statement) => statement !== undefined);
 }
 
-/**
- * Writes `plan` in one transaction, sent as one round trip, if the guard holds: the scope row's `next_seq` still equals
- * `expectedSeq`, and the lease token is current and unexpired by the database clock. The guard is the transaction's
- * first statement; as it advances the counters it stamps a fresh nonce on the row, and every later statement writes
- * only where the row holds that nonce. So a refused guard writes nothing, even when another storage under the same
- * lease moved `next_seq` to exactly the value this one would have, and a held one locks the row, keeping every other
- * writer and acquirer of the scope waiting until COMMIT. The transaction's last statement reads the row to say how the
- * write ended: stored when the row holds the nonce, otherwise why the guard refused.
- */
 async function writePlan(
   db: PoolDatabase,
   scopeId: number,

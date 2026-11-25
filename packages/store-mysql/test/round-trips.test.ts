@@ -1,6 +1,4 @@
-// Round trips outside commits, which a remote database pays for one by one: acquiring a lease, opening a storage,
-// renewing many leases, loading a document, listing unfinished scopes, erasing and deleting. Each test pins the
-// statements the README's table states.
+// Each test pins the statements the README's table states.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -35,7 +33,6 @@ for (const factory of backendFactories) {
     it("acquires a lease in one round trip, held or not, and opens its storage in one, schema check included", async () => {
       const { store, recording } = backend.recording({ ttlMs: 60_000 });
       const scope = { kind: "agent", name: uniqueName("open") };
-      // A new scope: the upsert that creates its row with the lease, and the read that finds it taken.
       const lease = await store.lease(scope);
       expect(recording.statements).toHaveLength(1);
       expect(statementsOf(recording.statements[0])).toEqual([
@@ -50,7 +47,6 @@ for (const factory of backendFactories) {
       expect(recording.statements).toHaveLength(1);
       expect(recording.statements[0]).toContain("agent_runtime_migrations");
       expect(await storage.mintId()).toBe(2);
-      // Held: the read alone names the holder.
       recording.reset();
       await expect(backend.storeWith({ holder: "other" }).lease(scope)).rejects.toThrow(LeaseHeldError);
       await expect(store.lease(scope)).rejects.toThrow(LeaseHeldError);
@@ -58,7 +54,6 @@ for (const factory of backendFactories) {
       recording.reset();
       await lease.release();
       expect(recording.statements).toHaveLength(1);
-      // Again on the existing row: the same round trip takes it, with a new token, on the same row.
       recording.reset();
       const again = await store.lease(scope);
       expect(recording.statements).toHaveLength(1);
@@ -110,7 +105,6 @@ for (const factory of backendFactories) {
       );
       recording.reset();
       await sleep(650);
-      // Past the TTL, all still held, with about one statement per interval for the five of them.
       for (const lease of leases) expect(lease.signal.aborted).toBe(false);
       expect(recording.statements.length).toBeGreaterThanOrEqual(3);
       expect(recording.statements.length).toBeLessThanOrEqual(8);
@@ -130,7 +124,6 @@ for (const factory of backendFactories) {
       recording.reset();
       await until(() => lost.signal.aborted, 2_000);
       expect((lost.signal.reason as LeaseLostError).reason).toBe("expired");
-      // The renewal that found it extended one lease of two, so it read the scopes' rows to learn why.
       expect(recording.statements[0]).toMatch(/^UPDATE `agent_runtime_scopes` SET lease_expires_at/);
       expect(recording.statements[1]).toMatch(
         /^SELECT scope_id, lease_token, lease_expires_at > UTC_TIMESTAMP\(3\) AS live/,
@@ -145,7 +138,6 @@ for (const factory of backendFactories) {
       const lease = await store.lease(scope);
       const storage = await store.storage(scope, lease);
       const id = (await storage.mintId()) as DocumentId;
-      // Nothing there yet; asking again before any commit costs nothing.
       recording.reset();
       expect(await storage.findDocument(address, "current", context)).toBeUndefined();
       expect(await storage.findDocument(address, "current", context)).toBeUndefined();
@@ -159,13 +151,11 @@ for (const factory of backendFactories) {
         },
       ];
       await commitWrites(storage, create, context);
-      // The commit created it: found, though it was not there before.
       recording.reset();
       const record = await storage.findDocument(address, "current", context);
       expect(record?.id).toBe(id);
       expect((await storage.document(id, "current", context))?.value).toEqual({ text: "a" });
       expect(recording.statements).toHaveLength(1);
-      // A commit between the find and the read: the read goes to the database and sees the change.
       await storage.findDocument(address, "current", context);
       await commitWrites(
         storage,
@@ -175,7 +165,6 @@ for (const factory of backendFactories) {
       recording.reset();
       expect((await storage.document(id, "current", context))?.value).toEqual({ text: "b" });
       expect(recording.statements).toHaveLength(1);
-      // The prefetched content serves one read only.
       await storage.findDocument(address, "current", context);
       recording.reset();
       await storage.document(id, "current", context);
@@ -227,8 +216,6 @@ for (const factory of backendFactories) {
       await storage.close(context);
       recording.reset();
       await store.erase(scope, lease, [child]);
-      // No task: the fenced read, then the fence, documents with revisions, submissions, conversations with entries,
-      // and the outcome, as one transaction.
       expect(recording.statements).toHaveLength(2);
       expect(recording.statements[0]).toMatch(/^WITH RECURSIVE owned/);
       expect(statementsOf(recording.statements[1])).toEqual([
@@ -245,7 +232,6 @@ for (const factory of backendFactories) {
         [lease.scopeId],
       );
       expect(left[0]?.n).toBe(1);
-      // Nothing left to erase: the read alone.
       recording.reset();
       await store.erase(scope, lease, [child]);
       expect(recording.statements).toHaveLength(1);
@@ -266,7 +252,6 @@ for (const factory of backendFactories) {
         ],
         context,
       );
-      // Between the erase's read and its delete, a commit gives the conversation a task that has work to do.
       const taskId = (await storage.mintId()) as TaskId<JsonValue>;
       recording.before = async (sql) => {
         if (!/^START TRANSACTION;\nUPDATE `agent_runtime_scopes` SET commit_nonce/.test(sql)) return;
@@ -293,7 +278,6 @@ for (const factory of backendFactories) {
       };
       recording.reset();
       await store.erase(scope, lease, [child]);
-      // The fence refused the stale delete; the second read found the task, so the erase skipped the conversation.
       expect(recording.statements.map((sql) => sql.slice(0, 14))).toEqual([
         "WITH RECURSIVE",
         "START TRANSACT",

@@ -1,7 +1,3 @@
-// Migrations and the version check at open: the shipped SQL files match the schema module, `migrate()` and the CLI
-// apply them to a fresh database, and every lease, storage open and delete refuses a database that is missing the
-// tables, older than this package, or migrated by a newer release.
-
 import { execFile } from "node:child_process";
 import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,7 +40,6 @@ const refusal = async (promise: Promise<unknown>): Promise<SchemaVersionError> =
 
 describe("the shipped migrations", () => {
   it("are the SQL drizzle-kit generates from the schema module: no pending diff", async () => {
-    // Generate into a copy, so a drift shows as a failure here, never as a new file in the package.
     const out = await mkdtemp(join(tmpdir(), "agent-runtime-migrations-"));
     try {
       await cp(join(PACKAGE, "migrations"), out, { recursive: true });
@@ -91,7 +86,6 @@ describe("migrations and the version check on PGlite", () => {
     expect(missing.applied).toEqual([]);
     expect(missing.message).toContain("no Motoko tables: run migrate()");
     await refusal(store.deleteScope(scope));
-    // The journal's schema exists, but no migration was recorded: the same answer.
     await pglite.exec(`CREATE SCHEMA ${MIGRATIONS_SCHEMA}`);
     expect((await refusal(checkPGlite(pglite))).state).toBe("missing");
   });
@@ -127,7 +121,6 @@ describe("migrations and the version check on PGlite", () => {
   it("refuses a database a newer release migrated, at open and in migrate(), changing nothing", async () => {
     await migratePGlite(pglite);
     const store = createPGliteStore(pglite);
-    // A lease held from before the newer release migrated the database.
     const held = await store.lease(scope);
     await pglite.query(
       `INSERT INTO ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, $1)`,
@@ -149,11 +142,10 @@ describe("migrations and the version check on PGlite", () => {
   });
 
   it("refuses a database older than this package", async () => {
-    // The package ships one migration so far, so an older database cannot be built from it: the comparison itself.
     expect(stateOf([], [latest])).toBe("missing");
     expect(stateOf(["20260101000000_init"], ["20260101000000_init", "20260201000000_next"])).toBe("older");
     expect(stateOf(["20260101000000_init", "20260201000000_next"], ["20260101000000_init"])).toBe("newer");
-    expect(stateOf([latest], [latest])).toBeUndefined();
+    expect(stateOf([latest], [latest])).toBe("current");
     const older = new SchemaVersionError(
       "older",
       ["20260101000000_init"],
@@ -173,7 +165,6 @@ describe.skipIf(DATABASE_URL === undefined)("migrations on Postgres", () => {
     try {
       await expect(checkSchema(first)).rejects.toThrow(SchemaVersionError);
       const results = await Promise.all(pools.map((pool) => migrate(pool)));
-      // One call applied everything; the others waited on the lock and found nothing to do.
       expect(results.map((result) => result.applied.length).sort()).toEqual([0, 0, supportedMigrations().length]);
       for (const pool of pools) await checkSchema(pool);
     } finally {

@@ -1,5 +1,4 @@
-// The store takes a pool that sends multi-statement queries, and refuses any other before it sends anything. No
-// database: a mysql2 pool connects at its first query.
+// These tests need no database, because a mysql2 pool connects at its first query.
 
 import mysql from "mysql2";
 import mysqlPromise from "mysql2/promise";

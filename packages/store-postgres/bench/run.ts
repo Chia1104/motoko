@@ -1,21 +1,3 @@
-// The remote-database benchmark: the runtime's public API (`createAgentRuntime` over `nodeHost`)
-// on MemoryStorage, SQLite and Postgres, the last through a proxy that delays every byte by a set round trip. Run with
-// `pnpm bench`; see README.md.
-//
-// Environment:
-//   BENCH_DATABASE_URL  a Postgres URL (any database; the benchmark creates and drops one of its own).
-//                       Without it, only MemoryStorage and SQLite run.
-//   BENCH_RTTS          round trips to simulate, ms (default 0,2,10,40)
-//   BENCH_REPS          measured repetitions per scenario (default 7; one more unmeasured warm-up runs first)
-//   BENCH_BACKENDS      memory,sqlite,direct,postgres (default all; `direct` is Postgres without the proxy)
-//   BENCH_TPS           tokens per second the model streams at (default 100)
-//   BENCH_PROGRESS      pi-durable settings.progress for the runtime, e.g. partialIntervalMs=500,persistWithinMs=1000
-//                       (the runtime passes `settings` through to pi-durable)
-//   BENCH_POOL_MAX      pg pool size (default 10, pg's default)
-//   BENCH_OUT           where to write the JSON results (default bench/results/<timestamp>.json)
-//   BENCH_ONLY          comma-separated scenario prefixes to run (default all)
-//   BENCH_CONCURRENT    also run that many instances streaming a turn at once (default 0: not run)
-
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
@@ -65,14 +47,11 @@ meter.instrumentHarness(Harness);
 const { models, paced, fast } = benchModels(TPS);
 
 interface Target {
-  /** `memory`, `sqlite`, `postgres direct`, `postgres 10ms`, ... */
   readonly label: string;
   readonly backend: "memory" | "sqlite" | "postgres";
   readonly rttMs: number | undefined;
   readonly host: AgentHost;
-  /** Prefix that keeps this target's scopes apart from another target's on the same database. */
   readonly prefix: string;
-  /** Scopes holding fixtures several targets share (Postgres at every RTT). */
   readonly fixturePrefix: string;
 }
 
@@ -107,7 +86,6 @@ function newRuntime(target: Target): AgentRuntime {
 
 const quietMs = (target: Target) => Math.max(40, 4 * (target.rttMs ?? 0));
 
-/** The counts of one measured window. */
 function counts(window: Window) {
   const statements = window.statements.filter((statement) => statement.kind !== "lease.renew");
   return {
@@ -129,7 +107,6 @@ function counts(window: Window) {
   };
 }
 
-/** Runs `work` as one measured window; its wall time is until `work` resolves. */
 async function measure(
   target: Target,
   scenario: string,
@@ -141,7 +118,6 @@ async function measure(
   const window = meter.open();
   const start = performance.now();
   const extra = (await work()) ?? {};
-  // A scenario that ends on settling rather than on a result reports its own wall time.
   const wallMs = extra.wallMs ?? performance.now() - start;
   delete extra.wallMs;
   await meter.quiet(quietMs(target));
@@ -152,7 +128,6 @@ async function measure(
   samples.push({ target: target.label, scenario, rep, wallMs, ...counts(window.close()), metrics: extra });
 }
 
-/** One turn on a session whose reader is attached: submit, stream, run end. */
 async function turn(
   target: Target,
   session: AgentSession,
@@ -208,11 +183,9 @@ async function turn(
       lagP50Ms: median(lags),
       lagP95Ms: quantile(lags, 0.95),
       lagMaxMs: lags.length === 0 ? Number.NaN : Math.max(...lags),
-      // Last model request (the answer, after any tool round) to the run's end at the reader.
       answerToEndMs: lastRequest === undefined ? Number.NaN : end.at - lastRequest,
     });
     if (kind !== "approval" && kind !== "plain") {
-      // Model's tool-call reply requested to the answer's request: the tool round.
       const second = paced.emissions[emitted + 1]?.requestedAt;
       if (firstRequest !== undefined && second !== undefined) metrics.toolRoundMs = second - firstRequest;
     }
@@ -221,7 +194,6 @@ async function turn(
   if (paced.pending() !== 0) throw new Error(`${paced.pending()} faux responses left over`);
 }
 
-/** Opening an instance, a session, its reader, three turns, and opening the instance again in a new runtime. */
 async function sessionScenarios(target: Target, samples: Sample[], rep: number) {
   const name = `${target.prefix}-s${rep}`;
   let runtime = newRuntime(target);
@@ -237,8 +209,6 @@ async function sessionScenarios(target: Target, samples: Sample[], rep: number) 
     const start = performance.now();
     const calls = meter.runtimeCalls.length;
     reader = new Reader(session);
-    // An empty session sends nothing: the attach is done once its watch is observing the conversation and the
-    // statements that caused have settled.
     while (!meter.runtimeCalls.slice(calls).some((call) => call.call.endsWith("harness.observeConversation"))) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
@@ -258,10 +228,6 @@ async function sessionScenarios(target: Target, samples: Sample[], rep: number) 
   await runtime.close();
 }
 
-/**
- * `CONCURRENT` instances, each with a reader attached to a session, all submitting a plain turn at once: what a busy
- * server's pool sees. Reports the median over the turns of each metric.
- */
 async function concurrentTurns(target: Target, samples: Sample[], rep: number) {
   const runtime = newRuntime(target);
   try {
@@ -306,7 +272,6 @@ async function concurrentTurns(target: Target, samples: Sample[], rep: number) {
   }
 }
 
-/** Fixtures for the read scenarios: one scope with many sessions, one session with a long history. */
 async function buildFixtures(target: Target) {
   const runtime = newRuntime(target);
   try {
@@ -318,7 +283,6 @@ async function buildFixtures(target: Target) {
     const id = sessions[0]?.id ?? (await history.createSession({ model: fast.model })).id;
     const session = history.session(id);
     const reader = new Reader(session);
-    // The turns it holds already (another target built them): what a full read reaches once it settles.
     await meter.quiet(100);
     const ends = reader.arrivals.filter((arrival) => arrival.item.event.type === "run:end").length;
     for (let turnIndex = ends; turnIndex < HISTORY_TURNS; turnIndex++) {
@@ -342,14 +306,12 @@ async function readScenarios(target: Target, samples: Sample[], rep: number) {
       const list = await instance.listSessions();
       if (list.length !== SESSIONS) throw new Error(`listed ${list.length}`);
     });
-    // Again on the same instance: pi-durable keeps loaded documents in memory (`documentRetentionMs`).
     await measure(target, `listSessions.${SESSIONS}.again`, samples, rep, async () => {
       await instance.listSessions();
     });
     await runtime.close();
   }
   if (wants("events.history")) {
-    // From the start: a client opening a long session for the first time.
     let runtime = newRuntime(target);
     let instance = runtime.get(agent, `${target.fixturePrefix}-history`);
     await instance.open();
@@ -370,8 +332,6 @@ async function readScenarios(target: Target, samples: Sample[], rep: number) {
       return { firstEventMs: first.at - start, lastEventMs: end.at - start, events };
     });
     await runtime.close();
-    // From a recent cursor, in a runtime that never handed it out: a client reconnecting to another process (or after a
-    // restart), one turn behind.
     runtime = newRuntime(target);
     instance = runtime.get(agent, `${target.fixturePrefix}-history`);
     await instance.open();
@@ -388,7 +348,6 @@ async function readScenarios(target: Target, samples: Sample[], rep: number) {
   }
 }
 
-/** Idle instances' lease traffic: statements per second with nothing else going on. */
 async function idleLeases(pool: pg.Pool, prefix: string, samples: Sample[]) {
   const store = createPostgresStore(meter.pool(pool), { ttlMs: 3_000 });
   const runtime = createAgentRuntime({
@@ -435,7 +394,6 @@ async function selectOne(pool: pg.Pool, n: number): Promise<number[]> {
 
 const poolOptions = (url: string): pg.PoolConfig => ({ connectionString: url, max: POOL_MAX, idleTimeoutMillis: 0 });
 
-/** Fills `pool` to its size with connections, so steady-state numbers carry no connection setup. */
 async function warm(pool: pg.Pool) {
   await Promise.all(Array.from({ length: POOL_MAX }, () => pool.query("SELECT pg_sleep(0.02)")));
 }
@@ -531,7 +489,6 @@ async function main() {
       pool.on("error", () => undefined);
       cleanups.push(() => pool.end());
 
-      // Calibration: the proxy's own overhead, and what one statement and one new connection cost at each RTT.
       await warm(direct);
       await proxy.setRtt(0);
       await warm(pool);
@@ -557,7 +514,6 @@ async function main() {
 
       const store = createPostgresStore(meter.pool(direct));
       const proxiedStore = createPostgresStore(meter.pool(pool));
-      // The store's host, with its storage metered. The runtime hands `storage` the lease the store's `lease()` made.
       const hostOf = (s: typeof store): AgentHost =>
         nodeHost({ ...s, storage: async (scope, lease) => meter.storage(await s.storage(scope, lease)) });
       if (BACKENDS.has("direct")) {
