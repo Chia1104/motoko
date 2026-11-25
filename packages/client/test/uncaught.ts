@@ -1,7 +1,3 @@
-/**
- * Runs `work` and returns every error that nothing caught meanwhile, a macrotask past it, in place of the test runner,
- * which fails the run on one: such as an app listener's, which its caller reports as an `EventTarget` does.
- */
 export async function uncaughtErrors(work: () => unknown): Promise<unknown[]> {
   const errors: unknown[] = [];
   const runners = process.listeners("uncaughtException");

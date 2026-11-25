@@ -8,7 +8,6 @@ import type { FollowListener, MotokoSessionState, MotokoTransport } from "../src
 
 import { uncaughtErrors } from "./uncaught.ts";
 
-/** A call the client made, waiting for the test to settle it. */
 interface MadeCall {
   readonly method: CallMethod;
   readonly params: unknown;
@@ -16,7 +15,6 @@ interface MadeCall {
   readonly reject: (error: MotokoError) => void;
 }
 
-/** A follow the client asked for, which the test drives through its listener. */
 interface MadeFollow {
   readonly sessionId: string;
   readonly from: () => Cursor | undefined;
@@ -24,10 +22,6 @@ interface MadeFollow {
   stopped: boolean;
 }
 
-/**
- * A transport the test drives: it keeps what the client asks of it, and settles nothing on its own, but for
- * `liveAtOnce`, which confirms each follow as it starts it, before `follow` returns.
- */
 class FakeTransport implements MotokoTransport {
   readonly calls: MadeCall[] = [];
   readonly follows: MadeFollow[] = [];
@@ -99,7 +93,6 @@ describe("motokoClient", () => {
     expect(state.view).toEqual(foldEvents(run.map(([, event]) => event)));
     expect(state.cursor).toBe("7.2.-");
     expect(state.status).toBe("live");
-    // Unchanged, the same object.
     expect(client.sessionState("7")).toBe(state);
     expect(heard.map((heardState) => heardState.status)).toEqual([
       "live",
@@ -110,7 +103,6 @@ describe("motokoClient", () => {
       "live",
       "live",
     ]);
-    // A session nobody follows has an empty view.
     expect(client.sessionState("8")).toMatchObject({ status: "connecting", view: { items: [] } });
   });
 
@@ -302,7 +294,6 @@ describe("motokoClient", () => {
     transport.last("createSession").resolve({ id: "9", createdAt: 5, extra: true });
     expect(await created).toEqual({ id: "9", createdAt: 5 });
 
-    // Each call a fresh request ID of its own, unless the app names one to retry with.
     void client.createSession();
     void client.createSession({ requestId: "c-1" });
     const made = transport.calls.filter((call) => call.method === "createSession");

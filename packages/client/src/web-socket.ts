@@ -5,10 +5,8 @@ import type { MotokoMethod, MotokoParams } from "@chia1104/motoko-wire/socket";
 import { MotokoError } from "./client.ts";
 import type { FollowListener, MotokoTransport } from "./client.ts";
 
-/** `WebSocket.OPEN`. */
-const OPEN = 1;
+const WEBSOCKET_OPEN = 1;
 
-/** An `Event` listener, as every EventTarget takes one: the `message` one reads `data` off its `MessageEvent`. */
 type SocketListener = (event: Event) => void;
 
 /**
@@ -22,7 +20,6 @@ export interface MotokoSocket {
   removeEventListener(type: "open" | "close" | "message", listener: SocketListener): void;
 }
 
-/** A call: queued until the socket is open, then sent and waiting for its reply. */
 interface Pending {
   readonly frame: string;
   sent: boolean;
@@ -30,10 +27,6 @@ interface Pending {
   readonly reject: (error: MotokoError) => void;
 }
 
-/**
- * Where a follow is on the socket: waiting for it to open, its subscribe sent and unanswered (an event or an end before
- * the result belongs to an earlier follow, and is dropped), or live.
- */
 type Phase =
   | { readonly kind: "waiting" }
   | { readonly kind: "subscribing"; readonly id: string }
@@ -48,17 +41,10 @@ interface Follow {
   phase: Phase;
 }
 
-/**
- * Motoko's socket protocol (`@chia1104/motoko-wire/socket`) over one socket: `motoko:` frames, beside the SDK's and the
- * app's. Calls made while the socket is closed go out once it opens; a new connection follows nothing, so on every
- * `open` each follow subscribes again, from the client's cursor.
- */
 class SocketTransport implements MotokoTransport {
   readonly #socket: MotokoSocket;
   readonly #calls = new Map<string, Pending>();
-  /** The follows the socket carries, by session; one that ended or stopped is gone from here. */
   readonly #follows = new Map<string, Follow>();
-  /** Call ids need only be unique on one socket, and a socket has one transport. */
   #nextId = 0;
 
   constructor(socket: MotokoSocket) {
@@ -71,7 +57,6 @@ class SocketTransport implements MotokoTransport {
   call<M extends CallMethod>(method: M, params: CallParams<M>, signal: AbortSignal): Promise<unknown> {
     if (signal.aborted) return Promise.reject(closed());
     return new Promise((resolve, reject) => {
-      // Its reply or the abort, whichever comes first, takes it out of `#calls` and settles it.
       const abort = () => {
         if (this.#calls.delete(id)) reject(closed());
       };
@@ -98,16 +83,14 @@ class SocketTransport implements MotokoTransport {
     return () => {
       if (this.#follows.get(sessionId) !== follow) return;
       this.#follows.delete(sessionId);
-      // A follow still waiting for the socket was never subscribed on this connection.
       if (this.#isOpen && follow.phase.kind !== "waiting") this.#send("unsubscribe", { sessionId }, ignore, ignore);
     };
   }
 
   get #isOpen(): boolean {
-    return this.#socket.readyState === OPEN;
+    return this.#socket.readyState === WEBSOCKET_OPEN;
   }
 
-  /** Sends a call now if the socket is open, else once it opens; its reply settles it as it arrives. */
   #send<M extends MotokoMethod>(
     method: M,
     params: MotokoParams<M>,
@@ -123,28 +106,28 @@ class SocketTransport implements MotokoTransport {
       reject,
     };
     this.#calls.set(id, call);
-    if (this.#isOpen) this.#transmit(call);
+    if (this.#isOpen) call.sent = this.#trySend(call.frame);
     return id;
   }
 
-  #transmit(call: Pending) {
+  #trySend(frame: string): boolean {
     try {
-      this.#socket.send(call.frame);
-      call.sent = true;
+      this.#socket.send(frame);
+      return true;
     } catch {
-      // The socket closed under the send: the call waits for the next open.
+      return false;
     }
   }
 
-  /** The follow is still the session's, at the subscribe `id` it sent. */
   #subscribed(sessionId: string, follow: Follow, id: string): boolean {
     return this.#follows.get(sessionId) === follow && follow.phase.kind === "subscribing" && follow.phase.id === id;
   }
 
-  /**
-   * Asks the server to follow the session from the client's cursor. Its reply settles the follow as it arrives, not a
-   * microtask later, so the event frame right behind it is the follow's.
-   */
+  #liveFollow(sessionId: string): Follow | undefined {
+    const follow = this.#follows.get(sessionId);
+    return follow?.phase.kind === "live" ? follow : undefined;
+  }
+
   #subscribe(sessionId: string, follow: Follow) {
     const cursor = follow.from();
     const id = this.#send(
@@ -165,18 +148,16 @@ class SocketTransport implements MotokoTransport {
   }
 
   readonly #onOpen = () => {
-    for (const call of this.#calls.values()) if (!call.sent) this.#transmit(call);
+    for (const call of this.#calls.values()) if (!call.sent) call.sent = this.#trySend(call.frame);
     for (const [sessionId, follow] of this.#follows) this.#subscribe(sessionId, follow);
   };
 
   readonly #onClose = () => {
-    // The connection's follows are gone with it, so a subscribe it cut off settles nothing.
     for (const follow of this.#follows.values()) {
       const wasLive = follow.phase.kind === "live";
       follow.phase = WAITING;
       if (wasLive) follow.listener.dropped();
     }
-    // A call sent on this connection gets no reply; one still queued goes out on the next.
     for (const [id, call] of this.#calls) {
       if (!call.sent) continue;
       this.#calls.delete(id);
@@ -185,8 +166,7 @@ class SocketTransport implements MotokoTransport {
   };
 
   readonly #onMessage = (event: Event) => {
-    // SAFETY: the socket dispatches a `MessageEvent` to `message` listeners.
-    const raw = motokoFrame((event as MessageEvent).data);
+    const raw = motokoFrame("data" in event ? event.data : undefined);
     if (raw === undefined) return;
     const parsed = serverFrameSchema.safeParse(raw);
     if (!parsed.success) return;
@@ -194,8 +174,8 @@ class SocketTransport implements MotokoTransport {
     switch (frame.type) {
       case "motoko:event":
       case "motoko:ended": {
-        const follow = this.#follows.get(frame.sessionId);
-        if (follow?.phase.kind !== "live") return;
+        const follow = this.#liveFollow(frame.sessionId);
+        if (follow === undefined) return;
         if (frame.type === "motoko:event") {
           follow.listener.event({ cursor: frame.cursor, event: frame.event });
         } else {
@@ -224,13 +204,12 @@ class SocketTransport implements MotokoTransport {
 const closed = () => new MotokoError("connection_closed", "The connection closed before the reply came");
 const ignore = () => undefined;
 
-/** One transport per socket, so one client per socket: a session is followed once on a connection. */
 const transports = new WeakMap<MotokoSocket, SocketTransport>();
 
 /**
- * Motoko's socket protocol over `socket`: the Agents SDK's `AgentClient`, the socket `useAgent` returns, or any
- * WebSocket to a Durable Object that serves it (`@chia1104/motoko-cloudflare`'s `MotokoCapability`). Made at first use
- * and shared by everyone who asks for the same socket.
+ * Motoko's socket protocol over `socket`, which is the Agents SDK's `AgentClient`, the socket `useAgent` returns, or any
+ * WebSocket to a Durable Object that serves the protocol, such as one with `@chia1104/motoko-cloudflare`'s
+ * `MotokoCapability`. Made at first use and shared by everyone who asks for the same socket.
  */
 export function webSocketTransport(socket: MotokoSocket): MotokoTransport {
   let transport = transports.get(socket);

@@ -68,7 +68,6 @@ function runtimeOf(): AgentRuntime {
   return runtime;
 }
 
-/** `motokoHandler` on a real Node server: its routes' base URL, and a cut of every connection it holds. */
 async function serve(runtime: AgentRuntime, options: Partial<MotokoHandlerOptions<MotokoTarget>> = {}) {
   const handler = motokoHandler(runtime, { basePath: "/motoko", resolve: () => ({ agent, name: "a" }), ...options });
   const server = createServer(nodeListener(handler));
@@ -83,14 +82,12 @@ async function serve(runtime: AgentRuntime, options: Partial<MotokoHandlerOption
   };
 }
 
-/** A request the client made, as it sent it. */
 interface Sent {
   readonly url: string;
   readonly headers: Headers;
 }
 
-/** `fetch` through a door the test shuts and opens: a request made while it is shut waits for it to open. */
-function doorway() {
+function gatedFetch() {
   const requests: Sent[] = [];
   let opened = Promise.resolve();
   let open: () => void = () => undefined;
@@ -109,7 +106,6 @@ function doorway() {
   };
 }
 
-/** `transport`, keeping every event it delivered to its follows, as the client folded them. */
 function recording(transport: MotokoTransport) {
   const events: StreamItem[] = [];
   const recorder: MotokoTransport = {
@@ -126,14 +122,12 @@ function recording(transport: MotokoTransport) {
   return { events, transport: recorder };
 }
 
-/** The transport's client, closed when the test ends. */
 function clientOf(transport: MotokoTransport): MotokoClient {
   const client = motokoClient(transport);
   stops.push(() => client.close());
   return client;
 }
 
-/** A reader of the session in the server's process, which stays connected whatever the client's connection does. */
 function reader(session: AgentSession) {
   const controller = new AbortController();
   const items: StreamItem[] = [];
@@ -159,7 +153,6 @@ const readersOf = (runtime: AgentRuntime) => runtime.inspect().instances.reduce(
 const status = (client: MotokoClient, sessionId: string) => client.sessionState(sessionId).status;
 const events = (items: readonly StreamItem[]) => items.map(({ event }) => event);
 
-/** Longer than any first reconnect waits, so a follow that would be tried again has been by then. */
 const PAST_FIRST_RETRY_MS = 700;
 
 describe("httpTransport against motokoHandler", () => {
@@ -204,7 +197,6 @@ describe("httpTransport against motokoHandler", () => {
     const client = clientOf(
       httpTransport({
         baseUrl,
-        // The server runs the first call and answers it, but the answer never reaches the client.
         fetch: async (input, init) => {
           const response = await fetch(input, init);
           if (!lose) return response;
@@ -225,8 +217,8 @@ describe("httpTransport against motokoHandler", () => {
   it("resumes a follow the server cut mid-run from the client's cursor, with exactly the events it missed", async () => {
     const runtime = runtimeOf();
     const { baseUrl, cut } = await serve(runtime);
-    const door = doorway();
-    const { events: delivered, transport } = recording(httpTransport({ baseUrl, fetch: door.fetch }));
+    const gated = gatedFetch();
+    const { events: delivered, transport } = recording(httpTransport({ baseUrl, fetch: gated.fetch }));
     const client = clientOf(transport);
     const { id } = await client.createSession();
     const stayed = reader(runtime.get(agent, "a").session(id));
@@ -244,21 +236,19 @@ describe("httpTransport against motokoHandler", () => {
     await client.submit(id, { text: "Go", requestId: "r-1" });
     await eventually(() => has(delivered, "user"));
 
-    // The server drops the stream; the client's reconnect waits at the door while the run goes on without it.
-    door.shut();
+    gated.shut();
     cut();
     await eventually(() => status(client, id) === "connecting");
     const before = delivered.length;
-    await eventually(() => door.follows().length === 2);
+    await eventually(() => gated.follows().length === 2);
     release();
     await eventually(() => has(stayed.items, "run:end"));
     expect(delivered).toHaveLength(before);
 
-    door.open();
+    gated.open();
     await eventually(() => has(delivered, "run:end"));
-    expect(door.follows()[1]!.headers.get("last-event-id")).toBe(delivered[before - 1]!.cursor);
+    expect(gated.follows()[1]!.headers.get("last-event-id")).toBe(delivered[before - 1]!.cursor);
     expect(events(delivered.slice(before)).map(({ type }) => type)).toContain("assistant:end");
-    // Neither a gap nor a duplicate: what came after the reconnect is what the reader that stayed got meanwhile.
     expect(delivered).toEqual(stayed.items);
     expect(client.sessionState(id)).toMatchObject({ status: "live", view: foldEvents(events(stayed.items)) });
   });
@@ -285,7 +275,6 @@ describe("httpTransport against motokoHandler", () => {
     expect(await fixed.listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
     expect(seen.at(-1)).toBe("Bearer fixed");
 
-    // Refused by the app's own `resolve`, which answers no call error: forbidden, for the call and the follow alike.
     const anonymous = clientOf(httpTransport({ baseUrl }));
     await expect(anonymous.listSessions()).rejects.toMatchObject({ code: "forbidden" });
     anonymous.follow(id, () => undefined);
@@ -296,20 +285,18 @@ describe("httpTransport against motokoHandler", () => {
   it("ends a follow the server refuses before streaming with the refusal's code, and does not try it again", async () => {
     const runtime = runtimeOf();
     const { baseUrl } = await serve(runtime, { authorize: (_request, call) => call.method !== "follow" });
-    const door = doorway();
-    const client = clientOf(httpTransport({ baseUrl, fetch: door.fetch }));
+    const gated = gatedFetch();
+    const client = clientOf(httpTransport({ baseUrl, fetch: gated.fetch }));
     const { id } = await client.createSession();
     const { id: otherId } = await client.createSession();
 
-    // 403: the app's authorize refuses every follow.
     client.follow(id, () => undefined);
     await eventually(() => status(client, id) === "ended");
     expect(client.sessionState(id).error).toBeInstanceOf(MotokoError);
     expect(client.sessionState(id).error).toMatchObject({ code: "forbidden" });
 
-    // 400: a cursor of another session, as a transport is asked to follow from it.
     const { baseUrl: open } = await serve(runtime);
-    const refused = doorway();
+    const refused = gatedFetch();
     const ended: MotokoError[] = [];
     const listener = { live: () => undefined, event: () => undefined, dropped: () => undefined };
     stops.push(
@@ -323,7 +310,7 @@ describe("httpTransport against motokoHandler", () => {
     expect(ended[0]).toMatchObject({ code: "invalid_cursor" });
 
     await pause(PAST_FIRST_RETRY_MS);
-    expect(door.follows()).toHaveLength(1);
+    expect(gated.follows()).toHaveLength(1);
     expect(refused.follows()).toHaveLength(1);
     expect(ended).toHaveLength(1);
   });
@@ -331,8 +318,8 @@ describe("httpTransport against motokoHandler", () => {
   it("ends the follow of a session deleted while it is followed, and does not follow it again", async () => {
     const runtime = runtimeOf();
     const { baseUrl } = await serve(runtime);
-    const door = doorway();
-    const client = clientOf(httpTransport({ baseUrl, fetch: door.fetch }));
+    const gated = gatedFetch();
+    const client = clientOf(httpTransport({ baseUrl, fetch: gated.fetch }));
     const { id } = await client.createSession();
     client.follow(id, () => undefined);
     await eventually(() => status(client, id) === "live" && readersOf(runtime) === 1);
@@ -341,17 +328,13 @@ describe("httpTransport against motokoHandler", () => {
     await eventually(() => status(client, id) === "ended");
     expect(client.sessionState(id).error).toMatchObject({ code: "session_not_found" });
     await pause(PAST_FIRST_RETRY_MS);
-    expect(door.follows()).toHaveLength(1);
+    expect(gated.follows()).toHaveLength(1);
   });
 });
 
 describe("httpTransport's event stream", () => {
   const encoder = new TextEncoder();
 
-  /**
-   * A `fetch` that answers each follow with the next of `bodies` (the last one stays open), and keeps each request. A
-   * `Response` is answered as it is.
-   */
   function scripted(...bodies: (readonly Uint8Array[] | Error | Response)[]) {
     const requests: Sent[] = [];
     const fetch: HttpTransportOptions["fetch"] = async (input, init) => {
@@ -381,15 +364,11 @@ describe("httpTransport's event stream", () => {
     const comma = userFrame.indexOf(",") + 1;
     const text = [
       ": heartbeat\r\n\r\n",
-      // `data` over two lines, joined with a newline, after fields the transport leaves alone.
       `retry: 10\r\nid: 7.1.1\r\ndata: ${userFrame.slice(0, comma)}\r\ndata: ${userFrame.slice(comma)}\r\n\r\n`,
-      // An event type of nobody's, and a message with no data, dispatch nothing.
       "event: other\ndata: {}\n\nid: nothing\n\n",
-      // No space after the colon, and lines that end in CR alone.
       `data:${frame("7.2.1", reply)}\r\r`,
       `event: ended\ndata: ${JSON.stringify({ sessionId: "7", error: { code: "session_not_found", message: "Gone" } })}\n\n`,
     ].join("");
-    // One byte at a time: every CRLF and every character of more than one byte is split across two chunks.
     const bytes = [...encoder.encode(text)].map((byte) => Uint8Array.of(byte));
     const { requests, fetch } = scripted(bytes, []);
     const client = clientOf(httpTransport({ baseUrl: "http://motoko.test/motoko/", fetch }));
@@ -441,7 +420,6 @@ describe("httpTransport's event stream", () => {
   it("tries a follow again when the server cannot serve it now, and keeps its cursor", async () => {
     const { requests, fetch } = scripted(
       [encoder.encode(`data: ${frame("7.1.1", user)}\n\n`)],
-      // The home failing over, then a proxy's error page in a deploy.
       Response.json({ error: { code: "lease_held", message: "Leased elsewhere" } }, { status: 503 }),
       new Response("<h1>Bad gateway</h1>", { status: 502, headers: { "content-type": "text/html" } }),
       [encoder.encode(`data: ${frame("7.2.1", reply)}\n\n`)],

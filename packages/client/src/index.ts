@@ -1,10 +1,3 @@
-/**
- * `@chia1104/motoko-client`: Motoko from the browser, one client over every transport. It follows sessions, folding
- * their events into a session view with `@chia1104/motoko-wire`'s `applyEvent` and resuming each from its last cursor
- * when its connection drops, and makes the calls an app needs: over a WebSocket to a Durable Object
- * (`webSocketTransport`) or HTTP and server-sent events to a Node server (`httpTransport`). It imports no server, Agents
- * SDK, pi or Node code.
- */
 export { motokoClient, MotokoError } from "./client.ts";
 export type {
   ApprovalDecision,
