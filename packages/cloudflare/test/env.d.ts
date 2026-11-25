@@ -1,6 +1,5 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
 
-/** A file's text, through Vite's `?raw` import. */
 declare module "*?raw" {
   const text: string;
   export default text;

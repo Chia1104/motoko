@@ -1,8 +1,3 @@
-/**
- * `@chia1104/motoko-cloudflare`: Motoko in a Cloudflare Durable Object, as an Agents SDK capability. The object's
- * SQLite database is the store, its alarm the wake-up, through the Lifecycle's job queue, and its WebSockets carry
- * Motoko's socket protocol to `@chia1104/motoko-client`'s `webSocketTransport`.
- */
 export { MotokoCapability } from "./capability.ts";
 export type { MotokoCapabilityOptions } from "./capability.ts";
 export { MAX_SUBSCRIPTIONS } from "./socket.ts";

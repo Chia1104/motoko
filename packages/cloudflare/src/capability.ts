@@ -20,9 +20,9 @@ import type { MotokoAuthorize, MotokoConnections } from "./socket.ts";
 import { durableObjectStore } from "./store.ts";
 
 /**
- * What `MotokoCapability` takes: the one agent the object runs, the runtime options of `createAgentRuntime` for it
- * (model access and ports, `closeIdleAfterMs`, `defaultModel`, `onReport`, `settings`, `deliverReply`), optionally its
- * store, and the connections to serve its socket protocol on.
+ * What `MotokoCapability` takes: the one agent the object runs, the runtime options of `createAgentRuntime` for it,
+ * optionally its store, and the connections to serve its socket protocol on. The runtime options are model access and
+ * ports, `closeIdleAfterMs`, `defaultModel`, `onReport`, `settings` and `deliverReply`.
  */
 export type MotokoCapabilityOptions<Ports> = Pick<
   AgentRuntimeOptions<Ports>,
@@ -30,73 +30,64 @@ export type MotokoCapabilityOptions<Ports> = Pick<
 > &
   AgentRuntimeModelsOption &
   AgentRuntimePortsOption<Ports> & {
-    /** The agent this object runs: its instance is the one named after the object. */
+    /** The agent this object runs. Its instance is the one named after the object. */
     readonly agent: AgentDefinition<Ports>;
-    /** Default: the object's own SQLite database (`durableObjectStore`). */
+    /** Default: `durableObjectStore`, the object's own SQLite database. */
     readonly store?: AgentStore;
     /**
-     * The object's connections (the `Agent` itself, or the `WebSockets` capability of a plain Durable Object), to serve
-     * Motoko's socket protocol on beside the app's own frames. Without them the capability claims no frame.
+     * The object's connections, to serve Motoko's socket protocol on beside the app's own frames. They are the `Agent`
+     * itself, or the `WebSockets` capability of a plain Durable Object. Without them the capability claims no frame.
      */
     readonly connections?: MotokoConnections;
     /**
-     * Runs before every call on `connections`, after its params parse and after the SDK's readonly mark let it through:
-     * `false` answers it `forbidden` and runs nothing. A throw is reported and answered `internal`.
+     * Runs before every call on `connections`, after its params parse and after the SDK's readonly mark lets it
+     * through. On `false` the call is answered `forbidden` and runs nothing. A throw is reported and answered
+     * `internal`.
      */
     readonly authorize?: MotokoAuthorize;
   };
 
-/** The capability's id, and with it its jobs' owner: fixed, so a pending job keeps its owner across deploys. */
+/** The capability's id, which is also its jobs' owner. It is fixed, so a pending job keeps its owner across deploys. */
 const CAPABILITY_ID = "motoko";
-/** The one job that wakes the object's instance. */
 const WAKE_JOB = "motoko-wake";
 const WAKE_FN = "wake";
 
-/** How long the wake waits on running work, and how far out it keeps its job meanwhile. Only tests shorten them. */
 interface WakeTiming {
-  /** The longest one wake waits inside an alarm, which may run 15 minutes; longer work is waited on across alarms. */
+  /** The longest one wake waits inside an alarm, which may run 15 minutes. Longer work is waited on across alarms. */
   readonly waitBudgetMs: number;
-  /** While work runs, the wake job stays due this soon, so an evicted object is restarted to carry it on. */
   readonly heartbeatMs: number;
 }
 
 const TIMING: WakeTiming = { waitBudgetMs: 10 * 60_000, heartbeatMs: 30_000 };
 
-/** The longest a wake job whose runs keep failing waits to try again; its delay doubles from the heartbeat. */
 const MAX_BACKOFF_MS = 10 * 60_000;
-/** Wake runs that failed in a row, in the object's storage, so the backoff holds across evictions. */
 const WAKE_ERRORS_KEY = "motoko:wake-errors";
 
 let setTiming: (capability: MotokoCapability, timing: Partial<WakeTiming>) => void;
 
-/** @internal Shortens a capability's wake timings, so a test does not sit on the real heartbeat. Not exported. */
 export function setWakeTimingForTests(capability: MotokoCapability, timing: Partial<WakeTiming>): void {
   setTiming(capability, timing);
 }
 
 /**
- * Motoko's runtime in a Durable Object, as an Agents SDK capability: one instance, the one whose scope is this object
- * (`{ kind: agent.kind, name }` with the object's name), on a host made of the store and the object's alarm.
+ * Motoko's runtime in a Durable Object, as an Agents SDK capability. It runs one instance, whose scope is
+ * `{ kind: agent.kind, name }` with the object's name, on a host made of the store and the object's alarm.
  *
  * The runtime arms the host with pi-durable's wake, and the capability keeps one Lifecycle job for it: due now while
- * work can run, due at the earliest sleep, and cancelled when nothing is due. When the job runs it resumes the
- * instance, which opens it if need be and carries on what a lost isolate left; while work runs, it waits on it, at
- * most ten minutes in one alarm, with the job a heartbeat out, so an evicted object is restarted to carry it on.
+ * work can run, due at the earliest sleep, and cancelled when nothing is due. When the job runs, it resumes the
+ * instance. Resuming opens the instance if need be and carries on the work a lost isolate left. While work runs, the
+ * job waits on it, at most ten minutes in one alarm, with the job due again one heartbeat later, so an evicted object
+ * is restarted to carry the work on.
  */
 export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
   readonly #options: MotokoCapabilityOptions<Ports>;
   #host: AgentHost | undefined;
   #runtime: AgentRuntime | undefined;
-  /** The newest wake the runtime armed the host with: what pi-durable has to do. */
   #wake: Wake | undefined;
-  /** A run of the wake job is under way: it decides from the newest wake when it is done. */
   #stepping = false;
-  /** The wait on running work a run of the wake job started, which outlives that run. */
   #waiting: Promise<void> | undefined;
-  /** Ends the wait's current sleep early: the wake changed. */
   #changed: (() => void) | undefined;
   #timing = TIMING;
-  /** The socket protocol, with `connections`. */
   readonly #sockets: MotokoSockets | undefined;
 
   static {
@@ -121,12 +112,12 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
       );
   }
 
-  /** This object's scope: its agent's kind and the object's name. */
+  /** This object's scope, made of its agent's kind and the object's name. */
   get scope(): StorageScope {
     return { kind: this.#options.agent.kind, name: this.lifecycle.name };
   }
 
-  /** The host the runtime runs on: the store, with the object's alarm as its wake-up. */
+  /** The host the runtime runs on, which is the store with the object's alarm as its wake-up. */
   get host(): AgentHost {
     if (this.#host !== undefined) return this.#host;
     const store = this.#options.store ?? durableObjectStore(this.lifecycle.storage, this.scope);
@@ -140,7 +131,7 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     return this.#host;
   }
 
-  /** This object's instance: its sessions, submissions and decisions. Waits for the object to have started. */
+  /** This object's instance, with its sessions, submissions and decisions. Waits until the object has started. */
   async instance(): Promise<AgentInstance> {
     await this.lifecycle.ready();
     return this.#instance();
@@ -155,8 +146,9 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
   }
 
   /**
-   * The object started, after a hibernation or an eviction too: the sessions its open connections followed are read
-   * on from their last cursors. Not awaited, so startup does not wait for the instance to open.
+   * Runs when the object starts, also after a hibernation or an eviction. It reads on the sessions its open
+   * connections followed from their last cursors. The read is not awaited, so startup does not wait for the instance
+   * to open.
    */
   override onStart(): void {
     this.#sockets?.reattach();
@@ -170,7 +162,7 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     return this.#sockets?.message(ws, message) ?? false;
   }
 
-  /** Stops the closed connection's readers; the close is left to the `WebSockets` capability, which owns the socket. */
+  /** Stops the closed connection's readers. The `WebSockets` capability owns the socket, so it handles the close. */
   onWebSocketClose(ws: WebSocket): boolean {
     this.#sockets?.closed(ws);
     return false;
@@ -184,16 +176,15 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     if (job.id !== WAKE_JOB || job.fn !== WAKE_FN) return undefined;
     const outcome = await this.#step();
-    // It got through, so a failing wake's backoff starts over.
     const { kv } = this.lifecycle.storage;
     if (kv.get(WAKE_ERRORS_KEY) !== undefined) kv.delete(WAKE_ERRORS_KEY);
     return outcome;
   }
 
   /**
-   * A run of the wake job failed through the Lifecycle's retries, as when the instance cannot open. The Lifecycle
-   * would complete the job and nothing would wake the instance's work again, so it tries again later: a heartbeat out,
-   * doubling while the failures go on, up to ten minutes.
+   * Runs when the wake job failed through the Lifecycle's retries, as when the instance cannot open. The Lifecycle
+   * would then complete the job, and nothing would wake the instance's work again. So the capability runs the job again
+   * later, one heartbeat out at first, doubling the delay while the failures go on, up to ten minutes.
    */
   onJobError({ job }: LifecycleJobContext, error: unknown): LifecycleJobOutcome {
     if (job.id !== WAKE_JOB || job.fn !== WAKE_FN) return undefined;
@@ -205,8 +196,8 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
   }
 
   /**
-   * Closes the runtime: its instance's Harness and lease, and the wait on its work. Stored state stays, the wake job
-   * too; a later call, or the job, opens a new runtime.
+   * Closes the runtime, with its instance's Harness and lease and the wait on its work. Stored state and the wake job
+   * stay. A later call, or the job, opens a new runtime.
    */
   async dispose(): Promise<void> {
     this.#sockets?.dispose();
@@ -216,20 +207,15 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     await runtime?.close();
   }
 
-  // ─── The wake ──────────────────────────────────────────────────────────────
-
-  /** The host's `arm`: keeps the wake job at what `wake` says is due. */
   async #arm(scope: StorageScope, wake: Wake): Promise<void> {
     const own = scopeKey(this.scope);
     if (scopeKey(scope) !== own) throw new TypeError(`This Durable Object wakes its own scope ${own} alone`);
     this.#wake = wake;
     this.#changed?.();
-    // A run of the job, or its wait, reads the newest wake when it is done; meanwhile the job is due.
     if (this.#stepping || this.#waiting !== undefined) return;
     await this.#schedule(wake);
   }
 
-  /** The wake job for `wake`: due now while work can run, at the earliest sleep, and none when nothing is due. */
   async #schedule(wake: Wake): Promise<void> {
     const { jobs } = this.lifecycle;
     const time = wake.active ? Date.now() : wake.at;
@@ -240,11 +226,6 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     await jobs.push({ id: WAKE_JOB, fn: WAKE_FN, time, singleflight: true, recoveryLoop: true });
   }
 
-  /**
-   * One run of the wake job. Resuming the instance opens it if need be, which carries on what a lost isolate left,
-   * and runs the sleeps now due; it leaves the newest wake in `#wake`. Running work is waited on past this run, inside
-   * the alarm's work, with the job a heartbeat out; a sleep reschedules the job for its time; nothing completes it.
-   */
   async #step(): Promise<LifecycleJobOutcome> {
     const heartbeat = { rescheduleAt: Date.now() + this.#timing.heartbeatMs };
     if (this.#waiting !== undefined) return heartbeat;
@@ -262,30 +243,23 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
       const waiting = this.#waitWhileActive(instance, () => this.#runtime === runtime).then(
         async () => {
           this.#waiting = undefined;
-          // Disposed: the job stays as it is, a heartbeat out.
           if (this.#runtime !== runtime) return;
-          // Idle now, asleep, or still running at the budget: a fresh alarm waits on for another budget.
           await this.#schedule(this.#wake ?? { active: false });
         },
         (error: unknown) => {
-          // The heartbeat that is due already tries again.
           this.#waiting = undefined;
           throw error;
         },
       );
       this.#waiting = waiting;
-      // Counted against the alarm's memory-limit breaker; outside an alarm, the heartbeat alone covers it.
+      // Inside an alarm, this wait counts against the alarm's memory-limit breaker. Outside an alarm, the heartbeat
+      // alone covers it.
       if (!this.lifecycle.trackAlarmWork(waiting)) waiting.catch(() => undefined);
       return heartbeat;
     }
     return wake?.at === undefined ? undefined : { rescheduleAt: wake.at };
   }
 
-  /**
-   * Waits while `instance`'s work runs, up to the wait budget, and while `current()`. A changed wake ends each sleep
-   * early. A sleep due beside the running work (a retry's backoff) also ends it when due, and the instance is resumed
-   * to run it: with an alarm host, pi-durable arms no timer of its own.
-   */
   async #waitWhileActive(instance: AgentInstance, current: () => boolean): Promise<void> {
     const deadline = Date.now() + this.#timing.waitBudgetMs;
     for (let wake = this.#wake; wake?.active === true && current(); wake = this.#wake) {
@@ -301,6 +275,7 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
       });
       this.#changed = undefined;
       const at = this.#wake?.at;
+      // With an alarm host, pi-durable arms no timer for a sleep of its own.
       if (current() && at !== undefined && Date.now() >= at) await instance.resume();
     }
   }

@@ -12,18 +12,14 @@ import { eventually, unhandledRejections } from "./helpers.ts";
 const OPEN = 1;
 const CLOSED = 3;
 
-/**
- * A socket to one object that the test drops and opens again, as `AgentClient` reconnects on its own: one object the
- * client holds, a new connection each time. It keeps every event frame it received, the stream as the wire carried it.
- */
 class TestSocket extends EventTarget implements MotokoSocket {
   readyState = CLOSED;
   readonly events: { readonly sessionId: string; readonly cursor: Cursor; readonly event: AgentWireEvent }[] = [];
   readonly frames: Record<string, unknown>[] = [];
   #ws: WebSocket | undefined;
-  /** A stub of the object for each connection: a stub dies with the object instance it reached. */
+  /** A stub of the object for each connection, because a stub fails once the object instance it reached is gone. */
   readonly #stub: () => { fetch(input: string, init: RequestInit): Promise<Response> };
-  /** The upgrade's URL: `?readonly` has the SDK mark the connection readonly, `?_pk=` names it. */
+  /** The Agents SDK takes `?_pk=` in the upgrade's URL as the connection's id. */
   readonly #url: string;
 
   constructor(stub: () => { fetch(input: string, init: RequestInit): Promise<Response> }, url = "http://motoko.test/") {
@@ -45,7 +41,6 @@ class TestSocket extends EventTarget implements MotokoSocket {
       }
       this.dispatchEvent(new MessageEvent("message", { data }));
     });
-    // The server closed it, as an object that is reset does.
     ws.addEventListener("close", () => {
       if (this.#ws === ws) this.#closed();
     });
@@ -71,7 +66,6 @@ class TestSocket extends EventTarget implements MotokoSocket {
     this.#ws.send(data);
   }
 
-  /** The event frames of `sessionId` received since `start`. */
   eventsOf(sessionId: string, start = 0): AgentWireEvent[] {
     return this.events
       .filter((item) => item.sessionId === sessionId)
@@ -82,10 +76,8 @@ class TestSocket extends EventTarget implements MotokoSocket {
 
 const agent = (name: string = crypto.randomUUID()) => env.MOTOKO.getByName(name);
 
-/** The socket's Motoko client, as a browser makes it: one per socket. */
 const clientOf = (socket: MotokoSocket) => motokoClient(webSocketTransport(socket));
 
-/** Waits until the session's state satisfies `condition`, then returns it. */
 async function until(
   client: MotokoClient,
   sessionId: string,
@@ -98,7 +90,6 @@ async function until(
 const runEnded = (socket: TestSocket, sessionId: string, runs = 1) =>
   eventually(async () => socket.eventsOf(sessionId).filter((event) => event.type === "run:end").length >= runs);
 
-/** What a session view shows, without its stream ids. */
 const shape = (state: MotokoSessionState) =>
   state.view.items.map((item) =>
     item.kind === "tool"
@@ -122,12 +113,10 @@ describe("a socket client of an Agent with Motoko installed", () => {
     await until(client, sessionId, (state) => state.status === "live");
     const { submissionId } = await client.submit(sessionId, { text: "Shout hi", requestId: "r-1" });
     expect(submissionId).toEqual(expect.any(String));
-    // The same request again is the same submission, and starts nothing.
     expect(await client.submit(sessionId, { text: "Shout hi", requestId: "r-1" })).toEqual({ submissionId });
     await runEnded(socket, sessionId);
 
-    // The run as it happened (pi-ai's faux model answers whole, without streaming): its start, the message, the reply
-    // that called the tool, the call, the answer, its end.
+    // pi-ai's faux model answers whole, without streaming.
     expect(socket.eventsOf(sessionId).map((event) => event.type)).toEqual([
       "run:start",
       "user",
@@ -145,7 +134,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
       { kind: "assistant", text: "It said HI." },
     ]);
     expect(state.view.status).toBe("idle");
-    // The view is the session's whole stream folded, as a client reading it from the start would build it.
     expect(state.view).toEqual(foldEvents(socket.eventsOf(sessionId), emptySessionView()));
     expect(states[0]).toBe("live");
     unfollow();
@@ -153,7 +141,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
 
   it("follows a delegate's child session from the parent's call, and gets the child's answer back", async () => {
     const stub = agent();
-    // The parent's request, the child's, then the parent's again: one model, in the order the runs ask it.
     await stub.script([{ tool: "ask", args: { task: "Shout hi" } }, { text: "HI" }, { text: "The helper said HI." }]);
     const socket = await new TestSocket(() => stub).connect();
     const client = clientOf(socket);
@@ -186,7 +173,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
       { kind: "tool", toolName: "ask", status: "ok", approval: undefined },
       { kind: "assistant", text: "The helper said HI." },
     ]);
-    // Only its delegate submits to the child, and only the parent is listed.
     await expect(client.submit(childId, { text: "Again", requestId: "r-2" })).rejects.toMatchObject({
       code: "session_owned",
     });
@@ -198,7 +184,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
   it("parks a deferred call in the object, which a reply over the socket resumes, the object evicted meanwhile", async () => {
     const name = crypto.randomUUID();
     const stub = agent(name);
-    // No `to`: the call asks nobody, and the test replies itself.
     await stub.script([{ tool: "relay", args: { to: "", session: "", text: "Why?" } }, { text: "It said because." }]);
     const socket = await new TestSocket(() => agent(name)).connect();
     const client = clientOf(socket);
@@ -217,7 +202,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
       token: expect.any(String),
     });
 
-    // The object leaves memory while the call waits: the park is stored state, and nothing of it runs.
     await evictDurableObject(stub);
     const { toolCallId, token } = address;
     await expect(client.reply(sessionId, { toolCallId, token: "forged", text: "No." })).rejects.toMatchObject({
@@ -257,7 +241,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
 
     socket.disconnect();
     expect(client.sessionState(sessionId).status).toBe("connecting");
-    // The run goes on without this client: the held request answers, the reply streams and the run ends.
     expect(await stub.release("Carried on.")).toBe(true);
     await runEnded(watcher, sessionId);
     const missed = watcher.eventsOf(sessionId, before);
@@ -266,7 +249,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     await socket.connect();
     await until(client, sessionId, (state) => state.status === "live" && state.view.status === "idle");
     await runEnded(socket, sessionId);
-    // Neither a gap nor a duplicate: what it got after the reconnect is what the connected client got meanwhile.
     expect(socket.eventsOf(sessionId, before)).toEqual(missed);
     expect(socket.eventsOf(sessionId)).toEqual(watcher.eventsOf(sessionId));
     expect(client.sessionState(sessionId).view).toEqual(clientOf(watcher).sessionState(sessionId).view);
@@ -284,7 +266,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     const parked = await until(client, sessionId, (state) => state.view.status === "awaiting_approval");
     const [toolCallId] = parked.view.pendingApprovals;
     expect(toolCallId).toEqual(expect.any(String));
-    // A run is going, so a submission that refuses to queue is refused.
     await expect(
       client.submit(sessionId, { text: "Another", requestId: "r-2", whenBusy: "reject" }),
     ).rejects.toMatchObject({ code: "session_busy" });
@@ -365,7 +346,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     await expect(client.deleteSession(sessionId)).rejects.toMatchObject(forbidden);
     await expect(client.createSession()).rejects.toMatchObject(forbidden);
 
-    // None of it ran: the approval is still the writer's to decide, and the run ends having taken one message.
     expect(await writer.approve(sessionId, [{ toolCallId: toolCallId!, approved: true }])).toEqual([
       { toolCallId, outcome: "applied" },
     ]);
@@ -373,7 +353,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     expect(observer.eventsOf(sessionId).filter((event) => event.type === "user")).toHaveLength(1);
     expect(await stub.requests()).toBe(2);
     expect((await writer.listSessions()).map((session) => session.id)).toEqual([sessionId]);
-    // It still followed the whole run.
     expect(shape(client.sessionState(sessionId))).toEqual([
       { kind: "user", text: "Save milk" },
       { kind: "assistant", text: "" },
@@ -390,7 +369,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     const { id: sessionId } = await client.createSession({ requestId: "c-1" });
     await client.submit(sessionId, { text: "Hello", requestId: "r-1" });
 
-    // The session has its run's events ready: the result still goes out before the first of them.
     const call = (id: string, method: string, params: unknown) =>
       socket.send(JSON.stringify({ type: "motoko:call", id, method, params }));
     call("s-1", "subscribe", { sessionId, ignored: true });
@@ -399,16 +377,13 @@ describe("a socket client of an Agent with Motoko installed", () => {
     expect(socket.frames[result]).toEqual({ type: "motoko:result", id: "s-1", result: null });
     expect(result).toBeLessThan(socket.frames.findIndex((frame) => frame.type === "motoko:event"));
 
-    // Refused: answered `forbidden`, and the session is still there.
     await expect(client.deleteSession(sessionId)).rejects.toMatchObject({ code: "forbidden" });
     expect((await client.listSessions()).map((session) => session.id)).toEqual([sessionId]);
-    // A throw is the app's failure, not the client's to read.
     await expect(client.abort(sessionId)).rejects.toMatchObject({ code: "internal", message: "Internal error" });
 
     expect(await stub.authorized()).toEqual([
       { connection: "alice", method: "createSession", params: { requestId: "c-1" } },
       { connection: "alice", method: "submit", params: { sessionId, text: "Hello", requestId: "r-1" } },
-      // Parsed: the key the schema does not know is gone.
       { connection: "alice", method: "subscribe", params: { sessionId } },
       { connection: "alice", method: "deleteSession", params: { sessionId } },
       { connection: "alice", method: "listSessions", params: {} },
@@ -427,7 +402,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
     socket.send(JSON.stringify({ type: "echo", text: "mine" }));
     await eventually(async () => socket.frames.some((frame) => frame.type === "echoed"));
     expect(socket.frames.find((frame) => frame.type === "echoed")).toEqual({ type: "echoed", text: "mine" });
-    // The app saw its frame and none of Motoko's.
     expect(await stub.seen()).toEqual([JSON.stringify({ type: "echo", text: "mine" })]);
   });
 
@@ -444,12 +418,9 @@ describe("a socket client of an Agent with Motoko installed", () => {
     const before = socket.eventsOf(sessionId).length;
     const { cursor } = client.sessionState(sessionId);
 
-    // The object leaves memory; the socket stays connected, its state with it.
     await evictDurableObject(stub);
-    // A call over RPC wakes it: nothing on the socket asks it to follow again.
     const reference = await agent(name).submitAndRead(sessionId, "Two", "r-2", cursor!);
     await runEnded(socket, sessionId, 2);
-    // From the last cursor the socket had: what a reader from that cursor read meanwhile, no more, no less.
     expect(socket.eventsOf(sessionId, before)).toEqual(reference);
     expect(shape(client.sessionState(sessionId))).toEqual([
       { kind: "user", text: "One" },
@@ -458,8 +429,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
       { kind: "assistant", text: "Second." },
     ]);
 
-    // Evicted again, and woken this time by the socket's own call: the queue, compaction and wrap-up state the follow
-    // may hold, stated again as a resumed follow is, then the run's events, and nothing of the runs before.
     await stub.script([{ text: "Third." }]);
     const third = socket.eventsOf(sessionId).length;
     await evictDurableObject(agent(name));
@@ -477,7 +446,8 @@ describe("a socket client of an Agent with Motoko installed", () => {
   });
 
   it("resumes a follow from its cursor after the object is reset mid-run, which closes the socket", async () => {
-    // An object cannot hibernate while its run works; a reset (a crash, a deploy) closes its sockets instead.
+    // An object cannot hibernate while a run is going. A reset, such as a crash or a deploy, closes its sockets
+    // instead.
     const name = crypto.randomUUID();
     const stub = agent(name);
     await stub.script([{ hold: true }, { text: "Carried on." }]);
@@ -492,7 +462,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
 
     await abortAllDurableObjects();
     await until(client, sessionId, (state) => state.status === "connecting");
-    // The client reconnects, as AgentClient does on its own, while the alarm carries the run on in a new instance.
     await socket.connect();
     const done = await until(client, sessionId, (state) => state.view.status === "idle" && state.view.items.length > 1);
     expect(await agent(name).requests()).toBe(2);
@@ -500,7 +469,6 @@ describe("a socket client of an Agent with Motoko installed", () => {
       { kind: "user", text: "Work" },
       { kind: "assistant", text: "Carried on." },
     ]);
-    // Nothing it had folded came again: the message stays one, and the reply comes once.
     const resumed = socket.eventsOf(sessionId, before).map((event) => event.type);
     expect(resumed).not.toContain("user");
     expect(resumed.filter((type) => type === "assistant:end")).toHaveLength(1);
@@ -529,11 +497,9 @@ describe("a socket client of an object whose scope's lease another writer holds"
     client.follow(sessionId, () => undefined);
     await until(client, sessionId, (state) => state.status === "live");
 
-    // Another writer takes the scope while the object is out of memory, its socket hibernated with what it follows.
     await agent(name).holdLease(true);
     await evictDurableObject(agent(name));
     const unhandled = await unhandledRejections(async () => {
-      // A call that touches nothing of Motoko starts the object, which reattaches the follow and cannot open.
       await agent(name).requests();
       expect((await until(client, sessionId, (state) => state.status === "ended")).error?.code).toBe("lease_held");
     });
