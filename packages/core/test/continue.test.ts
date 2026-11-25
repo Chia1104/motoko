@@ -9,7 +9,16 @@ import type { AgentWireEvent, StreamItem } from "@chia1104/motoko-wire";
 import { callErrorOf, createAgentRuntime, defineAgent, defineTool, runCall, SessionBusyError } from "../src/index.ts";
 import type { AgentRuntime } from "../src/index.ts";
 
-import { expectEveryResumeFolds, fauxModels, follow, memoryHost, readUntil, runEnds, settledTypes } from "./helpers.ts";
+import {
+  deferred,
+  expectEveryResumeFolds,
+  fauxModels,
+  follow,
+  memoryHost,
+  readUntil,
+  runEnds,
+  settledTypes,
+} from "./helpers.ts";
 
 let runtime: AgentRuntime | undefined;
 afterEach(async () => {
@@ -17,7 +26,6 @@ afterEach(async () => {
   runtime = undefined;
 });
 
-/** Released by the test: a call of `gate` runs until then. */
 let opened: Promise<void> = Promise.resolve();
 
 const lookup = defineTool({
@@ -49,15 +57,6 @@ function setup() {
   return { faux, instance: runtime.get(agent, "n") };
 }
 
-/** A promise and the function that resolves it. */
-function door() {
-  let open: () => void = () => undefined;
-  const shut = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { shut, open };
-}
-
 const call = (name: string, id: string, args: Record<string, string> = {}) =>
   fauxAssistantMessage(fauxToolCall(name, args, { id }), { stopReason: "toolUse" });
 const fold = (items: readonly StreamItem[]) => foldEvents(items.map((item) => item.event));
@@ -65,7 +64,6 @@ const runEndsOf = (items: readonly StreamItem[]) =>
   items.filter((item) => item.event.type === "run:end").map((item) => item.event);
 const turnLimit: AgentWireEvent = { type: "run:end", reason: "error", code: "turn_limit", error: "1 turn" };
 
-/** A session whose first run reached its turn limit of one tool round, read by a client from its start. */
 async function turnLimited() {
   const { faux, instance } = setup();
   const session = instance.session((await instance.createSession({ maxTurns: 1 })).id);
@@ -91,7 +89,6 @@ describe("continuing a run", () => {
     expect(await session.continue({ requestId: "c-1" })).toEqual({ submissionId: expect.any(String) });
     await reader.until((items) => runEnds(items) === 2);
     await reader.stop();
-    // The model read the context as the failed run left it, ending in the round's results.
     expect(readLast).toBe("toolResult");
     const second = reader.items.slice(reader.items.findIndex((item) => item.event.type === "run:end") + 1);
     expect(settledTypes(second)).toEqual(["run:start", "assistant:end", "run:end"]);
@@ -104,7 +101,6 @@ describe("continuing a run", () => {
       { kind: "notice", reason: "error", code: "turn_limit" },
       { kind: "assistant", text: "a is apples." },
     ]);
-    // History shows the two runs too: a client that replays the session folds the same view.
     expect(fold(await readUntil(session, (_event, items) => runEnds(items) === 2))).toEqual(view);
   });
 
@@ -121,9 +117,9 @@ describe("continuing a run", () => {
   it("is refused while a run is going, writing nothing", async () => {
     const { faux, instance } = setup();
     const session = instance.session((await instance.createSession()).id);
-    const reply = door();
+    const reply = deferred();
     const held: FauxResponseStep = async () => {
-      await reply.shut;
+      await reply.promise;
       return fauxAssistantMessage("Done.");
     };
     faux.setResponses([held]);
@@ -136,7 +132,7 @@ describe("continuing a run", () => {
       params: { sessionId: session.id, requestId: "c-2" },
     }).catch((error: unknown) => error);
     expect(callErrorOf(refused)).toMatchObject({ code: "session_busy" });
-    reply.open();
+    reply.resolve();
     const items = await readUntil(session, (_event, read) => runEnds(read) === 1);
     expect(items.filter((item) => item.event.type === "run:start")).toHaveLength(1);
   });
@@ -151,7 +147,6 @@ describe("continuing a run", () => {
     expect(together).toEqual(first);
     await reader.until((items) => runEnds(items) === 2);
     expect(await session.continue({ requestId: "c-1" })).toEqual(first);
-    // Give a third run every chance to start; none does.
     await new Promise((resolve) => setTimeout(resolve, 50));
     await reader.stop();
     expect(reader.items.filter((item) => item.event.type === "run:start")).toHaveLength(2);
@@ -173,7 +168,6 @@ describe("continuing a run", () => {
     expect(faux.getPendingResponseCount()).toBe(1);
     expect(fold(await readUntil(session, (_event, items) => runEnds(items) === 2))).toEqual(fold(reader.items));
 
-    // Once a later run starts, the ending is read from the continue's settlement.
     await session.submit({ text: "Hi again", requestId: "2" });
     await reader.until((items) => runEnds(items) === 3);
     await reader.stop();
@@ -183,14 +177,14 @@ describe("continuing a run", () => {
   it("takes into its run the inputs a failed run left waiting, which start it as any run's input does", async () => {
     const { faux, instance } = setup();
     const session = instance.session((await instance.createSession({ maxTurns: 1 })).id);
-    const through = door();
-    opened = through.shut;
+    const through = deferred();
+    opened = through.promise;
     faux.setResponses([call("gate", "g-1"), fauxAssistantMessage("Through, and noted.")]);
     const reader = follow(session);
     await session.submit({ text: "Go through", requestId: "1" });
     await reader.until((items) => items.some((item) => item.event.type === "tool:start"));
     await session.submit({ text: "And note it", requestId: "2" });
-    through.open();
+    through.resolve();
     await reader.until((items) => runEnds(items) === 1);
     expect(fold(reader.items).queued).toMatchObject([{ text: "And note it" }]);
 

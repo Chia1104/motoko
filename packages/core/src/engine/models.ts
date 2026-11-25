@@ -4,7 +4,7 @@ import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { ModelsUnavailableError } from "../errors.ts";
 import type { StorageScope } from "../host.ts";
 
-/** What `modelsFor` resolves for a scope: what `models` would be for a runtime of that one instance. */
+/** What `modelsFor` resolves for a scope. It is what `models` would be for a runtime of that one instance. */
 export type ModelsResolver = (scope: StorageScope) => HarnessOptions["models"] | Promise<HarnessOptions["models"]>;
 
 type Resolved =
@@ -12,11 +12,8 @@ type Resolved =
   | { readonly ok: false; readonly error: unknown };
 
 /**
- * One open instance's model access when the app resolves it per scope. pi-durable reads
- * `HarnessOptions.models` synchronously at each use, so the async lookup happens beforehand, in
- * `refresh()`, and pi-durable reads the newest result through `get`. The newest resolution wins,
- * failed or not: after a failed one every model request fails with `ModelsUnavailableError`, which
- * ends the run it serves, until a later resolution succeeds. Nothing of it outlives the open.
+ * pi-durable reads `HarnessOptions.models` synchronously at each use, so the async lookup runs beforehand, in
+ * `refresh()`, and pi-durable reads its newest result through `get`.
  */
 export class ModelAccess {
   readonly #scope: StorageScope;
@@ -32,7 +29,6 @@ export class ModelAccess {
     this.#failed = failed;
   }
 
-  /** Resolves the scope's models again. Never rejects: a failure is reported and held. */
   async refresh(): Promise<void> {
     const seq = ++this.#started;
     let next: Resolved;
@@ -46,14 +42,12 @@ export class ModelAccess {
       this.#failed(error);
       next = { ok: false, error };
     }
-    // Resolutions may overlap; the one started last decides.
     if (seq > this.#applied) {
       this.#applied = seq;
       this.#current = next;
     }
   }
 
-  /** `HarnessOptions.models` for pi-durable: called at each use, it throws while the newest resolution failed. */
   readonly get = (): Models => {
     const current = this.#current;
     if (current === undefined || !current.ok) throw new ModelsUnavailableError(this.#scope, current?.error);

@@ -2,6 +2,8 @@ import { defineDoc } from "@earendil-works/pi-durable";
 
 import type { AgentDefinition } from "../agent.ts";
 
+import type { EpochMs } from "./calls.ts";
+
 /** Which of the agent's tools a session may use: exactly these, by name, or every one but those in `remove`. */
 export type ToolSelection = readonly string[] | { readonly remove: readonly string[] };
 
@@ -13,31 +15,19 @@ export type ApprovalRule =
   | readonly string[]
   | { readonly add?: readonly string[]; readonly remove?: readonly string[] };
 
-// Type aliases, not interfaces: the document must be a pi `JsonObject`, and only an alias has the implicit index
-// signature that takes.
+// These are type aliases, not interfaces, because the document must be a pi `JsonObject`, and only an alias has the
+// implicit index signature that `JsonObject` takes.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type StoredRule = string[] | { add?: string[]; remove?: string[] };
 // oxlint-disable-next-line typescript/consistent-type-definitions
 export type SessionRecord = {
-  /** Epoch ms. */
-  createdAt: number;
-  /** The session's own approval rule; absent, the agent's policy decides. */
+  createdAt: EpochMs;
   requiresApproval?: StoredRule;
-  /** The `createSession` request that made it: a retry of that request finds this session. */
   requestId?: string;
-  /** The kind of the sub-agent a child session runs; absent, the instance's agent. */
   agent?: string;
-  /** A child session's delegate call: the session it was made in and the call that owns it. */
   parent?: { sessionId: string; toolCallId: string };
 };
 
-/**
- * The runtime's record of an instance's sessions: one document for all of them, so listing them is one read. A
- * conversation is a session while it is listed here; `erasing` holds deleted sessions whose data the host has not
- * erased yet, which the runtime hands to the host's `erase` once the instance's storage is closed. A session's request
- * ID is remembered as long as it is listed. A record with `parent` is a child session, which its delegate's call made
- * in the same commit as its conversation.
- */
 export const SessionsDoc = defineDoc<{ sessions: Record<string, SessionRecord>; erasing: number[] }>({
   kind: "runtime.sessions",
   version: 1,
@@ -46,7 +36,6 @@ export const SessionsDoc = defineDoc<{ sessions: Record<string, SessionRecord>; 
   checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 64,
 });
 
-/** Session `sessionId` and the child sessions under it, theirs included, parents first. */
 export function withChildren(sessions: Readonly<Record<string, SessionRecord>>, sessionId: string): string[] {
   const children = new Map<string, string[]>();
   for (const [id, record] of Object.entries(sessions)) {
@@ -56,12 +45,11 @@ export function withChildren(sessions: Readonly<Record<string, SessionRecord>>, 
     if (siblings === undefined) children.set(parent, [id]);
     else siblings.push(id);
   }
-  const found = [sessionId];
-  // The iteration reaches the children it appends, and theirs.
-  for (const parent of found) {
-    for (const child of children.get(parent) ?? []) found.push(child);
+  const breadthFirst = [sessionId];
+  for (const parent of breadthFirst) {
+    for (const child of children.get(parent) ?? []) breadthFirst.push(child);
   }
-  return found;
+  return breadthFirst;
 }
 
 const isList = (value: unknown): value is readonly unknown[] => Array.isArray(value);
@@ -73,10 +61,6 @@ function stringsOf(value: unknown, what: string): string[] {
   return [...value];
 }
 
-/**
- * `rule` as stored for a session of agent `kind`, after checking that it names only `tiers`, the tiers its tools carry:
- * the agent's and its app tools'.
- */
 export function storedRule(kind: string, tiers: ReadonlySet<string>, rule: ApprovalRule): StoredRule {
   const known = (list: readonly string[], what: string) => {
     for (const tier of list) {
@@ -97,7 +81,6 @@ export function storedRule(kind: string, tiers: ReadonlySet<string>, rule: Appro
   };
 }
 
-/** The agent's tool names `selection` enables, in the agent's order, after checking that it names only its tools. */
 export function selectedTools(agent: AgentDefinition, selection: ToolSelection): string[] {
   const names = isList(selection)
     ? stringsOf(selection, "`tools`")

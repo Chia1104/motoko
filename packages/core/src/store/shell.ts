@@ -1,8 +1,3 @@
-// What every storage of a shared-database store does around its statements, whatever its dialect: it admits calls
-// until `close()` and drains them, mints IDs in memory, runs a commit through `commitBatches`, retries a read on a
-// transient connection failure, and keeps what `findDocument` read for the `document()` call that follows it. The
-// dialect's storage writes the statements and hands them to this shell.
-
 import { apply } from "@earendil-works/chord/delta";
 import { StorageRequestError } from "@earendil-works/pi-durable";
 import type {
@@ -24,11 +19,14 @@ import type { FencedLease } from "./lease.ts";
 import { retry } from "./retry.ts";
 import { addressKey, idFromNumber, isCurrentOnly, parseJson } from "./rows.ts";
 
-/** A document's stored rows at one point, read in one snapshot: its record, and what its content there is built from. */
+/**
+ * A document's stored rows at one point, read in one snapshot. They hold its record and what its content there is built
+ * from.
+ */
 export interface DocumentRows {
-  /** The document's record as JSON text; `undefined`: no such document. */
+  /** The document's record as JSON text, or `undefined` when there is no such document. */
   readonly record: string | undefined;
-  /** The newest base revision at or before the point; `undefined`: none. */
+  /** The newest base revision at or before the point, or `undefined` when there is none. */
   readonly base: { readonly version: number; readonly content: string } | undefined;
   /** The revisions after the base, up to the point, in seq order. */
   readonly tail: readonly { readonly kind: string; readonly version: number; readonly content: string }[];
@@ -39,7 +37,7 @@ const isAliveAt = (record: DocumentRecord, at: DocumentPoint): boolean => {
   return record.createdAt <= at && (record.retiredAt === undefined || at < record.retiredAt);
 };
 
-/** Document `id`'s content at `at` from its stored rows: the base with the deltas after it applied. */
+/** Document `id`'s content at `at` from its stored rows, which is the base with the deltas after it applied. */
 export function materializeDocument(rows: DocumentRows, id: number, at: DocumentPoint): StoredDocument | undefined {
   if (rows.record === undefined) return undefined;
   const record = parseJson<DocumentRecord>(rows.record);
@@ -87,19 +85,9 @@ export class StorageShell {
   #closing: Promise<void> | undefined;
   #active = 0;
   #drained: (() => void) | undefined;
-  /**
-   * Bumped as each commit starts and ends; with `#committing`, tells whether anything could have been written between
-   * a read and a later use of what it read. Under the lease this storage is the scope's only writer.
-   */
   #commitEpoch = 0;
   #committing = 0;
-  /**
-   * What `findDocument` read beside the record: the document's content at the same point, for the `document()` call
-   * that follows it (pi-durable loads a document with the two, back to back). Used at most once, and only while no
-   * commit started or ended since the read; one statement then serves both calls.
-   */
   readonly #prefetched = new Map<string, { readonly rows: DocumentRows; readonly epoch: number }>();
-  /** Current addresses `findDocument` found nothing at, while no commit has started or ended since. */
   readonly #absent = new Map<string, number>();
 
   constructor(options: StorageShellOptions) {
@@ -111,8 +99,9 @@ export class StorageShell {
   }
 
   /**
-   * Stores `batches` through the port (`commitBatches`): one read of the check state, the checks in memory, and the
-   * guarded write of every accepted batch. Refusals come from Durable's own checks only; a database failure rejects.
+   * Stores `batches` through the port with `commitBatches`. It reads the check state once, runs the checks in memory,
+   * and writes every accepted batch under the guard. Refusals come from Durable's own checks only, and a database
+   * failure rejects.
    */
   commit(
     batches: readonly (readonly StorageWrite[])[],
@@ -132,7 +121,6 @@ export class StorageShell {
           () => this.#nextId,
         );
         this.#nextId = Math.max(this.#nextId, nextId);
-        // The write returned: the stored batches are durable.
         for (const [index, seq] of seqs.entries()) receive(index, seq);
         return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
       } finally {
@@ -143,8 +131,8 @@ export class StorageShell {
   }
 
   /**
-   * In memory, like upstream's SQLite storage: the counter starts at the scope's stored `next_id` and each commit
-   * stores at least every ID it claimed plus one, so IDs never repeat across reopen.
+   * Mints in memory, like upstream's SQLite storage. The counter starts at the scope's stored `next_id`, and each
+   * commit stores at least one past every ID it claimed, so IDs never repeat across reopen.
    */
   async mintId<I extends Id<string>>(): Promise<I> {
     this.#assertOpen();
@@ -158,9 +146,9 @@ export class StorageShell {
   }
 
   /**
-   * The current document at `address` at `at`, from `find`'s rows: its record, and its content at the same point,
-   * kept for the `document()` call that usually follows. A current address found empty is remembered until the next
-   * commit: only a commit of this storage, the scope's single writer, can create a document there.
+   * The current document at `address` at `at`, from `find`'s rows. It resolves the record and keeps the content at the
+   * same point for the `document()` call that usually follows. A current address found empty is remembered until the
+   * next commit, because only a commit of this storage, the scope's single writer, can create a document there.
    */
   findDocument(
     address: DocumentAddress,
@@ -209,7 +197,6 @@ export class StorageShell {
     return this.#closing;
   }
 
-  /** Whether a read made at `epoch` still holds: no commit started or ended since, none running, the lease held. */
   #reusable(epoch: number | undefined): boolean {
     return epoch !== undefined && epoch === this.#commitEpoch && this.#committing === 0 && !this.#lease.signal.aborted;
   }
@@ -219,7 +206,6 @@ export class StorageShell {
     map.set(key, value);
   }
 
-  /** Runs a call while open; `close()` waits for the calls it admitted, so none reaches the database after it. */
   async #admit<T>(call: () => Promise<T>): Promise<T> {
     this.#assertOpen();
     this.#active++;

@@ -1,10 +1,9 @@
-/** The wait after failed attempt `attempt` (from 1): 100 ms, doubling with each attempt. */
 export const backoff = (attempt: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
 
 /**
- * Runs an idempotent statement, again after a transient connection failure (`isTransient`, the dialect's), `attempts`
- * times at most.
+ * Runs an idempotent statement, and again after a transient connection failure, `attempts` times at most.
+ * `isTransient` is the dialect's test for such a failure.
  */
 export async function retry<T>(
   attempts: number,

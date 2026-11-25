@@ -1,5 +1,4 @@
-// An instance's execution environment, on the faux provider: `envFor` resolves it from the scope each time the
-// instance opens, and an app tool reads what it built as `api.env`, as the README's "The runtime" says.
+// Each test expects what the README's "The runtime" says.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool as definePiTool } from "@earendil-works/pi-durable";
@@ -15,7 +14,6 @@ import { durableMemoryHost, fauxModels, isRunEnd, memoryPlace, readUntil } from 
 
 const agent = defineAgent({ kind: "coder", instructions: "You code.", tools: [] });
 
-/** Reports the working directory of the environment its call was given, `null` for none. */
 const where = defineExtension({
   name: "where",
   tools: [
@@ -31,7 +29,6 @@ const where = defineExtension({
   ],
 });
 
-// SAFETY: the `where` tool reads nothing of an environment but its `cwd`.
 const envAt = (cwd: string) => ({ id: "test", cwd }) as Partial<ExecutionEnv> as ExecutionEnv;
 
 let runtime: AgentRuntime | undefined;
@@ -60,7 +57,6 @@ describe("execution environment", () => {
         extensionsFor: () => [{ extension: where, tier: () => "read" }],
       });
     };
-    /** The model calls `where` in a run of `name`'s session, a new one without `sessionId`; returns the call's end. */
     const ask = async (name: string, sessionId: string | undefined, toolCallId: string) => {
       const instance = runtime!.get(agent, name);
       const id = sessionId ?? (await instance.createSession()).id;
@@ -82,7 +78,6 @@ describe("execution environment", () => {
     expect(bob.end).toMatchObject({ status: "ok", details: { cwd: "/work/bob/2" } });
     await runtime!.close();
 
-    // A reopened instance resolves it again: its tools read the environment of this open.
     start();
     expect((await ask("alice", alice.id, "w-3")).end).toMatchObject({
       status: "ok",

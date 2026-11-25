@@ -1,10 +1,3 @@
-/**
- * `@chia1104/motoko-core/store/testing`: the guarantees every shared-database store keeps, as a suite each dialect runs
- * against its own store, on the runner shape of `registerHostConformance`. It drives the store through its public
- * interface; what it cannot do that way (expire a lease now, delete a scope's row behind its holders, cut a
- * connection) the dialect's provider does for it.
- */
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -45,10 +38,10 @@ export interface ControlledStore<S extends Storage = Storage> {
   sever(): void;
 }
 
-/** Another process on the same database: a store over a connection of its own. */
+/** Another process on the same database, which is a store over a connection of its own. */
 export interface StoreProcess<S extends Storage = Storage> {
   readonly store: SharedStore<S>;
-  /** The process dies: its connection closes, and nothing it holds is released. */
+  /** The process dies. Its connection closes, and nothing it holds is released. */
   exit(): Promise<void>;
 }
 
@@ -69,8 +62,8 @@ export interface StoreConformanceTarget<S extends Storage = Storage> {
   /** The rows the scope `storage` was opened on owns, one count per table, the scope's own row included. */
   rows(storage: S): Promise<readonly number[]>;
   /**
-   * Optional: another process on the same database. A store whose database has one connection (an in-process
-   * database) leaves it out, and the cases that need it pass without running.
+   * Optional. Another process on the same database. A store whose database has one connection, such as an in-process
+   * database, leaves it out, and the cases that need it pass without running.
    */
   otherProcess?(options: SharedStoreOptions): Promise<StoreProcess<S>>;
 }
@@ -82,13 +75,11 @@ export type StoreConformanceProvider<S extends Storage = Storage> = (
 
 const context = BACKGROUND_CONTEXT;
 
-/** A scope no earlier case used, so cases may share one database and a failed case's held lease blocks no other. */
 const freshScope = (label: string): StorageScope => ({
   kind: "store-conformance",
   name: `${label}-${crypto.randomUUID()}`,
 });
 
-/** What `operation` rejects or throws with, or `undefined` when it settles without one. */
 async function failureOf(operation: () => Promise<unknown>): Promise<unknown> {
   try {
     await operation();
@@ -125,14 +116,12 @@ const kindsOf = async (storage: Storage) =>
     await storage.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 100, undefined, context)
   ).items.map((entry) => entry.kind);
 
-/** The storage of `lease`'s scope, with its root conversation committed. */
 async function rooted<S extends Storage>(store: SharedStore<S>, lease: FencedLease): Promise<S> {
   const storage = await store.storage(lease.scope, lease);
   await commitWrites(storage, [root], context);
   return storage;
 }
 
-/** Acquires `scope`'s lease once the current one expires. */
 async function acquireWhenFree(store: SharedStore, scope: StorageScope, timeoutMs = 3_000): Promise<FencedLease> {
   const started = Date.now();
   for (;;) {
@@ -145,7 +134,6 @@ async function acquireWhenFree(store: SharedStore, scope: StorageScope, timeoutM
   }
 }
 
-/** Every scope `unfinished()` lists. */
 async function listed(store: SharedStore): Promise<StorageScope[]> {
   const scopes: StorageScope[] = [];
   for await (const scope of store.unfinished()) scopes.push(scope);
@@ -166,7 +154,6 @@ interface Ids {
   rewindable: DocumentId;
 }
 
-/** The same shape of history in any scope, tagged with `tag` everywhere a record carries data. */
 async function seed(storage: Storage, tag: string): Promise<{ ids: Ids; seqs: Seq[] }> {
   const mint = <I>() => storage.mintId() as Promise<I>;
   const seqs: Seq[] = [];
@@ -235,7 +222,6 @@ async function seed(storage: Storage, tag: string): Promise<{ ids: Ids; seqs: Se
       context,
     ),
   );
-  // A fork at `marker`, with one entry of its own.
   seqs.push(
     await commitWrites(
       storage,
@@ -252,7 +238,6 @@ async function seed(storage: Storage, tag: string): Promise<{ ids: Ids; seqs: Se
   return { ids, seqs };
 }
 
-/** Every read of the Storage interface, as plain data, for one seeded scope. */
 async function everything(storage: Storage, ids: Ids, seqs: Seq[]) {
   const limit = 100;
   return {
@@ -294,7 +279,6 @@ async function everything(storage: Storage, ids: Ids, seqs: Seq[]) {
   };
 }
 
-/** Every string `tag` value found anywhere in `value`. */
 function tags(value: unknown, found = new Set<string>()): Set<string> {
   if (Array.isArray(value)) for (const item of value) tags(item, found);
   else if (typeof value === "object" && value !== null) {
@@ -323,7 +307,6 @@ const agent = defineAgent({
   policy: { requiresApproval: ["write"] },
 });
 
-/** A runtime on the store as a long-lived process hosts it, with pi-ai's faux model. */
 function runtimeOn(store: SharedStore, reports: InstanceReport[] = []) {
   const faux = fauxProvider();
   const models = createModels();
@@ -341,10 +324,10 @@ function runtimeOn(store: SharedStore, reports: InstanceReport[] = []) {
 }
 
 /**
- * Registers the guarantees of a shared-database store (`SharedStore`) under `name`: a writer that lost its lease
- * writes nothing; a lease expires and is taken over; release records the wake that `unfinished()` lists; scopes in one
- * database are apart; and the rules of `erase` and `deleteScope`. Round trips, schema and a dialect's own connection
- * behaviour stay in its own tests.
+ * Registers the guarantees of a shared-database store, a `SharedStore`, under `name`. A writer that lost its lease
+ * writes nothing. A lease expires and is taken over. Release records the wake that `unfinished()` lists. Scopes in one
+ * database are kept apart. The cases also cover the rules of `erase` and `deleteScope`. Round trips, schema and a
+ * dialect's own connection behaviour stay in its own tests.
  */
 export function registerStoreConformance<S extends Storage>(
   runner: StorageConformanceRunner,
@@ -360,7 +343,6 @@ export function registerStoreConformance<S extends Storage>(
       `Expected a LeaseLostError${reason === undefined ? "" : ` (${reason})`}, got ${String(error)}`,
     );
 
-  /** The scope's storage under a fresh lease, as a host opens it. */
   const open = async (target: StoreConformanceTarget<S>, scope: StorageScope) => {
     const lease = await target.store.lease(scope);
     return { lease, storage: await target.store.storage(scope, lease) };
@@ -382,7 +364,6 @@ export function registerStoreConformance<S extends Storage>(
       assert.strictEqual(reasonOf(first.signal), "released");
       const second = await target.store.lease(scope);
       assert.strictEqual(second.token, first.token + 1);
-      // A storage cannot be opened with a released lease.
       assertLost(await failureOf(() => target.store.storage(scope, first)));
       await second.release();
       await second.release();
@@ -390,12 +371,10 @@ export function registerStoreConformance<S extends Storage>(
 
     async "frees the scope by itself once a holder stops renewing"(target) {
       const scope = freshScope("crash");
-      // The holder's connection dies after acquiring: every renewal fails, as if its process had crashed.
       const crashing = target.controlled({ ttlMs: 400, renewIntervalMs: 100 });
       const crashed = await crashing.store.lease(scope);
       crashing.sever();
       assertHeld(await failureOf(() => target.store.lease(scope)));
-      // The holder itself notices it can no longer confirm the lease, by its own deadline.
       await until(() => crashed.signal.aborted, 2_000);
       assert.strictEqual(reasonOf(crashed.signal), "unreachable");
       await sleep(50);
@@ -423,7 +402,6 @@ export function registerStoreConformance<S extends Storage>(
       const old = await target.storeWith({ ttlMs: 2_000, renewIntervalMs: 50 }).lease(scope);
       const oldStorage = await rooted(target.store, old);
       await writeEntry(oldStorage, "before");
-      // As if the old holder had stalled past its expiry: the lease lapses and another holder takes it.
       await target.expire(scope);
       const next = await target.store.lease(scope);
       await until(() => old.signal.aborted, 2_000);
@@ -438,13 +416,11 @@ export function registerStoreConformance<S extends Storage>(
 
     async "fences a stale writer in the database even before it notices the loss"(target) {
       const scope = freshScope("fence");
-      // Renews rarely: the old holder will not notice anything by itself during the case.
       const rarely = target.storeWith({ ttlMs: 60_000, renewIntervalMs: 59_000 });
       const old = await rarely.lease(scope);
       const controlled = target.controlled();
       const oldStorage = await rooted(controlled.store, old);
 
-      // The lease changes hands between the commit's read and its write: only the write's guard stands.
       let next: FencedLease | undefined;
       controlled.beforeWrite(async () => {
         await target.expire(scope);
@@ -457,7 +433,6 @@ export function registerStoreConformance<S extends Storage>(
       const nextStorage = await target.store.storage(scope, next);
       assert.deepEqual(await kindsOf(nextStorage), []);
 
-      // Without the race: the next commit of a stale writer is refused at its read, before it writes anything.
       const olderScope = freshScope("fence-read");
       const older = await rarely.lease(olderScope);
       const olderStorage = await rooted(target.store, older);
@@ -486,7 +461,6 @@ export function registerStoreConformance<S extends Storage>(
       await commitWrites(first, [root], context);
       const controlled = target.controlled();
       const second = await controlled.store.storage(scope, lease);
-      // The first writer commits between the second's read and its write.
       controlled.beforeWrite(async () => {
         await commitWrites(
           first,
@@ -533,7 +507,6 @@ export function registerStoreConformance<S extends Storage>(
 
       const scopes = await listed(target.store);
       assert.deepEqual([has(scopes, running), has(scopes, sleeping)], [true, true]);
-      // Done, and held by a live holder: neither needs recovering.
       assert.deepEqual([has(scopes, done), has(scopes, held)], [false, false]);
       await holder.release({ active: false });
     },
@@ -544,7 +517,6 @@ export function registerStoreConformance<S extends Storage>(
       assert.strictEqual(has(await listed(target.store), scope), false);
       await target.expire(scope);
       assert.strictEqual(has(await listed(target.store), scope), true);
-      // The crashed holder's late release changes nothing: the scope is no longer its to free.
       crashed.lose("expired");
     },
 
@@ -568,7 +540,6 @@ export function registerStoreConformance<S extends Storage>(
       assert.deepEqual(await runtime.get(agent, name).listSessions(), [kept]);
       await runtime.close();
 
-      // Nothing of the deleted session is left to read, by any ID.
       const scope = { kind: agent.kind, name };
       const { lease, storage } = await open(target, scope);
       try {
@@ -599,7 +570,6 @@ export function registerStoreConformance<S extends Storage>(
       const name = crypto.randomUUID();
       const instance = runtime.get(agent, name);
       const { id } = await instance.createSession();
-      // A call parked for approval: its tasks are not terminal.
       faux.setResponses([fauxAssistantMessage(fauxToolCall("remove", {}, { id: "rm-1" }), { stopReason: "toolUse" })]);
       await instance.session(id).submit({ text: "Delete", requestId: "1" });
       await until(() => faux.state.callCount === 1);
@@ -627,7 +597,6 @@ export function registerStoreConformance<S extends Storage>(
     async "gives two scopes the same IDs and seqs, and no read of one sees the other"(target) {
       const name = crypto.randomUUID();
       const a = await open(target, { kind: "store-conformance", name });
-      // Same name, another kind: a different scope.
       const b = await open(target, { kind: "store-conformance-b", name });
       const seededA = await seed(a.storage, "A");
       const seededB = await seed(b.storage, "B");
@@ -640,7 +609,6 @@ export function registerStoreConformance<S extends Storage>(
       const readB = await everything(b.storage, seededB.ids, seededB.seqs);
       assert.deepEqual(tags(readA), new Set(["A"]));
       assert.deepEqual(tags(readB), new Set(["B"]));
-      // Apart from the tags, the two scopes hold identical records.
       assert.deepEqual(JSON.parse(JSON.stringify(readB).replaceAll('"B"', '"A"')), readA);
       assert.deepEqual(
         readA.entries.items.map((entry) => entry.id),
@@ -655,7 +623,6 @@ export function registerStoreConformance<S extends Storage>(
       assert.deepEqual(readA.rewindableNow?.value, { tag: "A", n: 2 });
       assert.deepEqual(readA.rewindableThen?.value, { tag: "A", n: 1 });
 
-      // IDs and seqs keep advancing per scope, independently.
       const nextA = await a.storage.mintId();
       const nextB = await b.storage.mintId();
       assert.strictEqual(nextA, nextB);
@@ -669,13 +636,11 @@ export function registerStoreConformance<S extends Storage>(
         await opened.lease.release();
       }
 
-      // Reopened, each scope continues its own counters.
       const a2 = await open(target, { kind: "store-conformance", name });
       assert.strictEqual(await a2.storage.mintId(), nextA + 1);
       await a2.storage.close(context);
       await a2.lease.release();
 
-      // A brand new scope beside them is empty.
       const c = await open(target, freshScope("empty"));
       const { storage } = c;
       assert.strictEqual(await storage.mintId(), 2);
@@ -708,7 +673,6 @@ export function registerStoreConformance<S extends Storage>(
         [{ type: "entry", value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "a" } }],
         context,
       );
-      // In B the ID is free, and as a task, not an entry.
       await commitWrites(
         b.storage,
         [
@@ -732,7 +696,6 @@ export function registerStoreConformance<S extends Storage>(
       assert.strictEqual(await b.storage.entry(id, context), undefined);
       assert.strictEqual((await b.storage.task(id as unknown as TaskId, context))?.kind, "b");
       assert.strictEqual(await a.storage.task(id as unknown as TaskId, context), undefined);
-      // Each scope's counter follows only its own claims.
       assert.strictEqual(await a.storage.mintId(), 501);
       assert.strictEqual(await b.storage.mintId(), 501);
       await a.lease.release();
@@ -751,15 +714,12 @@ export function registerStoreConformance<S extends Storage>(
       assert.ok(rows.length > 0 && rows.every((n) => n > 0), `Expected rows in every table, got ${rows.join(", ")}`);
       const none = rows.map(() => 0);
 
-      // A's lease is held (by this case): only its holder may delete the scope.
       assertHeld(await failureOf(() => target.store.deleteScope(scopeA)));
       await a.lease.release();
       assert.strictEqual(await target.store.deleteScope(scopeA), true);
       assert.deepEqual(await target.rows(a.storage), none);
-      // B is untouched.
       assert.deepEqual(await everything(b.storage, seededB.ids, seededB.seqs), before);
 
-      // The storage still open on A cannot write into the void.
       const late: StorageWrite = {
         type: "entry",
         value: { id: (await a.storage.mintId()) as EntryId, conversationId: ROOT_CONVERSATION_ID, kind: "late" },
@@ -767,7 +727,6 @@ export function registerStoreConformance<S extends Storage>(
       assertLost(await failureOf(() => commitWrites(a.storage, [late], context)));
       assert.deepEqual(await target.rows(a.storage), none);
 
-      // Opening A again starts an empty scope, with fresh counters.
       const a2 = await open(target, scopeA);
       assert.strictEqual(await a2.storage.mintId(), 2);
       assert.strictEqual(await a2.storage.conversation(ROOT_CONVERSATION_ID, context), undefined);
@@ -784,13 +743,11 @@ export function registerStoreConformance<S extends Storage>(
       await commitWrites(storage, [root], context);
       assert.strictEqual(await target.store.deleteScope(scope, lease), true);
       assert.strictEqual(reasonOf(lease.signal), "deleted");
-      // The lease is gone with the scope: the commit is refused before it reads anything.
       assertLost(
         await failureOf(() =>
           commitWrites(storage, [{ type: "conversation", value: { id: 9 as ConversationId } }], context),
         ),
       );
-      // Under a still-live lease object (as a stale process would hold it), the scope's row is found gone.
       const other = freshScope("deleted-under-2");
       const opened = await open(target, other);
       await target.remove(other);

@@ -1,6 +1,3 @@
-// Closing idle instances: `closeIdleAfterMs`. The idle times are short and the waits real, so each
-// "stays open" check waits several idle times and each "closes" check polls.
-
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Wake } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -117,7 +114,6 @@ describe("an idle instance", () => {
     expect(heldStreams(alice)).toEqual({ sessions: 0, events: 0, readers: 0 });
     expect(place.log).toEqual(["acquire notes/alice", "release notes/alice"]);
 
-    // Another process (here a second runtime on the same storage and leases) can take the scope now.
     const other = createAgentRuntime({
       agents: [agent],
       host: durableMemoryHost(place),
@@ -129,12 +125,9 @@ describe("an idle instance", () => {
     expect(await other.get(agent, "alice").listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
     await other.close();
 
-    // The handles the app kept reopen the instance at their next call; `get` returns the same one.
     expect(runtime.get(agent, "alice")).toBe(alice);
     await session.submit({ text: "Second", requestId: "2" });
     expect(alice.state).toBe("open");
-    // A reader whose cursor came from the closed log carries on from committed state: no reset, no
-    // repeat, and the same view as reading the session whole.
     const back = await readUntil(session, isRunEnd, { from: first.at(-1)!.cursor });
     expect(back.some((item) => item.event.type === "stream:reset")).toBe(false);
     expect(
@@ -215,7 +208,7 @@ describe("an idle instance", () => {
 
   it("reopens for a sleep due after it closed, so the sleeping work is not stranded", async () => {
     const { runtime, faux } = setup();
-    // A transient provider error: pi-durable's generation sleeps its retry backoff (2 s by default).
+    // A transient provider error makes pi-durable's generation sleep its retry backoff, 2 s by default.
     faux.setResponses([
       fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 service unavailable" }),
       fauxAssistantMessage("Recovered."),
@@ -225,7 +218,6 @@ describe("an idle instance", () => {
     const submittedAt = Date.now();
     await instance.session(id).submit({ text: "Hi", requestId: "1" });
     await eventually(() => instance.state === "dormant" && faux.state.callCount === 1);
-    // Closed while the retry sleeps; the runtime keeps it only to reopen it when the sleep is due.
     const [held] = runtime.inspect().instances;
     expect(held).toMatchObject({ scope: { kind: "notes", name: "s" }, state: "dormant" });
     expect(held?.wakeAt).toBeGreaterThan(submittedAt + IDLE);
@@ -235,7 +227,6 @@ describe("an idle instance", () => {
     const items = await readUntil(instance.session(id), isRunEnd);
     expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
     expect(items.find((item) => item.event.type === "assistant:end" && item.event.text === "Recovered.")).toBeDefined();
-    // Done and idle again: nothing is held.
     await eventually(() => runtime.inspect().instances.length === 0);
   }, 15_000);
 
@@ -252,7 +243,6 @@ describe("an idle instance", () => {
     await instance.session(id).submit({ text: "Hi", requestId: "1" });
     await eventually(() => instance.state === "dormant" && runtime.inspect().instances[0]?.wakeAt !== undefined);
 
-    // Another process takes the scope before the sleep is due, and runs the sleeping work itself.
     const other = createAgentRuntime({
       agents: [agent],
       host: durableMemoryHost(place),
@@ -301,7 +291,6 @@ describe("an idle instance", () => {
     expect(reports.find((report) => report.source === "runtime" && report.kind === "reopen_failed")).toMatchObject({
       error: expect.objectContaining({ message: "storage down" }),
     });
-    // Still held, to try again a second or so later.
     const [held] = runtime.inspect().instances;
     expect(held).toMatchObject({ state: "dormant" });
     expect(held?.wakeAt).toBeGreaterThanOrEqual(firstWake + 1_000);
@@ -342,7 +331,6 @@ describe("a call that comes while an idle close releases the lease", () => {
 
     await releaseStarted;
     expect(instance.state).toBe("closing");
-    // The Harness is closed and the lease not yet free: these calls must wait for it.
     const submitted = session.submit({ text: "Second", requestId: "2" });
     const listed = instance.listSessions();
     await pause(IDLE * 2);
@@ -357,7 +345,6 @@ describe("a call that comes while an idle close releases the lease", () => {
       items.filter((item) => item.event.type === "user").map((item) => item.event.type === "user" && item.event.text),
     ).toEqual(["First", "Second"]);
     expect(place.log.slice(0, 3)).toEqual(["acquire notes/race", "release notes/race", "acquire notes/race"]);
-    // The storage refuses a second writer outright; it never had one.
     expect(Math.max(...place.writers.values())).toBeLessThanOrEqual(1);
   });
 });
@@ -373,12 +360,10 @@ describe("closing for good", () => {
     await expect(instance.session(id).submit({ text: "x", requestId: "x" })).rejects.toBeInstanceOf(
       InstanceClosedError,
     );
-    // A fresh handle for the scope opens again.
     const fresh = runtime.get(agent, "c");
     expect(fresh).not.toBe(instance);
     expect(await fresh.listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
 
-    // A handle closed only for idleness ends with the runtime.
     const other = runtime.get(agent, "d");
     await other.open();
     await eventually(() => other.state === "dormant");
@@ -410,13 +395,11 @@ describe("with an alarm host", () => {
     const { id } = await instance.createSession();
     await instance.session(id).submit({ text: "Hi", requestId: "1" });
     await eventually(() => instance.state === "dormant");
-    // The runtime leaves the wake-up to the host: it keeps nothing for it.
     expect(runtime.inspect().instances).toEqual([]);
     const last = arms.at(-1)!.wake;
     expect(last.active).toBe(false);
     expect(last.at).toBeGreaterThan(Date.now());
 
-    // The host's alarm fires: it calls resume(), which reopens the instance and runs the due sleep.
     await pause(last.at! - Date.now() + 10);
     await instance.resume();
     expect(instance.state).toBe("open");
@@ -487,7 +470,6 @@ describe("with an alarm host", () => {
     await instance.open();
     blocking = true;
     await armingStarted;
-    // The idle check is arming the host for the close when a call comes and goes.
     expect(instance.state).toBe("open");
     expect(await instance.listSessions()).toEqual([]);
     const calledAt = Date.now();

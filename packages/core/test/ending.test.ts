@@ -1,6 +1,3 @@
-// How an instance ends: `close()`, a lost lease, or a failed storage. An ended instance never
-// reopens; it releases its lease, and the runtime lets it go once it holds nothing.
-
 import type { Storage, Wake } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -55,7 +52,6 @@ describe("close() while the instance opens", () => {
 
     const closing = instance.close();
     expect(instance.state).toBe("closed");
-    // The runtime keeps it until the open under way has let its lease go.
     expect(runtime.inspect()).toEqual({ open: 0, instances: [expect.objectContaining({ state: "closed" })] });
     answer();
     await expect(opening).rejects.toEqual(closedFor("closed"));
@@ -71,13 +67,11 @@ describe("close() while the instance opens", () => {
     const base = durableMemoryHost(place);
     let closing: Promise<void> | undefined;
     let closeNow: () => void = () => undefined;
-    // What reaches the storage, its close included: nothing may come after the release closes it.
     const touched: string[] = [];
     const host: AgentHost = {
       ...base,
       async lease(scope) {
         const lease = await base.lease(scope);
-        // The open listens for a lost lease once it has checked for an end: close() lands right there.
         const listen = lease.signal.addEventListener.bind(lease.signal);
         lease.signal.addEventListener = (...args: Parameters<typeof listen>) => {
           closeNow();
@@ -110,7 +104,6 @@ describe("close() while the instance opens", () => {
     await closing;
     expect(touched.at(-1)).toBe("close");
     expect(place.log).toEqual(["acquire notes/r", "release notes/r"]);
-    // The call wrote nothing: the scope's next writer finds no session.
     expect(await runtime.get(agent, "r").listSessions()).toEqual([]);
   });
 });
@@ -217,7 +210,6 @@ describe("a storage that fails while the instance is open", () => {
     await eventually(() => released.length === 1);
     expect(released).toEqual([undefined]);
 
-    // A healthy close says what it left.
     const healthy = runtime.get(agent, "g");
     await healthy.open();
     await healthy.close();

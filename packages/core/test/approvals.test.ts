@@ -1,11 +1,4 @@
-// The approval gate driven through its own interface, on a real pi-durable Harness over
-// MemoryStorage: the agent's extension installs the gate, as the runtime does, the faux provider asks
-// for the calls, and each test decides them with `decide`. Each test expects what the README's
-// "Durable approval" says: a gated call waits for its decision, an approved one runs, a declined one
-// hands the model the operator's words as its result, and the decision is recorded with the arguments
-// the gate saw. A nested call, one a tool makes through `executeTool()`, is decided the same way, and a
-// declined one hands the operator's words to the tool that made it; one no decision reaches by its
-// deadline fails for that tool, while a call of the model's has none.
+// Each test expects what the README's "Durable approval" says.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -63,7 +56,6 @@ const lookup = defineTool({
 });
 
 type Rule = NonNullable<AgentDefinitionInput<Ports>["policy"]>["requiresApproval"];
-/** The notes agent under `requiresApproval`. */
 const notesUnder = (requiresApproval: Rule) =>
   defineAgent<Ports>({
     kind: "notes",
@@ -73,7 +65,6 @@ const notesUnder = (requiresApproval: Rule) =>
   });
 const notes = notesUnder(["write"]);
 
-/** A tool of another extension, which the runtime knows no tier of: the agent does not have it. */
 const clock = defineExtension({
   name: "clock",
   tools: [
@@ -88,10 +79,6 @@ const clock = defineExtension({
   ],
 });
 
-/**
- * A hook that runs before the gate and gives every call the arguments `rewrite` makes at each pass of the chain, as no
- * app hook the runtime installs does: it holds an app hook's first rewrite.
- */
 const rewriting = (rewrite: (pass: number) => JsonObject) => {
   let pass = 0;
   return defineExtension({
@@ -100,16 +87,10 @@ const rewriting = (rewrite: (pass: number) => JsonObject) => {
   });
 };
 
-/** The app's extensions `app` of an instance of `agent`: none by default. */
 const appOf = (agent: AgentDefinition<Ports>, app: readonly AppExtension[] = []) =>
   appExtensions({ kind: agent.kind, name: "a" }, new Map([[agent.kind, agent]]), app);
 const noApp = (agent: AgentDefinition<Ports>) => appOf(agent);
 
-/**
- * The app's `script`, at tier `exec`, whose call makes its first nested call, `<its id>/1`, of the agent's `remove` on
- * note `a`, and hands the model what the nested call returned, or why it failed: replay-safe, as a code mode call is,
- * so it runs again after a restart and finds its nested call again.
- */
 const scripting: AppExtension = {
   extension: defineExtension({
     name: "script",
@@ -121,7 +102,6 @@ const scripting: AppExtension = {
         replay: "safe",
         async execute(_args, api, context) {
           const nested = await api.executeTool("remove", { key: "a" }, context);
-          // As a code mode script reads it: the output, or why it failed.
           const why = nested.diagnostics.filter(({ severity }) => severity === "error").map(({ message }) => message);
           const text = nested.isError ? why.join("\n") : String(nested.structuredOutput);
           return { output: [{ type: "text", text }], isError: nested.isError };
@@ -132,7 +112,6 @@ const scripting: AppExtension = {
   tier: () => "exec",
 };
 
-/** Whether a call of tool `name` in a session of `agent` waits for approval under `rule`, as the runtime judges it. */
 const gatedIn = (agent: AgentDefinition<Ports>, name: string, rule?: ApprovalRule) =>
   isGated(agent, noApp(agent).catalog.tool(agent.kind, name), rule);
 
@@ -141,12 +120,6 @@ afterEach(async () => {
   await Promise.all(harnesses.splice(0).map((harness) => harness.close(context)));
 });
 
-/**
- * A conversation of `agent` whose first reply asks for `call`, and what the model reads after it. With `rule`, the
- * conversation is a session with that approval rule of its own, recorded as the runtime records it. The extensions
- * `more` run before the agent's, as an app's do, and the app's extensions `app` too, with the tiers they give. A nested
- * call waits `nestedApprovalTimeoutMs` for a decision, an hour by default, as the runtime's.
- */
 async function conversationOf(
   agent: AgentDefinition<Ports>,
   call: { name: string; id: string },
@@ -199,7 +172,6 @@ async function conversationOf(
     harness,
     id: conversation.id,
     deleted,
-    /** The call's result as the model read it, once the run is done. */
     async result() {
       expect(await submission.wait(context)).toMatchObject({ status: "done" });
       return read;
@@ -207,7 +179,6 @@ async function conversationOf(
   };
 }
 
-/** Resolves once call `callId` of conversation `id` has reached `status`. */
 async function slot(harness: Harness, id: ConversationId, callId: string, status: ToolSlot["status"]): Promise<void> {
   const deadline = Date.now() + 5_000;
   for (;;) {
@@ -218,7 +189,6 @@ async function slot(harness: Harness, id: ConversationId, callId: string, status
   }
 }
 
-/** Resolves with the nested call of `parentCallId` in conversation `id` once it has reached `status`. */
 async function nestedSlot(
   harness: Harness,
   id: ConversationId,
@@ -237,7 +207,6 @@ async function nestedSlot(
 
 const declined = (text: string) => ({ role: "toolResult", isError: true, content: [{ type: "text", text }] });
 
-/** Decides one call as `approve()` does with a batch of one. */
 async function decideOne(
   agent: AgentDefinition<Ports>,
   harness: Harness,
@@ -256,7 +225,6 @@ describe("the approval gate", () => {
     const byName = notesUnder((tier, name) => tier === "read" && name === "lookup");
     expect([gatedIn(byName, "lookup"), gatedIn(byName, "remove")]).toEqual([true, false]);
 
-    // Even a policy that gates nothing parks a tool the runtime knows no tier of.
     const lax = notesUnder(() => false);
     expect(gatedIn(lax, "clock")).toBe(true);
     const { harness, id, result } = await conversationOf(lax, { name: "clock", id: "c-1" }, { more: [clock] });
@@ -294,7 +262,6 @@ describe("the approval gate", () => {
     expect(await decisionsOf(harness, id)).toEqual({
       "rm-1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
     });
-    // The call left the gate: a second decision finds nothing waiting.
     await expect(decideOne(notes, harness, id, { toolCallId: "rm-1", approved: false })).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
     );
@@ -346,7 +313,6 @@ describe("the approval gate", () => {
     await slot(harness, id, "rm-1", "sleeping");
     expect(await decisionsOf(harness, id)).toEqual({});
     expect(deleted).toEqual([]);
-    // Still waiting: the refusal delivered nothing.
     expect(await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true })).toEqual({
       toolCallId: "rm-1",
       outcome: "applied",
@@ -401,7 +367,6 @@ describe("the arguments a decision is made on", () => {
     const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" }, { more });
     await slot(harness, id, "rm-1", "sleeping");
     await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: true });
-    // The decision ran the chain again, and the hook rewrote the call to `b2`: it runs with what the operator saw.
     expect(await result()).toMatchObject({
       role: "toolResult",
       isError: false,
@@ -430,7 +395,6 @@ describe("a session's own approval rule", () => {
     expect(gatedIn(notes, "lookup", { add: ["read"] })).toBe(true);
     expect(gatedIn(notes, "remove", { remove: ["write"] })).toBe(false);
     expect(gatedIn(notes, "remove", { add: ["read"] })).toBe(true);
-    // No rule lets a tool of unknown tier run without a decision.
     expect([gatedIn(notes, "clock", []), gatedIn(notes, "clock", { remove: ["read", "write"] })]).toEqual([true, true]);
   });
 
@@ -453,7 +417,6 @@ describe("a session's own approval rule", () => {
   it("decides a call that parked, whatever the session's rule says by then", async () => {
     const { harness, id, deleted, result } = await conversationOf(notes, { name: "remove", id: "rm-1" });
     await slot(harness, id, "rm-1", "sleeping");
-    // The rule changed while the call waited: the decision still finds it, and a decline still stops it.
     expect(await decideOne(notes, harness, id, { toolCallId: "rm-1", approved: false }, [])).toEqual({
       toolCallId: "rm-1",
       outcome: "applied",
@@ -489,7 +452,6 @@ describe("a nested call", () => {
     expect(await decisionsOf(harness, id)).toEqual({
       "sc-1/1": { approved: true, args: { key: "a" }, at: expect.any(Number) },
     });
-    // The caller is not at the gate: it runs, waiting on its nested call.
     await expect(decideOne(notes, harness, id, { toolCallId: "sc-1", approved: true })).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
     );
@@ -523,7 +485,6 @@ describe("a nested call", () => {
       { name: "script", id: "sc-1" },
       { app: [scripting], nestedApprovalTimeoutMs: 50 },
     );
-    // The caller reads the gate's words, as an error diagnostic of its nested call's.
     expect(await result()).toMatchObject({
       role: "toolResult",
       isError: true,

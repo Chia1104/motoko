@@ -5,7 +5,7 @@ export class AgentRuntimeError extends Error {
   override readonly name: string = "AgentRuntimeError";
 }
 
-/** Another writer holds the scope's lease; acquiring it again fails with this. */
+/** Acquiring a scope's lease fails with this while another writer holds it. */
 export class LeaseHeldError extends AgentRuntimeError {
   override readonly name = "LeaseHeldError";
   readonly scope: StorageScope;
@@ -15,7 +15,7 @@ export class LeaseHeldError extends AgentRuntimeError {
   }
 }
 
-/** The instance lost its lease, or the runtime was closed: nothing is written through it any more. */
+/** The instance lost its lease, or the runtime was closed, so nothing is written through it any more. */
 export class InstanceClosedError extends AgentRuntimeError {
   override readonly name = "InstanceClosedError";
   readonly scope: StorageScope;
@@ -38,7 +38,7 @@ export class SessionNotFoundError extends AgentRuntimeError {
 }
 
 /**
- * `submit`, `configure` or `delete` of a child session: only its delegate submits to it, and it goes with its parent.
+ * A `submit`, `configure` or `delete` of a child session. Only its delegate submits to it, and it goes with its parent.
  */
 export class SessionOwnedError extends AgentRuntimeError {
   override readonly name = "SessionOwnedError";
@@ -49,7 +49,7 @@ export class SessionOwnedError extends AgentRuntimeError {
   }
 }
 
-/** `submit` with `whenBusy: "reject"` while a run is going, or after its answer while its `afterRun` tasks run. */
+/** A `submit` with `whenBusy: "reject"` while a run is going, or after its answer while its `afterRun` tasks run. */
 export class SessionBusyError extends AgentRuntimeError {
   override readonly name = "SessionBusyError";
   readonly sessionId: string;
@@ -74,7 +74,7 @@ export class ApprovalNotPendingError extends AgentRuntimeError {
   }
 }
 
-/** A reply to a call that waits for none, or with a token that is not the call's: the two are not told apart. */
+/** A reply to a call that waits for none, or with a token that is not the call's. The two are not told apart. */
 export class ReplyNotPendingError extends AgentRuntimeError {
   override readonly name = "ReplyNotPendingError";
   readonly toolCallId: string;
@@ -85,8 +85,8 @@ export class ReplyNotPendingError extends AgentRuntimeError {
 }
 
 /**
- * The app's `modelsFor` threw or rejected for an instance, so a model request had no model access.
- * The run it served ends with this message; the cause is in `cause` and in the instance's reports.
+ * The app's `modelsFor` threw or rejected for an instance, so a model request had no model access. The run it served
+ * ends with this message. The cause is in `cause` and in the instance's reports.
  */
 export class ModelsUnavailableError extends AgentRuntimeError {
   override readonly name = "ModelsUnavailableError";
@@ -100,8 +100,8 @@ export class ModelsUnavailableError extends AgentRuntimeError {
 }
 
 /**
- * The app's `portsFor` threw or rejected for one tool call: the call ends with this message as its
- * error result, which the model reads. The cause is in `cause` and in the instance's reports.
+ * The app's `portsFor` threw or rejected for one tool call. The call ends with this message as its error result, which
+ * the model reads. The cause is in `cause` and in the instance's reports.
  */
 export class PortsUnavailableError extends AgentRuntimeError {
   override readonly name = "PortsUnavailableError";

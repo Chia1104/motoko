@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
 
 import { foldEvents } from "@chia1104/motoko-wire";
+import type { StreamItem } from "@chia1104/motoko-wire";
 
 import {
   ApprovalNotPendingError,
@@ -49,14 +50,12 @@ const lookup = defineTool({
   },
 });
 
-/** Runs until its call is stopped. */
 const wait = defineTool({
   name: "wait",
   description: "Wait",
   tier: "read",
   parameters: z.object({}),
   async execute(_args, { signal }) {
-    // A call that starts while its instance closes finds its signal aborted already.
     if (!signal.aborted) {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     }
@@ -85,7 +84,6 @@ function setup(options: { host?: AgentHost; reports?: InstanceReport[] } = {}) {
   return { runtime, faux, ports };
 }
 
-/** What a session runs with when nothing chose otherwise: the runtime's default model, pi's thinking level. */
 const runsWith = { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" };
 
 const toolCall = (name: string, id: string) =>
@@ -99,7 +97,6 @@ describe("listSessions", () => {
       ...base,
       async storage() {
         const storage = new MemoryStorage();
-        // SAFETY: the proxy forwards every member; only `commit` is counted on its way through.
         return new Proxy(storage, {
           get(target, property) {
             const value = Reflect.get(target, property, target) as unknown;
@@ -262,7 +259,6 @@ describe("a session's approval rule", () => {
     expect(items.some((item) => item.event.type === "approval:request")).toBe(false);
     expect(ports.deleted).toEqual(["a"]);
 
-    // Back to the agent's policy: `write` waits again.
     await session.configure({ requiresApproval: null });
     expect(await session.settings()).toEqual({ ...runsWith, tools: ["remove", "lookup", "wait"] });
     faux.setResponses([toolCall("remove", "rm-2"), fauxAssistantMessage("Done.")]);
@@ -279,7 +275,6 @@ describe("a session's approval rule", () => {
     await readUntil(session, (event) => event.type === "approval:request");
     await session.configure({ requiresApproval: [] });
 
-    // A client that comes now still sees the question.
     const late = await readUntil(session, (event) => event.type === "approval:request");
     expect(late.at(-1)?.event).toMatchObject({ toolCallId: "rm-1" });
     await session.approve([{ toolCallId: "rm-1", approved: true }]);
@@ -323,7 +318,6 @@ describe("what a session runs with", () => {
   const other = { provider: "faux", modelId: "faux-2" };
   const allTools = ["remove", "lookup", "wait"];
 
-  /** A runtime with two models, the first its default, and a reply that records which model it came from. */
   function twoModels(options: { defaultModel?: boolean } = {}) {
     const { faux, models, model } = fauxModels({ models: [{ id: "faux-1" }, { id: "faux-2" }] });
     runtime = createAgentRuntime({
@@ -407,7 +401,14 @@ describe("what a session runs with", () => {
   });
 });
 
-/** A host on `place` whose `erase` records what it is asked to erase, failing while `failing` says so. */
+async function nextUntil(
+  reader: AsyncIterator<StreamItem>,
+  stop: (result: IteratorResult<StreamItem>) => boolean,
+): Promise<void> {
+  let result = await reader.next();
+  while (!stop(result)) result = await reader.next();
+}
+
 function erasingHost(place = memoryPlace(), failing: { now: boolean } = { now: false }) {
   const asked: ConversationId[][] = [];
   const host: AgentHost = {
@@ -432,25 +433,16 @@ describe("deleting a session", () => {
     faux.setResponses([toolCall("wait", "w-1"), fauxAssistantMessage("Done.")]);
     await session.submit({ text: "Wait", requestId: "1" });
     const reader = session.events()[Symbol.asyncIterator]();
-    while ((await reader.next()).value?.event.type !== "tool:start") {
-      // Read up to the running call.
-    }
-    const ended = (async () => {
-      while ((await reader.next()).done !== true) {
-        // What the abort committed, if anything.
-      }
-      return "ended";
-    })();
+    await nextUntil(reader, (result) => result.value?.event.type === "tool:start");
+    const ended = nextUntil(reader, (result) => result.done === true).then(() => "ended");
 
     await session.delete();
-    // The reader's stream ended by itself, with no signal of its own.
     const timeout = new Promise((resolve) => setTimeout(() => resolve("still open"), 2_000));
     expect(await Promise.race([ended, timeout])).toBe("ended");
     expect(await instance.listSessions()).toEqual([kept]);
     await expect(session.submit({ text: "Again", requestId: "2" })).rejects.toBeInstanceOf(SessionNotFoundError);
     await expect(session.settings()).rejects.toBeInstanceOf(SessionNotFoundError);
     await expect(session.delete()).rejects.toBeInstanceOf(SessionNotFoundError);
-    // Nothing is erased while the storage is open.
     expect(asked).toEqual([]);
   });
 
@@ -467,7 +459,6 @@ describe("deleting a session", () => {
     expect(asked).toEqual([[Number(id)]]);
     expect(reports).toMatchObject([{ source: "runtime", kind: "erase_failed" }]);
 
-    // A memory storage cannot erase it, so it is still there: the next close asks again.
     failing.now = false;
     const again = runtime.get(agent, "d");
     expect(await again.listSessions()).toEqual([]);
@@ -495,7 +486,6 @@ describe("deleting a session", () => {
     await readUntil(session, (event) => event.type === "tool:start");
     await session.delete();
     await eventually(() => runtime.inspect().instances.every((held) => held.operations === 0));
-    // The aborted run asked for no other reply.
     expect(faux.state.callCount).toBe(1);
   });
 });

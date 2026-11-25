@@ -12,7 +12,6 @@ import type { AgentWireEvent, StreamItem } from "@chia1104/motoko-wire";
 import { inProcessLeases, scopeKey } from "../src/index.ts";
 import type { AgentHost, AgentSession, Lease, StorageScope } from "../src/index.ts";
 
-/** A long-lived in-memory host: a fresh MemoryStorage per open, an in-process lease. */
 export function memoryHost(): AgentHost {
   return {
     wake: { kind: "process" },
@@ -23,16 +22,10 @@ export function memoryHost(): AgentHost {
   };
 }
 
-/**
- * What `durableMemoryHost` keeps across opens and runtimes: each scope's MemoryStorage and one set of
- * in-process leases, so two runtimes on one place stand in for two processes on one database.
- */
 export interface MemoryPlace {
   readonly storages: Map<string, MemoryStorage>;
   readonly leases: (scope: StorageScope) => Promise<Lease>;
-  /** Every lease acquisition and release, in order, as `acquire <kind>/<name>`: a label for reading, not a key. */
   readonly log: string[];
-  /** Harnesses open on each scope's storage now: never more than one. */
   readonly writers: Map<string, number>;
 }
 
@@ -40,11 +33,6 @@ export function memoryPlace(): MemoryPlace {
   return { storages: new Map(), leases: inProcessLeases(), log: [], writers: new Map() };
 }
 
-/**
- * A long-lived in-memory host whose storage outlives an instance: each scope keeps one
- * MemoryStorage across opens (its Harness's `close()` leaves it open), as a database does.
- * `releasing` runs inside every lease release, before the lease is free, to hold it there.
- */
 export function durableMemoryHost(
   place: MemoryPlace = memoryPlace(),
   hooks: { releasing?: (scope: StorageScope) => Promise<void> } = {},
@@ -55,7 +43,6 @@ export function durableMemoryHost(
     async lease(scope: StorageScope): Promise<Lease> {
       const lease = await place.leases(scope);
       place.log.push(`acquire ${label(scope)}`);
-      // The place's lease is idempotent already; this keeps the hook and the log to the one real release.
       let released = false;
       return {
         signal: lease.signal,
@@ -79,7 +66,7 @@ export function durableMemoryHost(
       place.writers.set(key, writers);
       if (writers > 1) throw new Error(`Two writers on ${label(scope)}`);
       const target = memory;
-      // The Harness closes its storage; the data stays, as a database's does when a connection closes.
+      // The Harness closes its storage. The data stays, as a database's data stays when a connection closes.
       return new Proxy(target, {
         get(object, property) {
           if (property === "close") {
@@ -95,7 +82,6 @@ export function durableMemoryHost(
   };
 }
 
-/** A credential store over the app's own table: `key()` is read at every request. */
 function credentialStore(key: () => string | undefined): CredentialStore {
   return {
     async read() {
@@ -114,12 +100,6 @@ function credentialStore(key: () => string | undefined): CredentialStore {
   };
 }
 
-/**
- * One caller's model access, as an app builds it from that caller's keys: a faux provider that
- * needs an API key, read through a credential store at every request, so the responses see which
- * key served them (`options.apiKey`). Every caller's provider has the same id and model, so one
- * `ModelRef` names the model and the credentials decide who pays.
- */
 export function keyedModels(key: () => string | undefined) {
   const core = createFauxCore({ provider: "keyed", models: [{ id: "keyed-1" }] });
   const provider = createProvider({
@@ -148,10 +128,6 @@ export function fauxModels(options?: RegisterFauxProviderOptions) {
   return { faux, models, model: { provider: faux.provider.id, modelId: faux.getModel().id } };
 }
 
-/**
- * Reads a session's stream (from `from`) until `until` matches an event, and returns every item
- * read, the matching one included. Fails after `timeoutMs`.
- */
 export async function readUntil(
   session: AgentSession,
   until: (event: AgentWireEvent, items: readonly StreamItem[]) => boolean,
@@ -174,7 +150,6 @@ export async function readUntil(
   throw new Error(`Stream ended before the expected event; read: ${items.map((item) => item.event.type).join(", ")}`);
 }
 
-/** Events without the in-flight streaming ones and the queue, whose granularity depends on timing. */
 export const settledTypes = (items: readonly StreamItem[]) =>
   items
     .map((item) => item.event.type)
@@ -189,7 +164,6 @@ export const settledTypes = (items: readonly StreamItem[]) =>
 
 export const isRunEnd = (event: AgentWireEvent) => event.type === "run:end";
 
-/** A client reading a session's stream in the background, from `from`, until it stops. */
 export function follow(session: AgentSession, from?: string) {
   const controller = new AbortController();
   const items: StreamItem[] = [];
@@ -202,7 +176,6 @@ export function follow(session: AgentSession, from?: string) {
   })();
   return {
     items,
-    /** Resolves once `until` holds for the items read so far; fails after `timeoutMs`. */
     async until(until: (items: readonly StreamItem[]) => boolean, timeoutMs = 5_000): Promise<StreamItem[]> {
       if (until(items)) return items;
       await new Promise<void>((resolve, reject) => {
@@ -227,7 +200,6 @@ export function follow(session: AgentSession, from?: string) {
   };
 }
 
-/** Waits until `condition` holds, checking every few milliseconds; fails after `timeoutMs`. */
 export async function eventually(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -238,10 +210,14 @@ export async function eventually(condition: () => boolean, timeoutMs = 5_000): P
 
 export const runEnds = (items: readonly StreamItem[]) => items.filter((item) => isRunEnd(item.event)).length;
 
-/**
- * The cursor without its place in this process's log, as another process holding the same
- * storage, or this one once the log moved on, sees it: only its committed position counts.
- */
+export function deferred() {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 export function committedOnly(cursor: string): string {
   const position = decodeCursor(cursor);
   if (!position) throw new Error(`Not a cursor: ${cursor}`);
@@ -249,13 +225,6 @@ export function committedOnly(cursor: string): string {
   return encodeCursor(rest);
 }
 
-/**
- * Resumes `session` from every cursor of `live`, a client's stream from the session's start through
- * its last event, as handed out and as another process sees it (`committedOnly`). What the client
- * folded up to the cursor, then what the resumed stream sends until it reaches `live`'s last
- * cursor, must fold into `live`'s view. `live`'s reader stays attached meanwhile, so a resumed
- * reader joins the log `live` was read from.
- */
 export async function expectEveryResumeFolds(session: AgentSession, live: readonly StreamItem[]): Promise<void> {
   const fold = (items: readonly StreamItem[]) => foldEvents(items.map((item) => item.event));
   const view = fold(live);

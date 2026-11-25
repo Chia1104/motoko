@@ -1,7 +1,3 @@
-// `runtime.recover()`: opening the scopes a host lists as possibly unfinished, so their work carries
-// on without a call. The host here records what each release leaves (`Lease.release(wake)`), as a
-// database host does, and lists the scopes whose last open left work or never released.
-
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Wake } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -13,7 +9,6 @@ import type { AgentHost, AgentRuntime, Lease, StorageScope } from "../src/index.
 import { durableMemoryHost, eventually, fauxModels, isRunEnd, memoryPlace, readUntil } from "./helpers.ts";
 import type { MemoryPlace } from "./helpers.ts";
 
-/** While `blocking`, runs until its call is stopped, as a long call that a closing process cuts off. */
 let blocking = true;
 const wait = defineTool({
   name: "wait",
@@ -23,7 +18,6 @@ const wait = defineTool({
   parameters: z.object({}),
   async execute(_args, { signal }) {
     if (!blocking) return { text: "done" };
-    // A call that starts while its instance closes finds its signal aborted already.
     if (!signal.aborted) {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     }
@@ -39,10 +33,6 @@ afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.close()));
 });
 
-/**
- * A host on `place` that records each scope's state as its lease is released, and lists as unfinished the scopes
- * whose last release left work or a sleep, and those acquired and never released.
- */
 function recordingHost(place: MemoryPlace, extra: StorageScope[] = []) {
   const left = new Map<string, { scope: StorageScope; wake: Wake | undefined; released: boolean }>();
   const base = durableMemoryHost(place);
@@ -94,7 +84,6 @@ describe("recover", () => {
     const { id } = await instance.createSession();
     await instance.session(id).submit({ text: "Work", requestId: "1" });
     await readUntil(instance.session(id), (event) => event.type === "tool:start");
-    // The process goes down mid-call: the release says work is left.
     await first.runtime.close();
     expect(left.get(scopeKey(instance.scope))?.wake).toMatchObject({ active: true });
 

@@ -122,7 +122,6 @@ describe("a submitted message", () => {
       { kind: "user", text: "Hi", streaming: false },
       { kind: "assistant", text: "Hello there.", streaming: false, stopReason: "stop" },
     ]);
-    // Live and replayed agree: a client attaching now gets the same view.
     expect(foldEvents((await readUntil(instance.session(id), isRunEnd)).map((item) => item.event))).toEqual(view);
     expect(await instance.listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
   });
@@ -141,7 +140,6 @@ describe("tool calls", () => {
     const { faux, instance } = setup();
     let sawResult: unknown;
     faux.setResponses([
-      // An optional parameter the model fills with null is dropped before validation.
       fauxAssistantMessage(fauxToolCall("lookup", { key: "a", limit: null }, { id: "call-1" }), {
         stopReason: "toolUse",
       }),
@@ -180,7 +178,7 @@ describe("tool calls", () => {
   });
 
   it("returns invalid arguments to the model as an error", async () => {
-    // pi coerces what it can (a number for a string); a missing required key it cannot.
+    // pi coerces what it can, such as a number for a string. It cannot coerce a missing required key.
     const { faux, instance } = setup();
     let sawResult: unknown;
     faux.setResponses([
@@ -226,7 +224,6 @@ describe("approval", () => {
     const waiting = foldEvents(asked.map((item) => item.event));
     expect(waiting.status).toBe("awaiting_approval");
     expect(waiting.pendingApprovals).toEqual(["rm-1"]);
-    // Nothing ran while it waited.
     expect(context.ports.deleted).toEqual([]);
     await decide(session);
     const items = await readUntil(session, isRunEnd);
@@ -255,7 +252,6 @@ describe("approval", () => {
     const view = foldEvents(items.map((item) => item.event));
     expect(view.items[2]).toMatchObject({ kind: "tool", status: "ok", approval: { approved: true } });
     expect(view.pendingApprovals).toEqual([]);
-    // A second decision for the same call is refused: the call is no longer waiting.
     await expect(session.approve([{ toolCallId: "rm-1", approved: false }])).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
     );
@@ -285,7 +281,6 @@ describe("approval", () => {
       await session.approve([{ toolCallId: "rm-1", approved: false, comment: "no" }]);
     });
     const live = foldEvents(items.map((item) => item.event));
-    // A fresh instance handle reads the same stream; a fresh runtime would replay from storage (motoko-node tests).
     const again = await readUntil(instance.session(session.id), isRunEnd);
     expect(foldEvents(again.map((item) => item.event))).toEqual(live);
   });
@@ -355,7 +350,6 @@ describe("reconnecting with a cursor", () => {
     ]);
     const { id } = await instance.createSession();
     const session = instance.session(id);
-    // Two clients follow from the start; one stays, the other drops at the question.
     const always = follow(session);
     const dropping = follow(session);
     await eventually(() => heldStreams(instance).readers === 2);
@@ -364,7 +358,6 @@ describe("reconnecting with a cursor", () => {
     await dropping.stop();
     const cursor = dropping.items.at(-1)!.cursor;
 
-    // The run goes on without it, and the client comes back while it is still the latest run.
     await session.approve([{ toolCallId: "rm-3", approved: true }]);
     const back = follow(session, cursor);
     await back.until((items) => runEnds(items) === 1);
@@ -373,11 +366,8 @@ describe("reconnecting with a cursor", () => {
     await back.until((items) => runEnds(items) === 2);
     await Promise.all([always.stop(), back.stop()]);
 
-    // Event for event, cursor for cursor, what the client that stayed read.
     expect([...dropping.items, ...back.items]).toEqual(always.items);
     expect(new Set(always.items.map((item) => item.cursor)).size).toBe(always.items.length);
-    // Resuming from the last cursor yields nothing but what comes next, and the queue, compaction and wrap-up state it
-    // may hold stated again.
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     const after: AgentWireEvent[] = [];
@@ -405,7 +395,6 @@ describe("reconnecting with a cursor", () => {
     const cursor = dropping.items.at(-1)!.cursor;
     await session.approve([{ toolCallId: "rm-4", approved: true }]);
     await always.until((items) => runEnds(items) === 1);
-    // A second run starts: the log keeps only it now.
     await session.submit({ text: "Again", requestId: "c2" });
     await always.until((items) => runEnds(items) === 2);
     await always.stop();
@@ -413,7 +402,6 @@ describe("reconnecting with a cursor", () => {
     const back = await readUntil(session, (_event, items) => runEnds(items) === 2, { from: cursor });
     const events = back.map((item) => item.event);
     expect(events.some((event) => event.type === "stream:reset")).toBe(false);
-    // Only what was committed after the cursor: the first message is not sent again.
     expect(events.filter((event) => event.type === "user").map((event) => event.type === "user" && event.text)).toEqual(
       ["Again"],
     );
@@ -441,7 +429,6 @@ describe("reconnecting with a cursor", () => {
     const session = instance.session(id);
     await session.submit({ text: "Hello", requestId: "h" });
     const live = await readUntil(session, isRunEnd);
-    // An entry this session's storage never held, as after a restore from an older backup.
     const items = await readUntil(session, isRunEnd, { from: `${id}.999999.-` });
     expect(items[0]?.event).toEqual({ type: "stream:reset" });
     expect(foldEvents(items.map((item) => item.event))).toEqual(foldEvents(live.map((item) => item.event)));
@@ -449,8 +436,6 @@ describe("reconnecting with a cursor", () => {
 });
 
 describe("resuming from committed state", () => {
-  // `committedOnly` drops the cursor's place in this process's log, so these resume as another
-  // process on the same storage would; motoko-node's tests do it across real processes too.
   it("folds a cut while a tool runs into the view of a client connected all along", async () => {
     let release: () => void = () => undefined;
     const released = new Promise<void>((resolve) => {
@@ -491,7 +476,7 @@ describe("resuming from committed state", () => {
     await dropping.stop();
     const cursor = committedOnly(dropping.items.at(-1)!.cursor);
     await progress;
-    // Progress lands on a throttle: wait until the connected client has it.
+    // Progress is committed on a throttle, so wait until the connected client has it.
     await always.until((items) =>
       items.some((item) => item.event.type === "tool:update" && item.event.details !== undefined),
     );
@@ -532,14 +517,12 @@ describe("resuming from committed state", () => {
     const cursor = committedOnly(dropping.items.at(-1)!.cursor);
     const fold = (items: readonly StreamItem[]) => foldEvents(items.map((item) => item.event));
 
-    // Still pending: the question comes again, and folds into the same view.
     const pending = follow(session, cursor);
     await pending.until((items) => items.some((item) => item.event.type === "approval:request"));
     await pending.stop();
     expect(fold([...dropping.items, ...pending.items])).toEqual(fold(always.items));
     expect(fold(pending.items).pendingApprovals).toEqual(["rm-5"]);
 
-    // Decided while away: the decision arrives with the rest of the run.
     await session.approve([{ toolCallId: "rm-5", approved: true }]);
     await always.until((items) => runEnds(items) === 1);
     await always.stop();
@@ -555,11 +538,6 @@ describe("resuming from committed state", () => {
 });
 
 describe("resuming at any cursor", () => {
-  // The resync contract between the transcriber and wire's reducer: what a resumed stream sends
-  // again (the stretch of history after the client's entry, the in-flight state as it is now) the
-  // reducer applies idempotently, so a client resuming from any cursor of a client connected all
-  // along folds into that client's view. It binds hardest where the run waits, since the in-flight
-  // state is then the last word, so each scenario checks there too, then once both runs are over.
   type Follower = ReturnType<typeof follow>;
   const resumes = (session: AgentSession, live: Follower) => expectEveryResumeFolds(session, live.items);
   const parked = async (session: AgentSession, live: Follower) => {
@@ -630,7 +608,6 @@ describe("resuming at any cursor", () => {
       },
     },
   ])("folds into the connected view, through $name and a second submit", async ({ responses, run }) => {
-    // Replies stream in pieces, each committed, so the stream holds deltas and drafts; a retry waits briefly.
     const { faux, instance } = setup({
       faux: { tokensPerSecond: 50, tokenSize: { min: 2, max: 2 } },
       settings: { progress: { partialIntervalMs: 5 }, retry: { baseDelayMs: 20 } },
@@ -658,7 +635,6 @@ describe("a run that ended without an answer, then another run", () => {
     runtime = createAgentRuntime({
       agents: [agent],
       host: memoryHost(),
-      // The first run's generation cannot reach the models: pi faults it, and leaves no entry saying so.
       models: () => {
         calls += 1;
         if (calls === 2) throw new Error("models down");
@@ -685,7 +661,7 @@ describe("a run that ended without an answer, then another run", () => {
       error: "models down",
     });
 
-    // pi-durable's `pi.live` keeps only the newest run's failure; the inputs' settlement keeps each.
+    // pi-durable's `pi.live` keeps only the newest run's failure. The inputs' settlements keep each run's failure.
     const late = await readUntil(session, (_event, items) => runEnds(items) === 2);
     expect(fold(late)).toEqual(fold(always.items));
     await expectEveryResumeFolds(session, always.items);
@@ -701,13 +677,11 @@ describe("bounded memory", () => {
     const session = instance.session(id);
     expect(heldStreams(instance)).toEqual({ sessions: 0, events: 0, readers: 0 });
 
-    // A run with nobody reading is followed while it goes, then let go.
     await session.submit({ text: "1", requestId: "1" });
     expect(heldStreams(instance).sessions).toBe(1);
     await eventually(() => heldStreams(instance).sessions === 0);
     expect(heldStreams(instance)).toEqual({ sessions: 0, events: 0, readers: 0 });
 
-    // A reader across two more runs: the log keeps the run going on, not the session's history.
     const reader = follow(session);
     await reader.until((items) => runEnds(items) === 1);
     await session.submit({ text: "2", requestId: "2" });
@@ -717,7 +691,6 @@ describe("bounded memory", () => {
     const lastRun = reader.items.slice(reader.items.findLastIndex((item) => item.event.type === "run:start"));
     expect(heldStreams(instance)).toEqual({ sessions: 1, events: lastRun.length, readers: 1 });
 
-    // The reader leaves and no run goes on: nothing is held.
     await reader.stop();
     expect(heldStreams(instance)).toEqual({ sessions: 0, events: 0, readers: 0 });
   });
@@ -733,7 +706,6 @@ describe("idempotent submit", () => {
     await readUntil(session, isRunEnd);
     const second = await session.submit({ text: "Hello", requestId: "same" });
     expect(second).toEqual(first);
-    // Give a second run every chance to start; none does.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const items = await readUntil(session, isRunEnd);
     expect(items.filter((item) => item.event.type === "user")).toHaveLength(1);
@@ -745,7 +717,6 @@ describe("idempotent submit", () => {
 type Telemetry = NonNullable<HarnessOptions["telemetry"]>;
 type TelemetrySpan = Parameters<Parameters<Telemetry["startSpan"]>[1]>[0];
 
-/** A telemetry adapter that records the name of every span it starts, child spans included. */
 function recordingTelemetry(names: string[]): Telemetry {
   const telemetry: Telemetry = {
     async startSpan(options, callback) {
@@ -801,7 +772,6 @@ describe("telemetry", () => {
     await bobSession.submit({ text: "Hi", requestId: "b" });
     await readUntil(bobSession, isRunEnd);
     expect(spans.get("bob")).toContain("pi.durable.submit");
-    // One call per open.
     expect(scopes).toHaveLength(2);
   });
 });

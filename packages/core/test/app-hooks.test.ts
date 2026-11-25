@@ -1,9 +1,4 @@
-// An app extension's tool hooks driven through the runtime, on the faux provider. Each test expects what the README's
-// "App extensions" says of them: a `beforeTool` hook rewrites a call's arguments once, and the call runs with that
-// rewrite however often pi-durable runs the chain again, a restart included, and is asked about with it; it may block a
-// call; and a sleep of its ends the call blocked, never at the gate, so nothing asks about it. The last tests expect what
-// "Durable approval" says of a call approved before it parked: it runs only with the arguments the operator was asked
-// about.
+// Each test expects what the README's "App extensions" and "Durable approval" say.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool as definePiTool, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -26,10 +21,6 @@ const desk = defineAgent({
   policy: { requiresApproval: ["network"] },
 });
 
-/**
- * The tool search, and a deferred `weather` that goes out to the network, which the policy gates. With `sequential`, a
- * round that calls it runs its calls one after another.
- */
 function forecasting(executionMode?: "sequential") {
   const cities: string[] = [];
   const ran: JsonObject[] = [];
@@ -77,7 +68,6 @@ function start(extensions: readonly AppExtension[], host: AgentHost, models = fa
 const call = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage(fauxToolCall(name, args, { id }), { stopReason: "toolUse" });
 
-/** The model loads the weather, asks for Taipei's, and answers. */
 const weatherInTaipei = [
   call("tool_search", { query: "weather" }, "ts-1"),
   call("weather", { city: "Taipei" }, "w-1"),
@@ -120,11 +110,9 @@ describe("app hooks", () => {
     await instance.session(id).approve([{ toolCallId: "w-1", approved: true }]);
     const items = await readUntil(instance.session(id), isRunEnd);
 
-    // The approval woke the call, so the chain ran again and the hook rewrote the city anew; the call kept the first.
     expect(rewrites.length).toBeGreaterThan(1);
     expect(new Set(rewrites).size).toBe(rewrites.length);
     expect(cities).toEqual([rewrites[0]]);
-    // The hook's other handlers run as the app wrote them.
     expect(ended).toBe(1);
     expect(weatherItem(items)).toMatchObject({ status: "ok" });
   });
@@ -149,11 +137,9 @@ describe("app hooks", () => {
     await runtime!.close();
 
     ({ instance } = start([...app, stamp], durableMemoryHost(place), models));
-    // A client arriving after the restart, while the call still waits.
     const [waiting] = asked(await readUntil(instance.session(id), isAsked));
     await instance.session(id).approve([{ toolCallId: "w-1", approved: true }]);
     await readUntil(instance.session(id), isRunEnd);
-    // Replayed from the start once the call ran: the decision's record keeps what the operator was asked.
     const replayed = await readUntil(instance.session(id), isRunEnd);
     const [again] = asked(replayed);
 
@@ -165,7 +151,6 @@ describe("app hooks", () => {
       expect.objectContaining(question),
       expect.objectContaining(question),
     ]);
-    // The call started with what the model wrote; the view shows what it ran with.
     expect(
       replayed.find(({ event }) => event.type === "tool:start" && event.toolCallId === "w-1")?.event,
     ).toMatchObject({ args: { city: "Taipei" } });
@@ -190,7 +175,6 @@ describe("app hooks", () => {
     await session.approve([{ toolCallId: "w-1", approved: true }]);
     await readUntil(session, isRunEnd);
 
-    // The decision woke the call and the hook gave nothing the second time: the call still runs with its rewrite.
     expect(passes).toBeGreaterThan(1);
     expect(cities).toEqual(["Tainan"]);
   });
@@ -238,10 +222,6 @@ describe("app hooks", () => {
   });
 });
 
-/**
- * An app hook that holds call `callId` at the start of its chain until `release()`, then gives it `rewrite`, if any:
- * while held, the call has its task and is still pending. `reached` resolves once the chain holds it.
- */
 function holding(callId: string, rewrite?: JsonObject) {
   let reach!: () => void;
   const reached = new Promise<void>((resolve) => (reach = resolve));
@@ -258,7 +238,6 @@ function holding(callId: string, rewrite?: JsonObject) {
   return { extension, reached, release };
 }
 
-/** The model loads the weather, asks for Taipei's and then `second`'s in one sequential round, and answers. */
 function twoCities(second: JsonObject) {
   let read: unknown;
   const responses = [
@@ -286,7 +265,6 @@ describe("a call approved before it parked", () => {
     await session.submit({ text: "Weather?", requestId: "1" });
     await readUntil(session, isAsked);
     await session.approve([{ toolCallId: "w-1", approved: true }]);
-    // The round's second call has its task and has not reached the gate: the operator approves it as the model wrote it.
     await hold.reached;
     expect(await session.approve([{ toolCallId: "w-2", approved: true }])).toEqual([
       { toolCallId: "w-2", outcome: "applied" },
@@ -312,7 +290,6 @@ describe("a call approved before it parked", () => {
     const { app, cities, ran } = forecasting("sequential");
     const hold = holding("w-2");
     const { faux, instance } = start([...app, hold.extension], memoryHost());
-    // A model that fills every property sends `null` for one it leaves out; validation drops it.
     const model = twoCities({ city: "Tainan", units: null });
     faux.setResponses(model.responses);
     const session = instance.session((await instance.createSession()).id);

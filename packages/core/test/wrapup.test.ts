@@ -1,8 +1,4 @@
-// A run's wrap-up on the stream, on the faux provider: each test expects what the `afterRun` bullet of the README's
-// "App extensions" says. A run whose session selects an app's `afterRun` hook sends `wrapup:start` after its `run:end`
-// and `wrapup:end` once the tasks the hook asked for end, before the next run's `run:start`; meanwhile an input that
-// rejects is refused and one that queues waits. A restart or a resume from any cursor shows the same, and an agent with
-// no such hook sends none of it, but for one `wrapup:end` a reader resumed between runs may get.
+// Each test expects what the `afterRun` bullet of the README's "App extensions" says.
 
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTask, GenerationTask, hook, hookTask } from "@earendil-works/pi-durable";
@@ -51,7 +47,6 @@ function start(options: { host?: AgentHost; extensions?: readonly Extension[]; a
 
 const done = { status: "terminal" as const, outcome: { status: "completed" as const, result: null } };
 
-/** An app extension whose `afterRun` hook asks for `task` after every answer, as one that names the session would. */
 const titles = <S extends { phase: string }>(task: Task<null, S, null, object>) =>
   defineExtension({
     name: "titles",
@@ -59,7 +54,6 @@ const titles = <S extends { phase: string }>(task: Task<null, S, null, object>) 
     hooks: [hook(GenerationTask, { afterRun: () => ({ tasks: [hookTask(task, null)] }) })],
   });
 
-/** Titles whose task waits in the process until `release()`, then ends; every later one ends at once. */
 function heldTitles() {
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
@@ -80,10 +74,8 @@ function heldTitles() {
   return { extension: titles(task), release };
 }
 
-/** How long a sleeping title takes: long enough for the test to restart its runtime while it sleeps. */
 const NAMING_MS = 300;
 
-/** Titles whose task sleeps `NAMING_MS` in committed state, so it carries on after a restart, then ends. */
 const sleepingTitles = titles(
   defineTask<null, { phase: "name" } | { phase: "named" }, null>({
     name: "app.title",
@@ -105,7 +97,6 @@ const sleepingTitles = titles(
 
 const fold = (items: readonly StreamItem[]) => foldEvents(items.map((item) => item.event));
 
-/** The run and wrap-up events of a stream, in order. */
 const phases = (items: readonly StreamItem[]) =>
   items.map((item) => item.event.type).filter((type) => type.startsWith("run:") || type.startsWith("wrapup:"));
 
@@ -127,7 +118,6 @@ describe("a run's wrap-up", () => {
     } finally {
       held.release();
     }
-    // The commit that ends the wrap-up starts the queued input's run: the wrap-up's end goes out first.
     const live = await reader.until((items) => wrapupEnds(items) === 2);
     expect(phases(live)).toEqual([
       "run:start",
@@ -143,7 +133,6 @@ describe("a run's wrap-up", () => {
     expect(view).not.toHaveProperty("wrappingUp");
     expect(view.items.filter((item) => item.kind === "assistant")).toMatchObject([{ text: "Hi." }, { text: "Later." }]);
 
-    // History keeps no wrap-up: a catch-up from the start shows none that is over, and folds the same.
     const replayed = await readUntil(session, (_event, items) => items.at(-1)!.cursor === live.at(-1)!.cursor);
     expect(phases(replayed)).toEqual(["run:start", "run:end", "run:start", "run:end"]);
     expect(fold(replayed)).toEqual(view);
@@ -163,14 +152,11 @@ describe("a run's wrap-up", () => {
     await expect(session.submit({ text: "Now", requestId: "2", whenBusy: "reject" })).rejects.toBeInstanceOf(
       SessionBusyError,
     );
-    // The session was refused while its stream showed the wrap-up, which still goes on.
     expect(fold(reader.items)).toMatchObject({ status: "idle", wrappingUp: true });
     await session.submit({ text: "Later", requestId: "3" });
     const before = await reader.until((items) => fold(items).queued?.length === 1);
     expect(fold(before)).toMatchObject({ wrappingUp: true, queued: [{ text: "Later" }] });
 
-    // Restarted while the title sleeps: a reader resuming from the last cursor sees the wrap-up go on, then end, and
-    // only then the queued input's run, which wraps up too.
     await first.runtime.close();
     await reader.stop();
     const second = start({ host: durableMemoryHost(place), extensions: [sleepingTitles], answers: ["Later."] });
@@ -196,8 +182,6 @@ describe("a run's wrap-up", () => {
     const live = await reader.until((items) => runEnds(items) === 2);
     expect(phases(live)).toEqual(["run:start", "run:end", "run:start", "run:end"]);
 
-    // Resumed between the runs, from committed state: it may hold a wrap-up of the run it saw end, so it is told none
-    // goes on, once.
     const between = live.find((item) => item.event.type === "run:end")!.cursor;
     const back = await readUntil(session, (_event, items) => items.at(-1)!.cursor === live.at(-1)!.cursor, {
       from: committedOnly(between),

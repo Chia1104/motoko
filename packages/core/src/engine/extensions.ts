@@ -21,8 +21,8 @@ export interface AppExtension {
   /** Its tools, prompt sections, hooks, wraps and tasks, as pi-durable runs them. */
   readonly extension: Extension;
   /**
-   * The tier of each of its tools, by name: what the agent's policy and a session's rule judge, as they judge the
-   * agent's own tools. A tool it gives no tier is `unknown`, and every call of it waits for approval.
+   * The tier of each of its tools, by name. The agent's policy and a session's rule judge it as they judge the tiers of
+   * the agent's own tools. A tool it gives no tier is `unknown`, and every call of it waits for approval.
    */
   readonly tier?: (toolName: string) => string | undefined;
   /**
@@ -35,38 +35,23 @@ export interface AppExtension {
 /** The app's extensions for one instance, from its scope. */
 export type ExtensionsResolver = (scope: StorageScope) => readonly AppExtension[] | Promise<readonly AppExtension[]>;
 
-/** What the gate, `decide` and a session's stream know of a tool a session runs. */
 export interface GatedTool {
   readonly name: string;
   readonly label: string;
-  /** Absent: the tool's tier is unknown, and every call of it waits for approval. */
   readonly tier?: string;
 }
 
-/** The tools of each agent kind's sessions: the agent's, then those of the app's extensions the kind selects. */
 export interface ToolCatalog {
-  /** Tool `name` as a session of agent `kind` runs it; one neither has is unknown. */
   tool(kind: string, name: string): GatedTool;
-  /** The tiers the tools of `kind`'s sessions carry: the tiers a session's rule may name. */
   tiers(kind: string): ReadonlySet<string>;
 }
 
-/** What an instance makes of the app's extensions when it opens, and again on each refresh. */
 export interface AppExtensions {
   readonly catalog: ToolCatalog;
-  /** The extensions to install in the instance's registry. */
   readonly installed: readonly Extension[];
-  /**
-   * What a session of agent `kind` selects: the app's extensions that select the kind, in the app's order, then the
-   * agent's own extension, `own`, so its gate runs last and judges the arguments the call runs with.
-   */
-  selectionOf(kind: string, own: Extension): Extension[];
+  selectionOf(kind: string, own: Extension): [...app: Extension[], ownGateJudgesLast: Extension];
 }
 
-/**
- * Records that a call of an app tool parked on its own work, the commit before its park is: from then on, its sleep
- * is not the gate's, so it raises no question and takes no decision.
- */
 async function parkedOnItsOwn(api: ToolExecutionApi, context: Context) {
   await api.commit(async (tx) => {
     const calls = await tx.doc(CallsDoc, api.conversationId);
@@ -85,23 +70,8 @@ const withParksRecorded = (tool: ToolRegistration): ToolRegistration => ({
   },
 });
 
-/**
- * The arguments pi hands the chain of a call that an app hook rewrites: the model's, as the tool repairs and coerces
- * them, which no app hook has touched. The first app hook to rewrite the call memoizes them on its tool task, and the
- * gate checks a call decided before it parked against them, since the operator was asked about the model's arguments.
- */
 export const MODEL_ARGS = "motoko.model.args";
 
-/**
- * The tool hooks `registration`, a hook of app extension `extension`, as the instance installs them. What their
- * `beforeTool` returns becomes, in pi-durable's order (a `block`, then a `sleep`, then `arguments`):
- *
- * - nothing, a `block` or `arguments`: itself. pi-durable runs the chain again at every wake, registry change and
- *   decision, and the hook may rewrite a call anew each time; the gate holds the arguments it saw when the call parked.
- *   The first app hook to rewrite a call memoizes the arguments it was handed (`MODEL_ARGS`);
- * - a `sleep`: a `block`. Only the gate parks a call before it runs: a call that sleeps there would show as a question,
- *   and `approve()` would decide it.
- */
 function appToolHooks(extension: string, registration: HookRegistration): HookRegistration {
   // SAFETY: a registration for the tool task holds its hooks, as `hook(ToolTask, ...)` types them.
   const handlers = registration.handlers as Partial<ToolHooks>;
@@ -116,7 +86,7 @@ function appToolHooks(extension: string, registration: HookRegistration): HookRe
         return { block: `an app hook cannot make a call wait (app extension \`${extension}\`)` };
       }
       if (decision?.arguments !== undefined) {
-        // The first write wins: a hook before this one that rewrote the call memoized the arguments it was handed.
+        // The first write wins. A hook before this one that rewrote the call memoized the arguments it was handed.
         // SAFETY: pi-ai's JSON arguments differ from pi-durable's JSON only in typing their arrays readonly.
         await api.memo(MODEL_ARGS, call.arguments as JsonObject, context);
       }
@@ -126,7 +96,6 @@ function appToolHooks(extension: string, registration: HookRegistration): HookRe
   return { ...registration, handlers: hooks };
 }
 
-/** App extension `extension` as the instance installs it, its tools' parks recorded and its tool hooks held. */
 const installable = (extension: Extension): Extension => ({
   ...extension,
   ...(extension.tools !== undefined && { tools: extension.tools.map(withParksRecorded) }),
@@ -138,11 +107,8 @@ const installable = (extension: Extension): Extension => ({
 });
 
 /**
- * The app's extensions `app` for the instance of `scope`, whose agent and sub-agents are `agents`. Throws a
- * `TypeError`, and the instance does not open, for an extension named like the runtime's (`runtime:` names) or like
- * another, a tool named like an agent's or like another extension's, or a wrap of an agent's tool: pi-durable runs the
- * last extension that provides or wraps a tool of a name, so any of those would run something else in an agent's
- * tool's place, past its ports.
+ * pi-durable runs the last selected extension that provides or wraps a tool of a name, so an app extension that
+ * shadows or wraps an agent's tool would run in its place, past its ports.
  */
 export function appExtensions(
   scope: StorageScope,
@@ -182,7 +148,7 @@ export function appExtensions(
   }
 
   const selects = (entry: AppExtension, kind: string) => (entry.agents ?? [scope.kind]).includes(kind);
-  const installed = new Map(app.map(({ extension }) => [extension, installable(extension)]));
+  const installed = app.map((entry) => ({ entry, extension: installable(entry.extension) }));
 
   const kinds = new Map<string, { tools: Map<string, GatedTool>; tiers: Set<string> }>();
   for (const agent of agents.values()) {
@@ -208,10 +174,9 @@ export function appExtensions(
       tool: (kind, name) => kinds.get(kind)?.tools.get(name) ?? { name, label: name },
       tiers: (kind) => kinds.get(kind)?.tiers ?? none,
     },
-    installed: [...installed.values()],
+    installed: installed.map(({ extension }) => extension),
     selectionOf: (kind, own) => [
-      // SAFETY: every app extension was installed above.
-      ...app.filter((entry) => selects(entry, kind)).map((entry) => installed.get(entry.extension)!),
+      ...installed.filter(({ entry }) => selects(entry, kind)).map(({ extension }) => extension),
       own,
     ],
   };

@@ -26,7 +26,6 @@ afterEach(async () => {
 
 const agent = defineAgent({ kind: "chat", instructions: "You chat.", tools: [] });
 
-/** Compaction keeps only the newest message verbatim, and a failed summary is not tried again. */
 const settings: AgentRuntimeOptions<unknown>["settings"] = {
   compaction: { keepRecentTokens: 1 },
   retry: { enabled: false },
@@ -45,7 +44,6 @@ function setup() {
   return { faux, instance: runtime.get(agent, "c") };
 }
 
-/** A session with two exchanges behind it: enough history to summarize. */
 async function chatted() {
   const { faux, instance } = setup();
   const session = instance.session((await instance.createSession()).id);
@@ -94,7 +92,6 @@ describe("compacting a session", () => {
       kind: "compaction",
       summary: "The user greeted and asked about apples.",
     });
-    // A client that replays the session folds the same view.
     expect(fold(await readUntil(session, (event) => event.type === "session:compacted"))).toEqual(view);
   });
 
@@ -110,7 +107,6 @@ describe("compacting a session", () => {
     });
     expect(fold(items).compaction).toEqual({ status: "failed", error: "Summarization failed: overloaded" });
     expect(types(items)).not.toContain("session:compacted");
-    // A client that connects now is shown the failure too.
     const late = await readUntil(session, isCompactionEnd);
     expect(fold(late).compaction).toEqual(fold(items).compaction);
 
@@ -140,7 +136,6 @@ describe("compacting a session", () => {
     await reader.until((items) => items.some((item) => item.event.type === "compaction:start"));
     const during = fold(reader.items);
     expect(during.compaction).toEqual({ status: "running", reason: "manual" });
-    // From before the compaction, in another process: the catch-up says it is going on.
     const caughtUp = await readUntil(
       session,
       (_event, items) => items.some((item) => item.event.type === "compaction:start"),

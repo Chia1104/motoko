@@ -1,9 +1,4 @@
-// The app's pi-durable extensions driven through the runtime, on the faux provider: `extensionsFor` hands each
-// instance its extensions when it opens. Each test expects what the README's "App extensions" says: the app's tools
-// run under the approval gate with the tiers the app gives them, a tool without one always asks, a session's tools
-// never turn them off, names that would run something in an agent's tool's place keep the instance from opening, a
-// failed `extensionsFor` fails the open and loses no question, a sub-agent selects only the extensions that name its
-// kind, an `afterRun` task keeps the session busy after its answer, and an app tool parked on its own work asks nothing.
+// Each test expects what the README's "App extensions" says.
 
 import type { Message, SystemMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -76,7 +71,6 @@ const desk = defineAgent<Ports>({
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
-/** A pi-durable tool of the app's, answering `answer` to every call. */
 const appTool = (name: string, answer: string, more: Partial<ToolRegistration> = {}): ToolRegistration =>
   definePiTool({
     name,
@@ -89,14 +83,12 @@ const appTool = (name: string, answer: string, more: Partial<ToolRegistration> =
   });
 
 const search = createToolSearchExtension();
-/** Deferred, so the model is offered it only once `tool_search` loads it. */
 const forecast = defineExtension({
   name: "forecast",
   tools: [appTool("weather", "sunny", { description: "The weather in a city", deferred: true })],
 });
 const shell = defineExtension({ name: "shell", tools: [appTool("shell", "ran")] });
 
-/** Tool search reads, the forecast goes out to the network, and the shell has no tier. */
 const app: AppExtension[] = [
   { extension: search, tier: () => "read" },
   { extension: forecast, tier: () => "network" },
@@ -132,7 +124,6 @@ function start(
 const call = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage(fauxToolCall(name, args, { id }), { stopReason: "toolUse" });
 
-/** The names of the tools a request offers, replayed from its system messages: each removes, then adds. */
 function offered(messages: readonly Message[]): string[] {
   const tools = new Set<string>();
   for (const message of messages.filter((each): each is SystemMessage => each.role === "system")) {
@@ -142,7 +133,6 @@ function offered(messages: readonly Message[]): string[] {
   return [...tools].sort();
 }
 
-/** `steps` as the model answers them, keeping the messages of every request in `requests`. */
 function recorded(steps: readonly FauxResponseStep[]) {
   const requests: Message[][] = [];
   const respond = steps.map((step): FauxResponseFactory => (request, options, state, model) => {
@@ -173,7 +163,6 @@ describe("app extensions", () => {
     const session = instance.session((await instance.createSession()).id);
     await session.submit({ text: "Weather?", requestId: "1" });
 
-    // `tool_search` is a read, which the policy runs; the forecast goes out to the network, which it gates.
     expect(asked(await readUntil(session, isAsked))).toEqual([
       { type: "approval:request", toolCallId: "w-1", toolName: "weather", tier: "network", args: { city: "Taipei" } },
     ]);
@@ -191,7 +180,6 @@ describe("app extensions", () => {
 
   it("asks before every call of a tool the app gives no tier, whatever the session's rule says", async () => {
     const { faux, instance } = start();
-    // No rule takes the question away: `unknown` is no tier a rule can name.
     await expect(instance.createSession({ requiresApproval: { remove: ["unknown"] } })).rejects.toThrow(
       "`requiresApproval.remove` names tier `unknown`, which no tool of `desk` has",
     );
@@ -291,7 +279,6 @@ describe("app extensions", () => {
     await readUntil(instance.session(id), isAsked);
     await runtime!.close();
 
-    // An open without the shell would end the call that waits for it: it does not open at all.
     down = true;
     ({ instance } = start({ host: durableMemoryHost(place), extensions: extensionsFor, models }));
     await expect(instance.session(id).approve([{ toolCallId: "sh-1", approved: true }])).rejects.toThrow(
@@ -359,7 +346,6 @@ describe("app extensions", () => {
       await readUntil(session, isRunEnd);
       await begun;
 
-      // The answer is out, and the session still runs the task its run asked for.
       await expect(session.submit({ text: "Now", requestId: "2", whenBusy: "reject" })).rejects.toBeInstanceOf(
         SessionBusyError,
       );

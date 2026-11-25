@@ -1,7 +1,4 @@
-// Deferred tools and asks driven through the runtime, on the faux provider. Each test expects what the README's
-// "Deferred tools" says: a deferred call starts work elsewhere with a reply address and parks, holding no
-// process, until a reply reaches it there or its deadline passes, and a crash, a close or a retry at any point starts
-// the work once by its request ID and delivers one reply.
+// Each test expects what the README's "Deferred tools" says.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
@@ -52,7 +49,6 @@ import {
 } from "./helpers.ts";
 import type { MemoryPlace } from "./helpers.ts";
 
-/** What each run of a deferred call's `start` and `cancel` was handed. */
 interface Started {
   readonly question: string;
   readonly requestId: string;
@@ -64,7 +60,6 @@ interface Started {
 interface Ports {
   readonly started: Started[];
   readonly cancelled: Started[];
-  /** What `start` does besides recording its run: throw, or reply at once. */
   onStart?: (context: DeferredContext<Ports>) => Promise<void>;
 }
 
@@ -104,7 +99,6 @@ afterEach(async () => {
 const askCall = (question: string, id = "q-1") =>
   fauxAssistantMessage(fauxToolCall("ask", { question }, { id }), { stopReason: "toolUse" });
 
-/** The model's answers, one per request, keeping every request it was sent. */
 function script(faux: ReturnType<typeof fauxModels>["faux"], steps: FauxResponseStep[]) {
   const requests: Message[][] = [];
   const respond: FauxResponseFactory = async (request, options, state, model) => {
@@ -122,7 +116,6 @@ const fold = (items: readonly StreamItem[]): AgentSessionView => foldEvents(item
 const toolItem = (view: AgentSessionView, toolCallId: string) =>
   view.items.find((item): item is ToolItem => item.kind === "tool" && item.toolCallId === toolCallId);
 
-/** The tool result the model read last: the second request ends with it. */
 const resultOf = (requests: Message[][]) => requests.at(-1)?.at(-1);
 
 function setup(options: { host?: AgentHost; closeIdleAfterMs?: number; agents?: readonly (typeof asker)[] } = {}) {
@@ -139,7 +132,6 @@ function setup(options: { host?: AgentHost; closeIdleAfterMs?: number; agents?: 
   return { faux: models.faux, ports, runtime, instance: runtime.get(options.agents?.[0] ?? asker, "alice") };
 }
 
-/** The reply to the call `started` names, through the session its address names. */
 const replyTo = (instance: ReturnType<AgentRuntime["get"]>, started: Started, text: string, isError?: boolean) =>
   instance.session(started.replyTo.sessionId).reply({
     toolCallId: started.replyTo.toolCallId,
@@ -168,7 +160,6 @@ describe("a deferred call", () => {
     const view = fold(waiting);
     expect(toolItem(view, "q-1")).toMatchObject({ status: "awaiting_reply", replyBy: expect.any(Number) });
     expect(view).toMatchObject({ status: "running", pendingApprovals: [] });
-    // A client that resumes while the call waits, from any cursor, live or after a restart, folds the same view.
     await expectEveryResumeFolds(session, waiting);
 
     expect(await replyTo(instance, started!, "Because.")).toEqual({ outcome: "applied" });
@@ -183,7 +174,6 @@ describe("a deferred call", () => {
       "assistant:end",
       "run:end",
     ]);
-    // The reply resumed the call: it runs again until it ends.
     const types = items.map((item) => item.event.type);
     expect(types.slice(types.indexOf("reply:wait"), types.indexOf("tool:end") + 1)).toEqual([
       "reply:wait",
@@ -194,7 +184,6 @@ describe("a deferred call", () => {
     const call = toolItem(ended, "q-1")!;
     expect(call).toMatchObject({ toolName: "ask", label: "Ask", tier: "ask", status: "ok" });
     expect(call.replyBy).toBeUndefined();
-    // Its item names no child session: only a delegate's does.
     expect(delegateOf(call)).toBeUndefined();
     expect(resultOf(requests)).toMatchObject({
       role: "toolResult",
@@ -237,7 +226,6 @@ describe("a deferred call", () => {
     await closed.close();
     expect(closed.state).toBe("closed");
 
-    // A new handle of the scope reopens it for the reply.
     const again = first.get(asker, "alice");
     expect(await replyTo(again, ports.started[0]!, "Yes.")).toEqual({ outcome: "applied" });
     await readUntil(
@@ -246,7 +234,6 @@ describe("a deferred call", () => {
     );
     expect(resultOf(requests)).toMatchObject({ content: [{ type: "text", text: "Yes." }] });
 
-    // Parked again, nothing runs: the instance closes for idleness, and the reply reopens it.
     await again.session(sessionId).submit({ text: "Two", requestId: "2" });
     await readUntil(again.session(sessionId), (event) => event.type === "reply:wait" && event.toolCallId === "q-2");
     await eventually(() => again.state === "dormant");
@@ -262,7 +249,6 @@ describe("a deferred call", () => {
   it("is completed by a reply that comes before it parks", async () => {
     const { faux, ports, instance } = setup();
     const requests = script(faux, [askCall("Why?"), fauxAssistantMessage("Done.")]);
-    // The work answers at once, from inside `start`, while the call still runs.
     ports.onStart = async (context) => {
       const started = ports.started.at(-1)!;
       expect(await replyTo(instance, started, "Right away.")).toEqual({ outcome: "applied" });
@@ -288,7 +274,6 @@ describe("a deferred call", () => {
     await readUntil(session, (event) => event.type === "reply:wait");
     const started = ports.started[0]!;
 
-    // Tokens are hex: one character off is another token.
     const wrong = { toolCallId: "q-1", token: `${started.replyTo.token.slice(0, -1)}x`, text: "Forged." };
     await expect(session.reply(wrong)).rejects.toBeInstanceOf(ReplyNotPendingError);
     await expect(session.reply({ ...wrong, toolCallId: "nobody" })).rejects.toBeInstanceOf(ReplyNotPendingError);
@@ -300,11 +285,9 @@ describe("a deferred call", () => {
     expect(await replyTo(instance, started, "Because.")).toEqual({ outcome: "applied" });
     expect(await replyTo(instance, started, "Because, again.")).toEqual({ outcome: "already_replied" });
     await readUntil(session, isRunEnd);
-    // Over the call protocol too, once the call has its result.
     const params = { sessionId: session.id, toolCallId: "q-1", token: started.replyTo.token, text: "Late." };
     expect(await runCall(instance, { method: "reply", params })).toEqual({ outcome: "already_replied" });
 
-    // A call whose work could not start ends at once, with the work's error; a reply to it is refused.
     ports.onStart = async () => {
       throw new Error("Bob cannot be reached.");
     };
@@ -369,7 +352,6 @@ describe("a deferred call", () => {
     await session.approve([{ toolCallId: "q-1", approved: true }]);
     const waiting = await readUntil(session, (event) => event.type === "reply:wait");
     expect(ports.started).toHaveLength(1);
-    // Parked on its reply now, not on the gate: it asks nothing more, and takes no decision.
     expect(fold(waiting)).toMatchObject({ status: "running", pendingApprovals: [] });
     await expect(session.approve([{ toolCallId: "q-1", approved: true }])).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
@@ -410,7 +392,6 @@ describe("a deferred call", () => {
   });
 });
 
-/** A host on `place` whose storage runs `before` ahead of each commit, with the commit's writes. */
 function beforeCommits(place: MemoryPlace, before: (writes: readonly StorageWrite[]) => Promise<void>): AgentHost {
   const base = durableMemoryHost(place);
   return {
@@ -433,10 +414,6 @@ function beforeCommits(place: MemoryPlace, before: (writes: readonly StorageWrit
   };
 }
 
-/**
- * A host on `place` that crashes once: its storage fails the first commit `crashes` picks, so the instance's Harness
- * fails there as a process that died would leave it, with what it committed before kept.
- */
 function crashingHost(place: MemoryPlace, crashes: (writes: readonly StorageWrite[]) => boolean): AgentHost {
   let crashed = false;
   return beforeCommits(place, async (writes) => {
@@ -446,11 +423,6 @@ function crashingHost(place: MemoryPlace, crashes: (writes: readonly StorageWrit
   });
 }
 
-/**
- * A host on `place` whose storage holds the first commit `holds` picks until `release()`, as a slow database would.
- * `reached` resolves once that commit waits. Until the release, the instance's Harness stores and publishes nothing
- * after it.
- */
 function holdingHost(place: MemoryPlace, holds: (writes: readonly StorageWrite[]) => boolean) {
   let reach!: () => void;
   let release!: () => void;
@@ -466,7 +438,6 @@ function holdingHost(place: MemoryPlace, holds: (writes: readonly StorageWrite[]
   return { host, reached, release };
 }
 
-/** The commit that parks a deferred call on its reply. */
 const parksOnReply = (writes: readonly StorageWrite[]) =>
   writes.some(
     (write) =>
@@ -490,7 +461,6 @@ describe("a deferred call cut off by a crash before it parks", () => {
     await runtime.close();
     expect(ports.started).toHaveLength(1);
 
-    // Another process takes the scope over and carries on what the dead one left.
     runtime = createAgentRuntime({ ...options, host: durableMemoryHost(place) });
     const again = runtime.get(asker, "alice");
     await again.open();
@@ -503,16 +473,12 @@ describe("a deferred call cut off by a crash before it parks", () => {
   });
 });
 
-// ─── Asks: the asked instance delivers its run's answer ────────────────────────
-
 const context = BACKGROUND_CONTEXT;
 
-/** Bob: the agent Alice's `ask` submits to, in an instance of its own. */
 const responder = defineAgent<Ports>({ kind: "bob", instructions: "You are Bob, and you answer.", tools: [] });
 
 type Role = "alice" | "bob";
 
-/** The model as Alice and Bob see it: each request goes to its agent's script, told apart by its instructions. */
 function scripts(faux: ReturnType<typeof fauxModels>["faux"], steps: Record<Role, FauxResponseStep[]>) {
   const requests: Record<Role, Message[][]> = { alice: [], bob: [] };
   const respond: FauxResponseFactory = async (request, options, state, model) => {
@@ -526,7 +492,6 @@ function scripts(faux: ReturnType<typeof fauxModels>["faux"], steps: Record<Role
   return requests;
 }
 
-/** A reply that waits until `release()`, or until its request is aborted; `started` resolves once it is asked. */
 function held(text: string) {
   let release!: () => void;
   let start!: () => void;
@@ -546,19 +511,12 @@ function held(text: string) {
 interface AskOptions {
   readonly place?: MemoryPlace;
   readonly host?: AgentHost;
-  /** Deliveries that fail before one goes through. */
   readonly failures?: number;
   readonly closeIdleAfterMs?: number;
   readonly settings?: AgentRuntimeOptions<Ports>["settings"];
-  /** Wraps the runtime's `deliverReply`, to stall or cut off a delivery. */
   readonly wrapDeliver?: (deliver: DeliverReply) => DeliverReply;
 }
 
-/**
- * Alice and Bob in one runtime: Alice's `ask` submits its question to Bob's session with its reply address, and the
- * runtime's `deliverReply` replies through the same runtime, as an app on one node does. `deliveries` is what each
- * delivery that went through was answered, `reports` what the runtime reported.
- */
 async function askSetup(options: AskOptions = {}) {
   const place = options.place ?? memoryPlace();
   const models = fauxModels();
@@ -575,7 +533,6 @@ async function askSetup(options: AskOptions = {}) {
       const session = runtime!.get(to.scope.kind, to.scope.name).session(to.sessionId);
       deliveries.push((await session.reply({ toolCallId: to.toolCallId, token: to.token, text, isError })).outcome);
     } catch (error) {
-      // Refused for good: the call waits for no reply, or the session is gone.
       if (!(error instanceof ReplyNotPendingError || error instanceof SessionNotFoundError)) throw error;
       deliveries.push("refused");
     }
@@ -606,7 +563,6 @@ async function askSetup(options: AskOptions = {}) {
 const replyFailures = (reports: readonly InstanceReport[]) =>
   reports.flatMap((report) => (report.source === "runtime" && report.kind === "reply_failed" ? [report] : []));
 
-/** The asks of Bob's instance in its storage: its courier tasks' statuses, and its submissions. */
 async function bobStored(place: MemoryPlace) {
   const storage = place.storages.get(scopeKey({ kind: responder.kind, name: "bob" }))!;
   const tasks = (await storage.scanTasks({ kind: "runtime.ask" }, 100, undefined, context)).items;
@@ -614,7 +570,6 @@ async function bobStored(place: MemoryPlace) {
   return { couriers: tasks.map((task) => task.state.status), submissions: submissions.length };
 }
 
-/** Bob's stored asks once every courier ended: it ends right after its delivery. */
 async function courierDone(place: MemoryPlace) {
   const deadline = Date.now() + 5_000;
   for (;;) {
@@ -654,7 +609,6 @@ describe("an ask", () => {
       isError: false,
       content: [{ type: "text", text: "Rayleigh scattering." }],
     });
-    // Bob's session shows the question and its answer, as any session does.
     const bob = both.get(responder, "bob").session(bobs);
     expect(fold(await readUntil(bob, isRunEnd)).items).toMatchObject([
       { kind: "user", text: "Why is the sky blue?" },
@@ -790,7 +744,6 @@ describe("an ask", () => {
         if (stalls === 0) return deliver(reply, signal);
         stalls -= 1;
         cut();
-        // The delivery is under way when the instance closes, and is stopped by it.
         await new Promise<never>((_resolve, reject) =>
           signal.addEventListener("abort", () => reject(new Error("closed mid-delivery")), { once: true }),
         );
@@ -807,7 +760,6 @@ describe("an ask", () => {
     await readUntil(session, isRunEnd);
     expect(resultOf(requests.alice)).toMatchObject({ content: [{ type: "text", text: "Because." }] });
     expect(deliveries).toEqual(["applied"]);
-    // A close is not a failed delivery.
     expect(replyFailures(reports)).toEqual([]);
     expect(await courierDone(place)).toEqual({ couriers: ["terminal"], submissions: 1 });
   });
@@ -828,7 +780,6 @@ describe("an ask", () => {
     expect(failed.length).toBeGreaterThan(1);
     expect(failed.filter((failure) => failure.gaveUp)).toHaveLength(1);
     expect(failed.at(-1)).toMatchObject({ gaveUp: true });
-    // Nothing is tried after it.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(replyFailures(reports)).toHaveLength(failed.length);
     expect(deliveries).toEqual([]);
@@ -909,7 +860,6 @@ describe("an ask", () => {
       params: { sessionId: bobs, text: "Hi", requestId: "1", replyTo, whenBusy: "reject" },
     }).catch((error: unknown) => error);
     expect(callErrorOf(over)).toMatchObject({ code: "invalid_request" });
-    // Its answer is a run's own, which a steer never has.
     const steer = bob.session(bobs).submit({ text: "Hi", requestId: "1", replyTo, whenBusy: "steer" });
     await expect(steer).rejects.toBeInstanceOf(InvalidRequestError);
 
@@ -927,7 +877,6 @@ describe("an ask", () => {
       await expect(instance.session(id).submit({ text: "Hi", requestId: "1", replyTo })).rejects.toBeInstanceOf(
         InvalidRequestError,
       );
-      // Nothing was submitted.
       expect(fold(await readUntil(instance.session(id), () => true, { timeoutMs: 200 }).catch(() => []))).toEqual(
         fold([]),
       );
@@ -940,14 +889,9 @@ describe("an ask", () => {
 const submitsAsk = (writes: readonly StorageWrite[]) =>
   writes.some((write) => write.type === "submission" && write.value.requestId?.startsWith("deferred:") === true);
 
-/** The commit that makes an ask's courier, with its record. */
 const makesCourier = (writes: readonly StorageWrite[]) =>
   writes.some((write) => write.type === "task" && write.value.kind === "runtime.ask");
 
-/**
- * Parks Alice's asking call without asking. Each call of the function it returns is one try of the ask, with the call's
- * request ID and reply address, as `start`, a forwarded retry, or a client's retry after `connection_closed` makes it.
- */
 async function parkWithoutAsking({ ports, session, runtime: both, bobs }: Awaited<ReturnType<typeof askSetup>>) {
   let deferred: DeferredContext<Ports> | undefined;
   ports.onStart = async (context) => {
@@ -978,7 +922,6 @@ describe("an ask cut off by a crash", () => {
     await eventually(() => first.state === "failed");
     expect(ports.started).toHaveLength(1);
 
-    // Alice's instance opens again and carries its call on: `start` asks again, by the same request ID.
     const alice = runtime!.get(asker, "alice");
     await alice.open();
     await eventually(() => ports.started.length === 2);
@@ -998,14 +941,12 @@ describe("an ask cut off by a crash", () => {
       alice: [askCall("Why?"), fauxAssistantMessage("Done.")],
       bob: [fauxAssistantMessage("Because.")],
     });
-    // Bob's process dies making the ask.
     const askBob = await parkWithoutAsking(setup);
     const bob = both.get(responder, "bob");
     await expect(askBob()).rejects.toThrow("The process died");
     await eventually(() => bob.state === "failed");
     expect((await bobStored(place)).submissions).toBe(0);
 
-    // Bob's instance opens again: its courier, made before the crash, submits the ask itself.
     await both.get(responder, "bob").open();
     await readUntil(session, isRunEnd);
     expect(resultOf(requests.alice)).toMatchObject({ content: [{ type: "text", text: "Because." }] });
@@ -1014,10 +955,7 @@ describe("an ask cut off by a crash", () => {
   });
 });
 
-// pi-durable runs a Session's commits one at a time, in the order they come, and hands out their outcomes in that order.
-// The first try queues its submission once its first commit lands, so a retry's first commit runs between the two only
-// when it was queued earlier. The courier submits only once its task has started, so it submits first only when the
-// first try died between its commits.
+// pi-durable runs a Session's commits one at a time in the order they come, and returns their outcomes in that order.
 describe("an ask retried while it is under way", () => {
   it("is one ask for a retry that comes between the first try's courier and its submission", async () => {
     const place = memoryPlace();
@@ -1030,9 +968,6 @@ describe("an ask retried while it is under way", () => {
     const askBob = await parkWithoutAsking(setup);
     const first = askBob();
     const retry = askBob();
-    // The first try's first commit makes its courier and the courier's record, and waits in storage, so its submission is
-    // not queued yet. The retry's first commit is queued already. It reads that record, so it waits for the first commit
-    // and runs before the first try's submission.
     await hold.reached;
     hold.release();
     expect(await retry).toEqual(await first);
@@ -1051,17 +986,13 @@ describe("an ask retried while it is under way", () => {
       alice: [askCall("Why?"), fauxAssistantMessage("Done.")],
       bob: [answer.step],
     });
-    // The first try dies between its two commits. Its courier and the courier's record are stored, and its submission is
-    // not.
     const askBob = await parkWithoutAsking(setup);
     const bob = setup.runtime.get(responder, "bob");
     await expect(askBob()).rejects.toThrow("The process died");
     await eventually(() => bob.state === "failed");
-    // Bob's instance opens again, and the courier submits the ask itself. Bob's run starts on that submission.
     await setup.runtime.get(responder, "bob").open();
     await answer.started;
 
-    // The retries come while the courier waits for Bob's answer, two at once.
     const [one, two] = await Promise.all([askBob(), askBob()]);
     expect(two).toEqual(one);
     answer.release();

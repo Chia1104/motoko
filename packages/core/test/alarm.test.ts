@@ -1,6 +1,6 @@
 // An alarm host stays armed active while a call that can start work is under way. pi-durable tells the host of that
-// work only after its commit (`onWake`), so an idle wake armed between the call's own arm and its commit would leave
-// committed work that nothing wakes if the process died then.
+// work through `onWake`, and only after its commit. An idle wake armed between the call's own arm and that commit would
+// leave committed work that nothing wakes if the process died then.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Wake } from "@earendil-works/pi-durable";
@@ -35,12 +35,6 @@ afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.close()));
 });
 
-/**
- * A runtime on an alarm host that records every wake it is armed with, and the wake it was last armed with as each
- * commit reaches storage: what a process that died right after that commit would be woken by. `pauseNextActive()`
- * holds the next arm that says `active` until its `resume()`: the call that made it, its own arm before work, waits
- * there to start its work.
- */
 function setup() {
   const arms: Wake[] = [];
   const armedAtCommit: (Wake | undefined)[] = [];
@@ -88,7 +82,6 @@ function setup() {
       await resumed;
     };
     return {
-      /** Resolves once the paused arm was made, with where it is in `arms`. */
       armed: armed.then(() => arms.length - 1),
       resume,
     };
@@ -107,18 +100,14 @@ describe("an alarm host", () => {
     const pause = pauseNextActive();
     const submitted = working.submit({ text: "Work", requestId: "1" });
     const from = await pause.armed;
-    // Another call that can start work, on an idle session: it starts nothing and is done while the submit waits.
     await idle.abort();
-    // The submit's arm, then the abort's before and after it: none of them lets the host sleep.
     expect(arms.slice(from)).toEqual([{ active: true }, { active: true }, { active: true }]);
 
     const commits = armedAtCommit.length;
     pause.resume();
     await submitted;
-    // The commit that admits the submission, and starts its run, lands with the host armed active.
     expect(armedAtCommit[commits]).toEqual({ active: true });
     await readUntil(working, isRunEnd);
-    // Once nothing runs, the host is armed with what is due: nothing.
     await eventually(() => arms.at(-1)?.active === false);
     expect(arms.at(-1)).toEqual({ active: false });
   });
@@ -142,7 +131,6 @@ describe("an alarm host", () => {
     const pause = pauseNextActive();
     const submitted = working.submit({ text: "Work", requestId: "2" });
     const from = await pause.armed;
-    // The other run ends while the submit waits: pi-durable reports that nothing runs any more.
     release();
     await readUntil(running, isRunEnd);
     await eventually(() => arms.length > from + 1);

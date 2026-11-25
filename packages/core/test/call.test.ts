@@ -1,6 +1,3 @@
-// The call protocol run on an instance through `runCall`, as a transport does: each call parsed with wire's schemas,
-// its result checked against its result schema, and each failure read with `callErrorOf`.
-
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
@@ -74,20 +71,16 @@ function setup() {
   return { faux, ports, instance: runtime.get(notesAgent, "alice") };
 }
 
-/** Runs `method` with `params` as a transport does: params parsed, the result checked against its schema. */
 async function call<M extends CallMethod>(
   instance: AgentInstance,
   method: M,
   params: CallParams<M>,
 ): Promise<CallResult<M>> {
-  // SAFETY: the params are `method`'s, parsed with its own schema.
   const parsed = { method, params: callSchemas[method].params.parse(params) } as Call & { method: M };
   const result = await runCall(instance, parsed);
-  // SAFETY: parsed with `method`'s result schema.
   return callSchemas[method].result.parse(result) as CallResult<M>;
 }
 
-/** What a call that rejects answers. */
 async function failure(pending: Promise<unknown>) {
   const error = await pending.then(
     () => expect.unreachable("the call succeeded"),

@@ -17,6 +17,7 @@ import {
 import type { AgentRuntime } from "../src/index.ts";
 
 import {
+  deferred,
   durableMemoryHost,
   eventually,
   expectEveryResumeFolds,
@@ -104,29 +105,18 @@ describe("inputs queued behind a run", () => {
       { type: "run:end", reason: "done" },
       { type: "run:end", reason: "done" },
     ]);
-    // A client attaching afterwards folds the same view.
     const replayed = await readUntil(instance.session(id), (_event, read) => ends(read) === 3);
     expect(foldEvents(replayed.map((item) => item.event))).toEqual(foldEvents(items.map((item) => item.event)));
   });
 });
 
-/** A promise to wait for and the function that settles it. */
-function gate() {
-  let open: () => void = () => undefined;
-  const opened = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { opened, open };
-}
-
-/** `hold` waits until its call's `n` gate opens, or until its instance stops it. */
 function holding() {
-  const gates = new Map<number, ReturnType<typeof gate>>();
-  const started = new Map<number, ReturnType<typeof gate>>();
-  const of = (map: Map<number, ReturnType<typeof gate>>, n: number) => {
+  const releases = new Map<number, ReturnType<typeof deferred>>();
+  const started = new Map<number, ReturnType<typeof deferred>>();
+  const of = (map: Map<number, ReturnType<typeof deferred>>, n: number) => {
     let found = map.get(n);
     if (found === undefined) {
-      found = gate();
+      found = deferred();
       map.set(n, found);
     }
     return found;
@@ -138,9 +128,9 @@ function holding() {
     replay: "safe",
     parameters: z.object({ n: z.number() }),
     async execute({ n }, { signal }) {
-      of(started, n).open();
+      of(started, n).resolve();
       await Promise.race([
-        of(gates, n).opened,
+        of(releases, n).promise,
         new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })),
       ]);
       return { text: `held ${n}` };
@@ -148,15 +138,14 @@ function holding() {
   });
   return {
     tool,
-    started: (n: number) => of(started, n).opened,
-    release: (n: number) => of(gates, n).open(),
+    started: (n: number) => of(started, n).promise,
+    release: (n: number) => of(releases, n).resolve(),
   };
 }
 
 const holdCall = (n: number) =>
   fauxAssistantMessage([fauxToolCall("hold", { n }, { id: `hold-${n}` })], { stopReason: "toolUse" });
 
-/** A reply the model gives only once `opened` resolves: a generation that goes on until then. */
 const answerAfter = (opened: Promise<void>, text: string) => async () => {
   await opened;
   return fauxAssistantMessage(text);
@@ -218,9 +207,7 @@ describe("a steer", () => {
       { text: "Do it", steer: undefined },
       { text: "No, the other way", steer: true },
     ]);
-    // It waited in the queue, as a steer, until the round's results were in.
     expect(queues(items)).toEqual([[{ submissionId, text: "No, the other way", whenBusy: "steer" }], []]);
-    // The model read it after the call's result.
     expect(read.slice(-2)).toEqual(["toolResult", "user"]);
     expect(fold(items).items).toMatchObject([
       { kind: "user", text: "Do it" },
@@ -230,7 +217,6 @@ describe("a steer", () => {
       { kind: "assistant", text: "Done, the other way." },
     ]);
 
-    // A client attaching afterwards, or resuming anywhere, folds the same view.
     const replayed = await readUntil(session, (_event, read) => runEnds(read) === 1);
     expect(fold(replayed)).toEqual(fold(items));
     await expectEveryResumeFolds(session, items);
@@ -249,18 +235,17 @@ describe("a steer", () => {
 
   it("that waits past the run's answer starts the next run, with the input queued before it", async () => {
     const { faux, instance } = setup();
-    const answer = gate();
-    faux.setResponses([answerAfter(answer.opened, "First."), fauxAssistantMessage("Both.")]);
+    const answer = deferred();
+    faux.setResponses([answerAfter(answer.promise, "First."), fauxAssistantMessage("Both.")]);
     const session = instance.session((await instance.createSession()).id);
     const live = follow(session);
 
     await session.submit({ text: "A", requestId: "a" });
     await eventually(() => faux.state.callCount === 1);
-    // No tool round comes before the answer: both wait for it, and the boundary after it places both.
     await session.submit({ text: "Then this", requestId: "f" });
     await session.submit({ text: "And this", requestId: "s", whenBusy: "steer" });
     await live.until((items) => queues(items).length === 2);
-    answer.open();
+    answer.resolve();
     const items = await live.until((read) => runEnds(read) === 2);
 
     expect(settledTypes(items)).toEqual([
@@ -338,7 +323,6 @@ describe("the queue", () => {
 
     expect(await session.withdraw(b.submissionId)).toEqual({ outcome: "withdrawn" });
     expect(await session.withdraw(b.submissionId)).toEqual({ outcome: "settled" });
-    // A run has it: too late to take back.
     expect(await session.withdraw(a.submissionId)).toEqual({ outcome: "already_placed" });
     hold.release(1);
     const items = await live.until((read) => runEnds(read) === 2);
@@ -428,13 +412,12 @@ describe("a run with a steer, taken up by another process", () => {
     await session.submit({ text: "This way", requestId: "s", whenBusy: "steer" });
     hold.release(1);
     await hold.started(2);
-    // The process goes down in the round after the steer.
     await before.close();
     hold.release(2);
 
     const second = fauxModels();
-    const answer = gate();
-    second.faux.setResponses([answerAfter(answer.opened, "Done.")]);
+    const answer = deferred();
+    second.faux.setResponses([answerAfter(answer.promise, "Done.")]);
     runtime = createAgentRuntime({
       agents: [agent],
       host: durableMemoryHost(place),
@@ -446,7 +429,7 @@ describe("a run with a steer, taken up by another process", () => {
     const live = follow(again);
     await eventually(() => second.faux.state.callCount === 1);
     await live.until((items) => users(items).length === 2);
-    answer.open();
+    answer.resolve();
     const items = await live.until((read) => runEnds(read) === 1);
     await live.stop();
 

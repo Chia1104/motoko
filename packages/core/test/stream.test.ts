@@ -16,7 +16,7 @@ import { createAgentRuntime, defineAgent, defineTool } from "../src/index.ts";
 import type { AgentHost, AgentRuntime } from "../src/index.ts";
 import { toolJsonSchema, omitOfferedNulls } from "../src/json-schema.ts";
 
-import { isRunEnd, memoryHost, readUntil } from "./helpers.ts";
+import { eventually, isRunEnd, memoryHost, readUntil } from "./helpers.ts";
 
 const chat = defineAgent({ kind: "chat", instructions: "Chat.", tools: [] });
 
@@ -58,7 +58,6 @@ describe("streaming", () => {
       { kind: "user", text: "Talk" },
       { kind: "assistant", text, thinking: "Let me think.", streaming: false },
     ]);
-    // Without the stream events, the stored ones alone give the same view.
     const stored = events.filter((event) => event.type !== "assistant:start" && event.type !== "assistant:delta");
     expect(foldEvents(stored)).toEqual(view);
   });
@@ -93,12 +92,10 @@ describe("an alarm host", () => {
     const { id } = await instance.createSession();
     const before = armed.length;
     await instance.session(id).submit({ text: "x", requestId: "x" });
-    // Armed active before the submit could start work.
     expect(armed[before]).toMatchObject({ active: true });
     await readUntil(instance.session(id), isRunEnd);
     await instance.resume();
-    // pi-durable's own wake reports reach the host too, ending idle.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await eventually(() => armed.at(-1)?.active === false);
     expect(armed.at(-1)).toEqual({ active: false });
   });
 });
@@ -152,7 +149,7 @@ describe("tool progress", () => {
       async execute(_args, { output, update }) {
         output("compiling...\n");
         await update({ step: 1 });
-        // Progress is committed on a throttle; give it time to land before the result does.
+        // Progress is committed on a throttle, so give it time to be committed before the result is.
         await new Promise((resolve) => setTimeout(resolve, 250));
         return { text: "built", details: { step: 2 } };
       },
@@ -177,7 +174,6 @@ describe("tool progress", () => {
     const events = items.map((item) => item.event);
     const updates = events.filter((event) => event.type === "tool:update");
     expect(updates.length).toBeGreaterThan(0);
-    // Each update carries what changed since the last; folded, they give the running state.
     expect(updates.every((event) => event.toolCallId === "b-1")).toBe(true);
     expect(updates.some((event) => event.output === "compiling...\n")).toBe(true);
     expect(updates.some((event) => JSON.stringify(event.details) === JSON.stringify({ step: 1 }))).toBe(true);
