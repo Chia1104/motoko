@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isJsonValue } from "@earendil-works/chord/json";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { configure, ConversationBusy, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import type {
@@ -7,6 +8,7 @@ import type {
   Conversation,
   ConversationId,
   HarnessOptions,
+  JsonObject,
   ModelRef,
   Registry,
   Report,
@@ -30,6 +32,7 @@ import type { Courier, CourierTiming, DeliverReply, ReplyFailure } from "./engin
 import { agentExtensions } from "./engine/bind.ts";
 import { appExtensions } from "./engine/extensions.ts";
 import type { AppExtensions, ExtensionsResolver } from "./engine/extensions.ts";
+import { inputEntry } from "./engine/inputs.ts";
 import { InstanceLifecycle } from "./engine/lifecycle.ts";
 import type { Clock, InstanceInspection, InstanceState } from "./engine/lifecycle.ts";
 import { ModelAccess } from "./engine/models.ts";
@@ -38,7 +41,7 @@ import { applyReply } from "./engine/replies.ts";
 import type { ReplyInput, ReplyResult } from "./engine/replies.ts";
 import { selectedTools, SessionsDoc, storedRule, withChildren } from "./engine/sessions.ts";
 import type { ApprovalRule, SessionRecord, ToolSelection } from "./engine/sessions.ts";
-import { ContinueEntry, STEER_ENTRY } from "./engine/transcriber.ts";
+import { ContinueEntry } from "./engine/transcriber.ts";
 import type { ToolInfo } from "./engine/transcriber.ts";
 import { SessionWatch } from "./engine/watch.ts";
 import {
@@ -281,6 +284,11 @@ export interface SubmitInput {
    * runtime's `deliverReply`, tried again until it lands. An ask always queues.
    */
   readonly replyTo?: ReplyAddress;
+  /**
+   * Stored as it is on the input's entry, for the app's hooks to read back with `runInputs`, such as context a
+   * `beforeRequest` hook puts after the input in each request. A JSON object; an ask takes none.
+   */
+  readonly metadata?: JsonObject;
 }
 
 export interface SubmitResult {
@@ -508,6 +516,14 @@ const systemClock: Clock = {
     return () => clearTimeout(handle);
   },
 };
+
+/** Why `submit` refuses an input's `metadata`, if it does. */
+function refusedMetadata({ metadata, replyTo }: SubmitInput): string | undefined {
+  if (metadata === undefined) return undefined;
+  if (replyTo !== undefined) return "An ask takes no `metadata`";
+  const object = typeof metadata === "object" && metadata !== null && !Array.isArray(metadata);
+  return object && isJsonValue(metadata) ? undefined : "`metadata` is not a JSON object";
+}
 
 class Instance implements AgentInstance {
   readonly scope: StorageScope;
@@ -1078,10 +1094,8 @@ class Instance implements AgentInstance {
 
   submit(sessionId: string, input: SubmitInput): Promise<SubmitResult> {
     const { replyTo } = input;
-    if (replyTo !== undefined) {
-      const refused = this.#refusedAsk(input);
-      if (refused !== undefined) return Promise.reject(new InvalidRequestError(refused));
-    }
+    const refused = refusedMetadata(input) ?? (replyTo === undefined ? undefined : this.#refusedAsk(input));
+    if (refused !== undefined) return Promise.reject(new InvalidRequestError(refused));
     return this.#lifecycle.run(async (opened) => {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
@@ -1097,14 +1111,16 @@ class Instance implements AgentInstance {
             };
           }
           try {
+            const entry = inputEntry(input.whenBusy === "steer", input.metadata);
             // pi's `followUp`, its default, is what `queue` asks for; a steer to an idle session starts a run.
             const submission = await conversation.submit(
               {
                 type: "input",
                 content: input.text,
                 requestId: input.requestId,
-                ...(input.whenBusy === "steer" && { whenBusy: "steer" as const, entry: { kind: STEER_ENTRY } }),
+                ...(input.whenBusy === "steer" && { whenBusy: "steer" as const }),
                 ...(input.whenBusy === "reject" && { whenBusy: "reject" as const }),
+                ...(entry !== undefined && { entry }),
               },
               context,
             );
