@@ -157,4 +157,23 @@ describe("recover", () => {
     const { runtime: listing } = setup(recordingHost(memoryPlace()).host);
     await expect(listing.recover({ concurrency: 0 })).rejects.toBeInstanceOf(TypeError);
   });
+
+  it("opens each scope once from a host whose iterator takes no call of next() before the last one settled", async () => {
+    const names = ["a", "b", "c", "d", "e", "f"];
+    let index = 0;
+    const scopes: AsyncIterator<StorageScope> = {
+      async next() {
+        const at = index;
+        await Promise.resolve();
+        index = at + 1;
+        const name = names[at];
+        return name === undefined ? { done: true, value: undefined } : { done: false, value: { kind: "worker", name } };
+      },
+    };
+    const host: AgentHost = { ...durableMemoryHost(), unfinished: () => ({ [Symbol.asyncIterator]: () => scopes }) };
+    const { runtime } = setup(host);
+    const result = await runtime.recover();
+    expect(result.opened.map(({ name }) => name).sort()).toEqual(names);
+    expect(result.failed).toEqual([]);
+  });
 });
