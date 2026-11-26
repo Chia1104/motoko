@@ -55,6 +55,7 @@ import {
 import { assertScope, scopeKey } from "./host.ts";
 import type { AgentHost, HostWake, Lease, StorageScope } from "./host.ts";
 import { idFromNumber } from "./ids.ts";
+import { serialPulls } from "./serial-pulls.ts";
 import type { PortsResolver, PortsTarget } from "./tool.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -1379,7 +1380,7 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
       }
       const result = { opened: [] as StorageScope[], held: [] as StorageScope[], unknown: [] as StorageScope[] };
       const failed: { scope: StorageScope; error: unknown }[] = [];
-      const scopes = host.unfinished()[Symbol.asyncIterator]();
+      const scopes = serialPulls(host.unfinished()[Symbol.asyncIterator]());
       const work = async () => {
         for (;;) {
           const next = await scopes.next();
