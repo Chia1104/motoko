@@ -371,22 +371,25 @@ interface ScopeCounters {
   readonly leaseToken: number;
 }
 
+type CurrentDocument = { readonly exists: false } | { readonly exists: true; readonly id: number };
+const NO_CURRENT_DOCUMENT: CurrentDocument = { exists: false };
+
 class CommitState {
   readonly #recordIds: Map<number, RecordTable>;
   readonly #documents: Map<number, DocumentRecord>;
   readonly #versions: Map<number, number>;
-  readonly #current: Map<string, number | undefined>;
+  readonly #createdAddresses: Map<string, CurrentDocument>;
 
   private constructor(
     recordIds: Map<number, RecordTable>,
     documents: Map<number, DocumentRecord>,
     versions: Map<number, number>,
-    current: Map<string, number | undefined>,
+    createdAddresses: Map<string, CurrentDocument>,
   ) {
     this.#recordIds = recordIds;
     this.#documents = documents;
     this.#versions = versions;
-    this.#current = current;
+    this.#createdAddresses = createdAddresses;
   }
 
   static async read(
@@ -432,15 +435,15 @@ class CommitState {
       () => port.read(query),
     );
     if (row === undefined) return undefined;
-    const current = new Map<string, number | undefined>();
-    for (const key of addresses.keys()) current.set(key, undefined);
-    for (const [document, address] of row.current) current.set(partsKey(address), document);
+    const createdAddresses = new Map<string, CurrentDocument>();
+    for (const key of addresses.keys()) createdAddresses.set(key, NO_CURRENT_DOCUMENT);
+    for (const [id, address] of row.current) createdAddresses.set(partsKey(address), { exists: true, id });
     return {
       state: new CommitState(
         new Map(row.claims),
         new Map(row.documents.map((record) => [record.id, record])),
         new Map(row.versions),
-        current,
+        createdAddresses,
       ),
       counters: { nextId: row.nextId, nextSeq: row.nextSeq, leaseToken: row.leaseToken },
     };
@@ -472,12 +475,13 @@ class CommitState {
           ...(action.retire ? { retiredAt: seq } : {}),
         } as DocumentRecord;
         this.#documents.set(id, record);
-        if (!action.retire) this.#current.set(addressKey(record), id);
+        if (!action.retire) this.#createdAddresses.set(addressKey(record), { exists: true, id });
       } else if (action.retire) {
         const record = { ...this.#documents.get(id), retiredAt: seq } as DocumentRecord;
         this.#documents.set(id, record);
         const key = addressKey(record);
-        if (this.#current.get(key) === id) this.#current.set(key, undefined);
+        const current = this.#createdAddresses.get(key);
+        if (current?.exists === true && current.id === id) this.#createdAddresses.set(key, NO_CURRENT_DOCUMENT);
       }
       if (action.content !== undefined) this.#versions.set(id, action.content.version);
       records.set(id, this.#documents.get(id) as DocumentRecord);
@@ -521,8 +525,9 @@ class CommitState {
       }
       if (action.create === undefined && !action.retire) continue;
       const key = addressKey((action.create as DocumentRecord | undefined) ?? (existing as DocumentRecord));
-      let live = liveCounts.get(key);
-      if (live === undefined) live = this.#current.get(key) === undefined ? 0 : 1;
+      const current = this.#createdAddresses.get(key);
+      if (current === undefined) continue;
+      let live = liveCounts.get(key) ?? (current.exists ? 1 : 0);
       if (action.retire && existing !== undefined) live--;
       if (action.create !== undefined && !action.retire) live++;
       liveCounts.set(key, live);

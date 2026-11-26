@@ -57,6 +57,37 @@ export function materializeDocument(rows: DocumentRows, id: number, at: Document
   return { record, version: base.version, value, deltasSinceBase: tail.length };
 }
 
+interface ReadSnapshot {
+  isStillValid(): boolean;
+}
+
+const NEVER_VALID: ReadSnapshot = { isStillValid: () => false };
+
+class Commits {
+  readonly #lease: FencedLease;
+  #started = 0;
+  #running = 0;
+
+  constructor(lease: FencedLease) {
+    this.#lease = lease;
+  }
+
+  start(): void {
+    this.#started++;
+    this.#running++;
+  }
+
+  end(): void {
+    this.#running--;
+  }
+
+  snapshot(): ReadSnapshot {
+    if (this.#running > 0) return NEVER_VALID;
+    const started = this.#started;
+    return { isStillValid: () => this.#started === started && !this.#lease.signal.aborted };
+  }
+}
+
 export interface StorageShellOptions {
   /** The storage's class name, as the error of a call after `close()` names it. */
   readonly name: string;
@@ -85,10 +116,9 @@ export class StorageShell {
   #closing: Promise<void> | undefined;
   #active = 0;
   #drained: (() => void) | undefined;
-  #commitEpoch = 0;
-  #committing = 0;
-  readonly #prefetched = new Map<string, { readonly rows: DocumentRows; readonly epoch: number }>();
-  readonly #absent = new Map<string, number>();
+  readonly #commits: Commits;
+  readonly #prefetched = new Map<string, { readonly rows: DocumentRows; readonly snapshot: ReadSnapshot }>();
+  readonly #absent = new Map<string, ReadSnapshot>();
 
   constructor(options: StorageShellOptions) {
     this.#name = options.name;
@@ -96,6 +126,7 @@ export class StorageShell {
     this.#attempts = options.attempts;
     this.#port = options.port;
     this.#nextId = options.nextId;
+    this.#commits = new Commits(options.lease);
   }
 
   /**
@@ -108,8 +139,7 @@ export class StorageShell {
     receive: (index: number, seq: Seq) => void,
   ): Promise<CommitResult> {
     return this.#admit(async () => {
-      this.#committing++;
-      this.#commitEpoch++;
+      this.#commits.start();
       this.#prefetched.clear();
       this.#absent.clear();
       try {
@@ -124,8 +154,7 @@ export class StorageShell {
         for (const [index, seq] of seqs.entries()) receive(index, seq);
         return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
       } finally {
-        this.#committing--;
-        this.#commitEpoch++;
+        this.#commits.end();
       }
     });
   }
@@ -157,16 +186,16 @@ export class StorageShell {
   ): Promise<DocumentRecord | undefined> {
     return this.read(async () => {
       const absentKey = at === "current" ? addressKey(address) : undefined;
-      if (absentKey !== undefined && this.#reusable(this.#absent.get(absentKey))) return undefined;
-      const epoch = this.#committing === 0 ? this.#commitEpoch : undefined;
+      if (absentKey !== undefined && this.#absent.get(absentKey)?.isStillValid() === true) return undefined;
+      const snapshot = this.#commits.snapshot();
       const rows = await find();
-      const fresh = epoch !== undefined && epoch === this.#commitEpoch;
+      const fresh = snapshot.isStillValid();
       if (rows?.record === undefined) {
-        if (fresh && absentKey !== undefined) this.#remember(this.#absent, absentKey, epoch);
+        if (fresh && absentKey !== undefined) this.#remember(this.#absent, absentKey, snapshot);
         return undefined;
       }
       const record = parseJson<DocumentRecord>(rows.record);
-      if (fresh) this.#remember(this.#prefetched, `${record.id}@${at}`, { rows, epoch });
+      if (fresh) this.#remember(this.#prefetched, `${record.id}@${at}`, { rows, snapshot });
       return record;
     });
   }
@@ -177,8 +206,7 @@ export class StorageShell {
       const key = `${id}@${at}`;
       const prefetched = this.#prefetched.get(key);
       this.#prefetched.delete(key);
-      if (prefetched !== undefined && this.#reusable(prefetched.epoch))
-        return materializeDocument(prefetched.rows, id, at);
+      if (prefetched?.snapshot.isStillValid() === true) return materializeDocument(prefetched.rows, id, at);
       return materializeDocument(await read(), id, at);
     });
   }
@@ -195,10 +223,6 @@ export class StorageShell {
             });
     }
     return this.#closing;
-  }
-
-  #reusable(epoch: number | undefined): boolean {
-    return epoch !== undefined && epoch === this.#commitEpoch && this.#committing === 0 && !this.#lease.signal.aborted;
   }
 
   #remember<V>(map: Map<string, V>, key: string, value: V): void {
