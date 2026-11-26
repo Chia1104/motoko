@@ -213,21 +213,54 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
       [future],
       [null],
       [...supported, null],
+      [...supported, ...supported],
+      supported.map((name) => name.toUpperCase()),
+      supported.map((name) => `${name} `),
     ];
-    for (const journal of journals) {
-      await pool.query(`DELETE FROM ${MIGRATIONS_TABLE}`);
-      for (const name of journal) {
-        await pool.query(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, ?)`, [name]);
+    // The journal's `name` column takes the database's default collation. MySQL 8 defaults to `utf8mb4_0900_ai_ci`, and
+    // a database created before 8.0 to `latin1_swedish_ci`, which also ignores trailing spaces.
+    for (const collation of ["utf8mb4_0900_ai_ci", "latin1_swedish_ci"]) {
+      await pool.query(`ALTER TABLE ${MIGRATIONS_TABLE} MODIFY name TEXT COLLATE ${collation}`);
+      for (const journal of journals) {
+        await pool.query(`DELETE FROM ${MIGRATIONS_TABLE}`);
+        for (const name of journal) {
+          await pool.query(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, ?)`, [name]);
+        }
+        const [row] = await rowsOf<{ applied: string[] | null; current: unknown }>(
+          db,
+          sql`SELECT ${journalCheck.applied} AS applied, ${journalCheck.current} AS current`,
+        );
+        expect({ collation, journal, current: Number(row?.current) === 1 }).toEqual({
+          collation,
+          journal,
+          current: stateOf(row?.applied ?? [], supported) === "current",
+        });
       }
-      const [row] = await rowsOf<{ applied: string[] | null; current: unknown }>(
-        db,
-        sql`SELECT ${journalCheck.applied} AS applied, ${journalCheck.current} AS current`,
-      );
-      expect({ journal, current: Number(row?.current) === 1 }).toEqual({
-        journal,
-        current: stateOf(row?.applied ?? [], supported) === "current",
-      });
     }
+  });
+
+  it("leases a free scope while the journal holds a shipped migration twice", async () => {
+    await migrate(pool);
+    await pool.query(
+      `INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) SELECT hash, created_at, name FROM ${MIGRATIONS_TABLE}`,
+    );
+    const store = createMysqlStore(pool);
+    const lease = await store.lease(scope);
+    expect(lease.token).toBe(1);
+    const storage = await store.storage(scope, lease);
+    expect(await storage.mintId()).toBe(2);
+    await lease.release();
+  });
+
+  it("refuses a journal that names the shipped migrations in another case, leaving the scope free", async () => {
+    await migrate(pool);
+    await pool.query(`UPDATE ${MIGRATIONS_TABLE} SET name = UPPER(name)`);
+    const store = createMysqlStore(pool);
+    expect((await refusal(store.lease(scope))).state).toBe("newer");
+    await pool.query(`UPDATE ${MIGRATIONS_TABLE} SET name = LOWER(name)`);
+    const lease = await store.lease(scope);
+    expect(lease.token).toBe(1);
+    await lease.release();
   });
 
   it("migrates a fresh database with migrate(), serializing concurrent calls", async () => {

@@ -176,6 +176,9 @@ describe("migrations and the version check on PGlite", () => {
       [future],
       [null],
       [...supported, null],
+      [...supported, ...supported],
+      supported.map((name) => name.toUpperCase()),
+      supported.map((name) => `${name} `),
     ];
     for (const journal of journals) {
       await pglite.query(`DELETE FROM ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE}`);
