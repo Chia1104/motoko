@@ -108,7 +108,7 @@ async function delegateResult(
 
 function toDelegate(
   tool: DelegateDefinition,
-  extensions: ReadonlyMap<string, Extension>,
+  extensionOf: (agent: AgentDefinition) => Extension,
   app: () => AppExtensions,
 ): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
@@ -135,7 +135,7 @@ function toDelegate(
         // The child starts as a copy of its parent's agent. It takes the sub-agent's extension after the app's
         // extensions that select the sub-agent, all of the sub-agent's tools, and its model when it names one.
         await configure(tx, id, {
-          extensions: app().selectionOf(agent.kind, extensions.get(agent.kind)!),
+          extensions: app().selectionOf(agent.kind, extensionOf(agent)),
           tools: null,
           ...(agent.model !== undefined && { model: agent.model }),
         });
@@ -245,32 +245,37 @@ function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFail
   });
 }
 
-export function agentExtensions(
-  agents: ReadonlyMap<string, AgentDefinition>,
-  options: BindOptions,
-): ReadonlyMap<string, Extension> {
+export interface AgentExtensions {
+  readonly own: Extension;
+  readonly subAgents: readonly Extension[];
+}
+
+export function agentExtensions(root: AgentDefinition, options: BindOptions): AgentExtensions {
   const extensions = new Map<string, Extension>();
-  for (const agent of agents.values()) {
-    extensions.set(
-      agent.kind,
-      defineExtension({
-        name: extensionName(agent),
-        tools: agent.tools.map((tool) => {
-          switch (tool.kind) {
-            case "app":
-              return toPiTool(tool, options);
-            case "delegate":
-              return toDelegate(tool, extensions, options.app);
-            case "deferred":
-              return toDeferred(tool, options);
-          }
-        }),
-        sections: [section("agent", () => agent.instructions, { tag: false })],
-        hooks: [
-          approvalGate(agent, (name) => options.app().catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
-        ],
+  const extensionOf = (agent: AgentDefinition): Extension => {
+    const known = extensions.get(agent.kind);
+    if (known !== undefined) return known;
+    const extension = defineExtension({
+      name: extensionName(agent),
+      tools: agent.tools.map((tool) => {
+        switch (tool.kind) {
+          case "app":
+            return toPiTool(tool, options);
+          case "delegate":
+            return toDelegate(tool, extensionOf, options.app);
+          case "deferred":
+            return toDeferred(tool, options);
+        }
       }),
-    );
-  }
-  return extensions;
+      sections: [section("agent", () => agent.instructions, { tag: false })],
+      hooks: [
+        approvalGate(agent, (name) => options.app().catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
+      ],
+    });
+    extensions.set(agent.kind, extension);
+    for (const tool of agent.tools) if (tool.kind === "delegate") extensionOf(tool.agent);
+    return extension;
+  };
+  const own = extensionOf(root);
+  return { own, subAgents: [...extensions.values()].filter((extension) => extension !== own) };
 }

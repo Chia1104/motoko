@@ -7,6 +7,7 @@ import type {
   BlockedReason,
   Conversation,
   ConversationId,
+  Extension,
   HarnessOptions,
   JsonObject,
   ModelRef,
@@ -514,6 +515,16 @@ function refusedMetadata({ metadata, replyTo }: SubmitInput): string | undefined
   return object && isJsonValue(metadata) ? undefined : "`metadata` is not a JSON object";
 }
 
+function assertInstallable(registry: Registry, app: AppExtensions): void {
+  const trial = createRegistry();
+  for (const extension of [...registry.snapshot().installed(), ...app.installed]) trial.install(extension);
+}
+
+function makeCurrentThenInstall(opened: Opened, app: AppExtensions): void {
+  opened.app.current = app;
+  for (const extension of app.installed) opened.registry.install(extension);
+}
+
 class Instance implements AgentInstance {
   readonly scope: StorageScope;
   readonly agent: AgentDefinition;
@@ -613,69 +624,21 @@ class Instance implements AgentInstance {
     let storage: Storage | undefined;
     let harness: Harness | undefined;
     try {
-      if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
+      this.#throwIfLeaseLost(lease);
       storage = await host.storage(this.scope, lease);
-      const options = this.#options;
-      let models: ModelAccess | undefined;
-      let harnessModels: HarnessOptions["models"];
-      if (options.modelsFor === undefined) {
-        harnessModels = options.models;
-      } else {
-        models = new ModelAccess(this.scope, options.modelsFor, (error) => this.#runtimeReport("models_failed", error));
-        harnessModels = models.get;
-      }
-      await models?.refresh();
+      const models = await this.#resolveModels();
       const app = { current: await this.#appExtensions() };
-      const registry = createRegistry();
-      const extensions = agentExtensions(this.#agents, {
-        scope: this.scope,
-        ports: this.#portsOf,
-        portsFailed: this.#portsFailed,
-        app: () => app.current,
-        nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
-      });
-      for (const extension of extensions.values()) registry.install(extension);
-      for (const extension of app.current.installed) registry.install(extension);
-      const { courier, extension: asks } = askCourier({
-        deliver: this.#options.deliverReply,
-        timing: this.#courierTiming,
-        failed: (failure) => this.#report({ source: "runtime", scope: this.scope, kind: "reply_failed", ...failure }),
-      });
-      registry.install(asks);
-      const own = extensions.get(this.agent.kind)!;
-      const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
-      const appSettings = this.#options.settings;
-      const telemetry = this.#options.telemetryFor?.(this.scope);
-      const env = this.#options.envFor?.(this.scope);
-      const { wake } = host;
-      harness = await Harness.open(
-        storage,
-        {
-          ...(telemetry !== undefined && { telemetry }),
-          ...(env !== undefined && { env }),
-          models: harnessModels,
-          registry,
-          settings: () => ({
-            ...(typeof appSettings === "function" ? appSettings() : appSettings),
-            extensions: app.current.selectionOf(this.agent.kind, own),
-          }),
-          onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
-          ...(wake.kind === "alarm" && {
-            onWake: (state) => {
-              if (detach.signal.aborted) return;
-              this.#arm(wake, state).catch((error: unknown) => this.#runtimeReport("arm_failed", error));
-            },
-          }),
-        },
-        context,
-      );
+      const { registry, own, courier } = this.#buildRegistry(app);
+      const selection = () => app.current.selectionOf(this.agent.kind, own);
+      harness = await this.#openHarness(storage, models.forHarness, registry, selection, detach.signal);
+      this.#throwIfEndedBeforeWriting();
       const opened: Opened = {
         harness,
         storage,
         lease,
-        models,
+        models: models.access,
         detach,
-        tools,
+        tools: new Map((own.tools ?? []).map((tool) => [tool.name, tool])),
         registry,
         app,
         refreshing: Promise.resolve(),
@@ -683,63 +646,9 @@ class Instance implements AgentInstance {
         sessions: undefined,
         failed: false,
       };
-      const ended = this.#lifecycle.ended;
-      if (ended !== undefined) throw new InstanceClosedError(this.scope, ended);
-      lease.signal.addEventListener("abort", () => void this.#lifecycle.end("lease_lost"), {
-        once: true,
-        signal: detach.signal,
-      });
-      void harness.closed.then((end) => {
-        if (end.kind !== "failed") return;
-        opened.failed = true;
-        if (!detach.signal.aborted) void this.#lifecycle.end("failed");
-      });
-      const blocked = new Set<TaskId>();
-      const reportBlocked = (graph: TaskGraph) => {
-        for (const task of Object.values(graph.tasks)) {
-          if (task.blocked === undefined || blocked.has(task.id)) continue;
-          blocked.add(task.id);
-          const report: InstanceReport = {
-            source: "runtime",
-            scope: this.scope,
-            kind: "task_blocked",
-            sessionId: String(task.conversationId),
-            taskKind: task.kind,
-            reason: task.blocked,
-          };
-          // An observer of the task graph only records, so the app's handler runs once the graph's change is adopted.
-          queueMicrotask(() => this.#report(report));
-        }
-      };
-      const graph = await harness.observeTaskGraph(
-        {
-          advance: (call) => {
-            this.#lifecycle.touch();
-            if (call.kind === "value") reportBlocked(call.value);
-          },
-          end: () => undefined,
-        },
-        context,
-      );
-      reportBlocked(graph.value);
-      const { tasks } = await harness.inspect(context);
-      const holds: (() => void)[] = [];
-      try {
-        const unfinished = new Set(tasks.flatMap((task) => task.record.conversationId ?? []));
-        if (unfinished.size > 0) await this.#readSessions(opened);
-        for (const id of unfinished) {
-          const conversation = await harness.conversation(id, context);
-          if (!conversation) continue;
-          const watch = this.#watchOf(opened, conversation);
-          holds.push(watch.hold());
-          await watch.ready;
-        }
-        if (wake.kind === "alarm") await this.#arm(wake, harness.wake());
-        if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
-        harness.resume();
-      } finally {
-        for (const release of holds) release();
-      }
+      this.#endOnLostLeaseOrFailedHarness(opened);
+      await this.#observeTaskGraph(harness);
+      await this.#whileFollowingUnfinishedSessions(opened, () => this.#resumeWhatTheLastWriterLeft(opened));
       return opened;
     } catch (error) {
       detach.abort();
@@ -749,6 +658,149 @@ class Instance implements AgentInstance {
       await lease.release().catch(() => undefined);
       throw error;
     }
+  }
+
+  #throwIfLeaseLost(lease: Lease): void {
+    if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
+  }
+
+  async #resolveModels(): Promise<{ readonly access?: ModelAccess; readonly forHarness: HarnessOptions["models"] }> {
+    const options = this.#options;
+    if (options.modelsFor === undefined) return { forHarness: options.models };
+    const access = new ModelAccess(this.scope, options.modelsFor, (error) =>
+      this.#runtimeReport("models_failed", error),
+    );
+    await access.refresh();
+    return { access, forHarness: access.get };
+  }
+
+  #buildRegistry(app: { readonly current: AppExtensions }): { registry: Registry; own: Extension; courier: Courier } {
+    const registry = createRegistry();
+    const { own, subAgents } = agentExtensions(this.agent, {
+      scope: this.scope,
+      ports: this.#portsOf,
+      portsFailed: this.#portsFailed,
+      app: () => app.current,
+      nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
+    });
+    for (const extension of [own, ...subAgents, ...app.current.installed]) registry.install(extension);
+    const { courier, extension: asks } = askCourier({
+      deliver: this.#options.deliverReply,
+      timing: this.#courierTiming,
+      failed: (failure) => this.#report({ source: "runtime", scope: this.scope, kind: "reply_failed", ...failure }),
+    });
+    registry.install(asks);
+    return { registry, own, courier };
+  }
+
+  #openHarness(
+    storage: Storage,
+    models: HarnessOptions["models"],
+    registry: Registry,
+    selection: () => readonly Extension[],
+    detach: AbortSignal,
+  ): Promise<Harness> {
+    const { settings, host } = this.#options;
+    const telemetry = this.#options.telemetryFor?.(this.scope);
+    const env = this.#options.envFor?.(this.scope);
+    const { wake } = host;
+    return Harness.open(
+      storage,
+      {
+        ...(telemetry !== undefined && { telemetry }),
+        ...(env !== undefined && { env }),
+        models,
+        registry,
+        settings: () => ({
+          ...(typeof settings === "function" ? settings() : settings),
+          extensions: selection(),
+        }),
+        onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
+        ...(wake.kind === "alarm" && {
+          onWake: (state) => {
+            if (detach.aborted) return;
+            this.#arm(wake, state).catch((error: unknown) => this.#runtimeReport("arm_failed", error));
+          },
+        }),
+      },
+      context,
+    );
+  }
+
+  #throwIfEndedBeforeWriting(): void {
+    const ended = this.#lifecycle.ended;
+    if (ended !== undefined) throw new InstanceClosedError(this.scope, ended);
+  }
+
+  #endOnLostLeaseOrFailedHarness(opened: Opened): void {
+    const { harness, lease, detach } = opened;
+    lease.signal.addEventListener("abort", () => void this.#lifecycle.end("lease_lost"), {
+      once: true,
+      signal: detach.signal,
+    });
+    void harness.closed.then((end) => {
+      if (end.kind !== "failed") return;
+      opened.failed = true;
+      if (!detach.signal.aborted) void this.#lifecycle.end("failed");
+    });
+  }
+
+  async #observeTaskGraph(harness: Harness): Promise<void> {
+    const blocked = new Set<TaskId>();
+    const reportBlocked = (graph: TaskGraph) => {
+      for (const task of Object.values(graph.tasks)) {
+        if (task.blocked === undefined || blocked.has(task.id)) continue;
+        blocked.add(task.id);
+        const report: InstanceReport = {
+          source: "runtime",
+          scope: this.scope,
+          kind: "task_blocked",
+          sessionId: String(task.conversationId),
+          taskKind: task.kind,
+          reason: task.blocked,
+        };
+        // An observer of the task graph only records, so the app's handler runs once the graph's change is adopted.
+        queueMicrotask(() => this.#report(report));
+      }
+    };
+    const graph = await harness.observeTaskGraph(
+      {
+        advance: (call) => {
+          this.#lifecycle.touch();
+          if (call.kind === "value") reportBlocked(call.value);
+        },
+        end: () => undefined,
+      },
+      context,
+    );
+    reportBlocked(graph.value);
+  }
+
+  async #whileFollowingUnfinishedSessions(opened: Opened, work: () => Promise<void>): Promise<void> {
+    const { harness } = opened;
+    const { tasks } = await harness.inspect(context);
+    const holds: (() => void)[] = [];
+    try {
+      const unfinished = new Set(tasks.flatMap((task) => task.record.conversationId ?? []));
+      if (unfinished.size > 0) await this.#readSessions(opened);
+      for (const id of unfinished) {
+        const conversation = await harness.conversation(id, context);
+        if (!conversation) continue;
+        const watch = this.#watchOf(opened, conversation);
+        holds.push(watch.hold());
+        await watch.ready;
+      }
+      await work();
+    } finally {
+      for (const release of holds) release();
+    }
+  }
+
+  async #resumeWhatTheLastWriterLeft({ harness, lease }: Opened): Promise<void> {
+    const { wake } = this.#options.host;
+    if (wake.kind === "alarm") await this.#arm(wake, harness.wake());
+    this.#throwIfLeaseLost(lease);
+    harness.resume();
   }
 
   async #release(opened: Opened): Promise<void> {
@@ -1002,11 +1054,8 @@ class Instance implements AgentInstance {
 
   async #refreshExtensions(opened: Opened): Promise<void> {
     const app = await this.#appExtensions();
-    const { registry } = opened;
-    const trial = createRegistry();
-    for (const extension of [...registry.snapshot().installed(), ...app.installed]) trial.install(extension);
-    opened.app.current = app;
-    for (const extension of app.installed) registry.install(extension);
+    assertInstallable(opened.registry, app);
+    makeCurrentThenInstall(opened, app);
   }
 
   async close(): Promise<void> {

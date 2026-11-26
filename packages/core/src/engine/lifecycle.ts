@@ -56,6 +56,8 @@ interface Open<T> {
   cancelIdle: (() => void) | undefined;
 }
 
+const openedDespiteTheEnd = <T>(opening: Promise<T>): Promise<T | undefined> => opening.catch(() => undefined);
+
 type Phase<T> =
   | { readonly kind: "dormant"; readonly sleep?: Sleep }
   | { readonly kind: "opening"; readonly opening: Promise<T> }
@@ -139,7 +141,7 @@ export class InstanceLifecycle<T> {
         opened = phase.opened;
         break;
       case "opening":
-        opened = await phase.opening.catch(() => undefined);
+        opened = await openedDespiteTheEnd(phase.opening);
         break;
       case "closing":
         await phase.closing;

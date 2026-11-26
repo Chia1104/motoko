@@ -134,15 +134,14 @@ async function conversationOf(
   const deleted: string[] = [];
   const registry = createRegistry();
   const installed = appOf(agent, app);
-  const extensions = agentExtensions(new Map([[agent.kind, agent]]), {
+  const { own } = agentExtensions(agent, {
     scope: { kind: agent.kind, name: "a" },
     ports: () => ({ deleted }),
     portsFailed: () => undefined,
     app: () => installed,
     nestedApprovalTimeoutMs,
   });
-  for (const extension of [...more, ...app.map(({ extension }) => extension)]) registry.install(extension);
-  for (const extension of extensions.values()) registry.install(extension);
+  for (const extension of [...more, ...app.map(({ extension }) => extension), own]) registry.install(extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
   harnesses.push(harness);
   const conversation = await harness.createConversation(

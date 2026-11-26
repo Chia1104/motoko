@@ -400,10 +400,10 @@ export class Transcriber {
     return this.#collect(() => {
       this.#entries(rest, decisions, endings);
       this.#at(to);
-      this.#compactionState(live);
-      this.#resync(live, decisions, calls, gateArgs);
-      this.#queueState(view);
-      this.#wrapupState(live);
+      this.#aroundRunEnd(live, () => {
+        this.#resync(live, decisions, calls, gateArgs);
+        this.#queueState(view);
+      });
     });
   }
 
@@ -440,9 +440,9 @@ export class Transcriber {
       this.#slots(before?.tools, now?.tools, decisions, calls, gateArgs);
       this.#nested(now, decisions, calls, gateArgs);
       this.#queueState(next);
-      this.#compactionState(now);
-      if (answering(now) === undefined && this.#inRun) this.#endRun(decisions, failure);
-      this.#wrapupState(now);
+      this.#aroundRunEnd(now, () => {
+        if (answering(now) === undefined && this.#inRun) this.#endRun(decisions, failure);
+      });
       this.#at(newestOf(next));
     });
   }
@@ -817,6 +817,12 @@ export class Transcriber {
       ...(output !== undefined && { output }),
       ...(details !== undefined && { details }),
     });
+  }
+
+  #aroundRunEnd(live: LiveState | undefined, mayEndRun: () => void) {
+    this.#compactionState(live);
+    mayEndRun();
+    this.#wrapupState(live);
   }
 
   #compactionState(live: LiveState | undefined) {
