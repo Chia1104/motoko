@@ -22,6 +22,8 @@ import {
   unique,
 } from "drizzle-orm/pg-core";
 
+import { hasUnfinishedWork } from "./expressions.ts";
+
 /** The Postgres schema the runtime's tables live in. */
 export const runtimeSchema = pgSchema("agent_runtime");
 
@@ -60,9 +62,7 @@ export const scopes = runtimeSchema.table(
   },
   (t) => [
     unique("scopes_kind_name").on(t.kind, t.name),
-    index("scopes_unfinished")
-      .on(t.scopeId)
-      .where(sql`${t.wakeActive} OR ${t.wakeAt} IS NOT NULL OR ${t.leaseHolder} IS NOT NULL`),
+    index("scopes_unfinished").on(t.scopeId).where(hasUnfinishedWork(t)),
   ],
 );
 

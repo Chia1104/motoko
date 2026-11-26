@@ -59,7 +59,8 @@ export function sqlKind(text: string): string | undefined {
 
 const FRAME = /^\s*at (?:async )?(?:(.*?) \()?(.*?):(\d+):\d+\)?$/;
 
-const PLUMBING = /\/pi-durable\/dist\/session\/(cached-storage|session|keys|transaction|writer|line)\.js$/;
+const PLUMBING =
+  /\/pi-durable\/dist\/session\/(cached-storage|conversation-tails|keys|session|transaction|writer)\.js$/;
 
 function frames(stack: string | undefined): { fn: string; file: string; row: string }[] {
   const list: { fn: string; file: string; row: string }[] = [];

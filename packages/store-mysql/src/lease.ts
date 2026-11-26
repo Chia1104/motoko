@@ -5,14 +5,14 @@
 import type { Wake } from "@earendil-works/pi-durable";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import type { ResultSetHeader } from "mysql2";
 
 import type { StorageScope } from "@chia1104/motoko-core";
 import { toNumber } from "@chia1104/motoko-core/store";
 import type { LeaseHolder, LeaseRow, Renewal } from "@chia1104/motoko-core/store";
 
-import { epochMs, expiryIn, freshNonce, now, packet, rowsOf, run, scopeKey } from "./database.ts";
+import { epochMs, expiryIn, fencedTransaction, now, rowsOf, run } from "./database.ts";
 import type { Database, PoolDatabase } from "./database.ts";
+import { scopeKeyOf } from "./expressions.ts";
 import { journalCheck, missingOrOlderSchemaAsVersionError } from "./migrations.ts";
 import { scopes } from "./schema.ts";
 
@@ -40,16 +40,15 @@ export async function acquireLease(
   holder: string,
   ttlMs: number,
 ): Promise<LeaseRow | LeaseHolder> {
-  const nonce = freshNonce();
   const free = sql`(${scopes.leaseExpiresAt} IS NULL OR ${scopes.leaseExpiresAt} <= ${now})`;
   // MySQL assigns these in order, and each sees the ones before it. So the expiry, which `free` reads, goes last.
   const takeIfFree = (column: string, taken: SQL) =>
     sql`${sql.identifier(column)} = IF(${free}, ${taken}, ${scopes}.${sql.identifier(column)})`;
-  const [, [row]] = (await missingOrOlderSchemaAsVersionError(db, () =>
-    packet(db, [
-      sql`INSERT INTO ${scopes} (kind, name, lease_token, lease_holder, lease_expires_at, commit_nonce)
+  const row = await missingOrOlderSchemaAsVersionError(db, () =>
+    fencedTransaction<AcquiredRow>(db, (nonce) => ({
+      stamp: sql`INSERT INTO ${scopes} (kind, name, lease_token, lease_holder, lease_expires_at, commit_nonce)
         SELECT * FROM (SELECT ${scope.kind} AS kind, ${scope.name} AS name, 1 AS lease_token,
-            ${holder} AS lease_holder, ${expiryIn(ttlMs)} AS lease_expires_at, ${nonce} AS commit_nonce) AS a
+            ${holder} AS lease_holder, ${expiryIn(ttlMs)} AS lease_expires_at, ${nonce.value} AS commit_nonce) AS a
           WHERE ${journalCheck.current}
         ON DUPLICATE KEY UPDATE ${sql.join(
           [
@@ -60,11 +59,11 @@ export async function acquireLease(
           ],
           sql`, `,
         )}`,
-      sql`SELECT ${journalCheck.applied} AS applied, s.scope_id, s.lease_token, s.lease_holder AS holder,
-          ${epochMs(sql`s.lease_expires_at`)} AS expires_ms, s.commit_nonce = ${nonce} AS taken
-        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_key = ${scopeKey(scope.kind, scope.name)}`,
-    ]),
-  )) as [ResultSetHeader, [AcquiredRow]];
+      outcome: sql`SELECT ${journalCheck.applied} AS applied, s.scope_id, s.lease_token, s.lease_holder AS holder,
+          ${epochMs(sql`s.lease_expires_at`)} AS expires_ms, s.commit_nonce = ${nonce.value} AS taken
+        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_key = ${scopeKeyOf(scope.kind, scope.name)}`,
+    })),
+  );
   journalCheck.assertCurrent(row.applied);
   if (Number(row.taken) === 1) return { scopeId: toNumber(row.scope_id), token: toNumber(row.lease_token) };
   return {

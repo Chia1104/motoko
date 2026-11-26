@@ -11,11 +11,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryId, StorageWrite, TaskId } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import type { Pool } from "mysql2/promise";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { rowsOf } from "../src/database.ts";
 import {
   checkSchema,
   createMysqlStore,
@@ -25,7 +26,7 @@ import {
   SchemaVersionError,
   supportedMigrations,
 } from "../src/index.ts";
-import { stateOf } from "../src/migrations.ts";
+import { journalCheck, stateOf } from "../src/migrations.ts";
 import { scopes } from "../src/schema.ts";
 
 import { MYSQL_URL, mysqlBackend, newPool, temporaryDatabase, uniqueName } from "./helpers.ts";
@@ -195,6 +196,38 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
     expect((await refusal(migrate(pool))).state).toBe("newer");
     const [rows] = await pool.query(`SELECT COUNT(*) AS n FROM ${MIGRATIONS_TABLE}`);
     expect((rows as { n: number }[])[0]?.n).toBe(supportedMigrations().length + 1);
+  });
+
+  it("lets a statement write exactly when the journal it read is current", async () => {
+    await migrate(pool);
+    const db = drizzle({ client: pool });
+    const supported = supportedMigrations();
+    const future = "29991231000000_from_the_future";
+    const journals: readonly (readonly (string | null)[])[] = [
+      [],
+      supported,
+      [...supported].reverse(),
+      supported.slice(0, -1),
+      supported.slice(1),
+      [...supported, future],
+      [future],
+      [null],
+      [...supported, null],
+    ];
+    for (const journal of journals) {
+      await pool.query(`DELETE FROM ${MIGRATIONS_TABLE}`);
+      for (const name of journal) {
+        await pool.query(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, ?)`, [name]);
+      }
+      const [row] = await rowsOf<{ applied: string[] | null; current: unknown }>(
+        db,
+        sql`SELECT ${journalCheck.applied} AS applied, ${journalCheck.current} AS current`,
+      );
+      expect({ journal, current: Number(row?.current) === 1 }).toEqual({
+        journal,
+        current: stateOf(row?.applied ?? [], supported) === "current",
+      });
+    }
   });
 
   it("migrates a fresh database with migrate(), serializing concurrent calls", async () => {

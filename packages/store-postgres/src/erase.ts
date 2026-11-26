@@ -23,14 +23,18 @@ export async function eraseConversation(db: Database, lease: LeaseRow, id: Conve
         UNION
         SELECT c.id FROM ${conversations} c JOIN owned o ON c.owner_conversation_id = o.id WHERE c.scope_id = ${scope}
       ),
-      blocked AS (
+      unfinished_tasks AS (
         SELECT 1 FROM ${tasks} t WHERE t.scope_id = ${scope}
           AND t.conversation_id IN (SELECT id FROM owned) AND t.status <> 'terminal'
-        UNION ALL
+      ),
+      orphaned_forks AS (
         SELECT 1 FROM ${conversations} c WHERE c.scope_id = ${scope}
           AND c.parent_conversation_id IN (SELECT id FROM owned) AND c.id NOT IN (SELECT id FROM owned)
       ),
-      doomed AS (SELECT id FROM owned WHERE NOT EXISTS (SELECT 1 FROM blocked)),
+      doomed AS (
+        SELECT id FROM owned
+          WHERE NOT EXISTS (SELECT 1 FROM unfinished_tasks) AND NOT EXISTS (SELECT 1 FROM orphaned_forks)
+      ),
       doomed_tasks AS (
         SELECT t.id FROM ${tasks} t WHERE t.scope_id = ${scope} AND t.conversation_id IN (SELECT id FROM doomed)
       ),

@@ -7,7 +7,7 @@ import type { MigrationMeta } from "drizzle-orm/migrator";
 import { migrate as drizzleMigrate, mysqlTable, serial, text } from "drizzle-orm/mysql-core";
 
 import { ER_BAD_FIELD_ERROR, ER_NO_SUCH_TABLE, errorNumber, rowsOf } from "./database.ts";
-import type { Database } from "./database.ts";
+import type { ConnectionDatabase, Database } from "./database.ts";
 import { SHIPPED_MIGRATIONS } from "./shipped.ts";
 
 /** The journal table, as Drizzle's migrator creates it in the pool's database beside the runtime's tables. */
@@ -113,7 +113,8 @@ export const journalCheck = {
     FROM ${journal})`,
   assertCurrent(applied: unknown): void {
     const names = typeof applied === "string" ? (JSON.parse(applied) as unknown) : applied;
-    assertApplied(Array.isArray(names) ? names.map(String).sort() : []);
+    const inTimestampOrder = Array.isArray(names) ? names.map(String).sort() : [];
+    assertApplied(inTimestampOrder);
   },
 };
 
@@ -135,7 +136,7 @@ export interface MigrateResult {
 /** A named lock per database. Lock names are server-wide and at most 64 characters long. */
 const LOCK: SQL = sql`CONCAT('agent_runtime_migrate:', MD5(DATABASE()))`;
 
-export async function migrateOn(db: Database): Promise<MigrateResult> {
+export async function migrateOn(db: ConnectionDatabase): Promise<MigrateResult> {
   const [locked] = await rowsOf<{ locked: unknown }>(db, sql`SELECT GET_LOCK(${LOCK}, -1) AS locked`);
   if (Number(locked?.locked) !== 1) throw new Error("Could not take the migration lock");
   let failed = false;

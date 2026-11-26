@@ -7,7 +7,7 @@ import type { MigrationMeta } from "drizzle-orm/migrator";
 import { migrate as drizzleMigrate, pgSchema, serial, text } from "drizzle-orm/pg-core";
 
 import { errorCode, INVALID_SCHEMA_NAME, UNDEFINED_TABLE } from "./database.ts";
-import type { Database } from "./database.ts";
+import type { ConnectionDatabase, Database } from "./database.ts";
 import { SHIPPED_MIGRATIONS } from "./shipped.ts";
 
 /** The Postgres schema of the runtime's migrations journal. The runtime's tables are in `agent_runtime`. */
@@ -136,7 +136,7 @@ export interface MigrateResult {
 
 const LOCK = sql`hashtext('agent-runtime-storage-postgres:migrate')`;
 
-export async function migrateOn(db: Database): Promise<MigrateResult> {
+export async function migrateOn(db: ConnectionDatabase): Promise<MigrateResult> {
   await db.execute(sql`SELECT pg_advisory_lock(${LOCK})`);
   let failed = false;
   try {

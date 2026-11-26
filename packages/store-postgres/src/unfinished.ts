@@ -5,6 +5,7 @@ import { toNumber } from "@chia1104/motoko-core/store";
 
 import { rowsOf } from "./database.ts";
 import type { Database } from "./database.ts";
+import { hasUnfinishedWork } from "./expressions.ts";
 import { scopes } from "./schema.ts";
 
 export async function unfinishedScopes(
@@ -16,7 +17,7 @@ export async function unfinishedScopes(
     db,
     sql`SELECT ${scopes.scopeId} AS scope_id, ${scopes.kind} AS kind, ${scopes.name} AS name FROM ${scopes}
       WHERE ${scopes.scopeId} > ${after}::bigint
-        AND (${scopes.wakeActive} OR ${scopes.wakeAt} IS NOT NULL OR ${scopes.leaseHolder} IS NOT NULL)
+        AND (${hasUnfinishedWork(scopes)})
         AND (${scopes.leaseExpiresAt} IS NULL OR ${scopes.leaseExpiresAt} <= clock_timestamp())
       ORDER BY ${scopes.scopeId} LIMIT ${limit}`,
   );

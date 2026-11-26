@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { PGlite } from "@electric-sql/pglite";
+import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { rowsOf } from "../src/database.ts";
 import {
   checkSchema,
   migrate,
@@ -16,7 +19,7 @@ import {
   SchemaVersionError,
   supportedMigrations,
 } from "../src/index.ts";
-import { stateOf } from "../src/migrations.ts";
+import { journalCheck, stateOf } from "../src/migrations.ts";
 import {
   checkSchema as checkPGlite,
   createPostgresStore as createPGliteStore,
@@ -156,6 +159,41 @@ describe("migrations and the version check on PGlite", () => {
     expect(older.message).toContain(
       "older than this package (20260101000000_init, it needs 20260201000000_next): run migrate()",
     );
+  });
+
+  it("lets a statement write exactly when the journal it read is current", async () => {
+    await migratePGlite(pglite);
+    const db = drizzle({ client: pglite });
+    const supported = supportedMigrations();
+    const future = "29991231000000_from_the_future";
+    const journals: readonly (readonly (string | null)[])[] = [
+      [],
+      supported,
+      [...supported].reverse(),
+      supported.slice(0, -1),
+      supported.slice(1),
+      [...supported, future],
+      [future],
+      [null],
+      [...supported, null],
+    ];
+    for (const journal of journals) {
+      await pglite.query(`DELETE FROM ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE}`);
+      for (const name of journal) {
+        await pglite.query(
+          `INSERT INTO ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, $1)`,
+          [name],
+        );
+      }
+      const [row] = await rowsOf<{ applied: string[]; current: boolean }>(
+        db,
+        sql`SELECT ${journalCheck.applied} AS applied, ${journalCheck.current(journalCheck.applied)} AS current`,
+      );
+      expect({ journal, current: row?.current }).toEqual({
+        journal,
+        current: stateOf(row?.applied ?? [], supported) === "current",
+      });
+    }
   });
 });
 

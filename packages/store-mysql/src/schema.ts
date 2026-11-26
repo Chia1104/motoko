@@ -33,6 +33,8 @@ import {
 } from "drizzle-orm/mysql-core";
 import type { AnyMySqlColumn } from "drizzle-orm/mysql-core";
 
+import { scopeKeyOf } from "./expressions.ts";
+
 /** Every table is named `agent_runtime_<name>`, beside the app's own tables in its database. */
 export const runtimeTable = mysqlTableCreator((name) => `agent_runtime_${name}`);
 
@@ -72,7 +74,7 @@ export const scopes = runtimeTable(
     /** SHA-256 of the kind's UTF-8, a NUL, and the name's UTF-8. Neither the kind nor the name holds a NUL. */
     scopeKey: binary("scope_key", { length: 32 })
       .notNull()
-      .generatedAlwaysAs(sql`unhex(sha2(concat(\`kind\`, x'00', \`name\`), 256))`, { mode: "stored" }),
+      .generatedAlwaysAs(scopeKeyOf(sql.identifier("kind"), sql.identifier("name")), { mode: "stored" }),
     nextId: int8("next_id").notNull().default(2),
     nextSeq: int8("next_seq").notNull().default(1),
     leaseToken: int8("lease_token").notNull().default(0),

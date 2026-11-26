@@ -8,7 +8,8 @@ import { deleteScope } from "./delete-scope.ts";
 import { eraseConversation } from "./erase.ts";
 import { acquireLease, releaseLease, renewLeases } from "./lease.ts";
 import { checkSchemaOf } from "./migrations.ts";
-import { MysqlStorage } from "./storage.ts";
+import { openStorage } from "./storage.ts";
+import type { MysqlStorage } from "./storage.ts";
 import { unfinishedScopes } from "./unfinished.ts";
 
 export type MysqlStoreOptions = SharedStoreOptions;
@@ -31,7 +32,7 @@ export function createStore(db: PoolDatabase, options: MysqlStoreOptions = {}): 
       acquire: (scope, holder, ttlMs) => acquireLease(db, scope, holder, ttlMs),
       renew: (leases, ttlMs) => renewLeases(db, leases, ttlMs),
       release: (lease, wake) => releaseLease(db, lease, wake),
-      open: (lease, attempts) => MysqlStorage.open(db, lease, attempts),
+      open: (lease, attempts) => openStorage(db, lease, attempts),
       unfinished: (after, limit) => unfinishedScopes(db, after, limit),
       erase: async (lease, id) => (await eraseConversation(db, lease, id)) === "lease-held",
       deleteScope: (scope, lease) => deleteScope(db, scope, lease),

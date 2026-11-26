@@ -1,6 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 
+import { asConnectionDatabase } from "./database.ts";
 import { checkSchemaOf, migrateOn } from "./migrations.ts";
 import type { MigrateResult } from "./migrations.ts";
 import { createStore } from "./store.ts";
@@ -18,7 +19,7 @@ export function createPostgresStore(pglite: PGlite, options?: PostgresStoreOptio
 
 /** Creates or upgrades the runtime's tables in `pglite`. See the root export's `migrate`. */
 export function migrate(pglite: PGlite): Promise<MigrateResult> {
-  return migrateOn(drizzle({ client: pglite }));
+  return migrateOn(asConnectionDatabase(drizzle({ client: pglite })));
 }
 
 /** Throws `SchemaVersionError` unless `pglite` is migrated to exactly this package's migrations. */

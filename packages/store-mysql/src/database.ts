@@ -6,13 +6,15 @@ import type { MySqlAsyncDatabase } from "drizzle-orm/mysql-core";
 import { drizzle } from "drizzle-orm/mysql2";
 import type { MySql2QueryResultHKT } from "drizzle-orm/mysql2";
 import type { ResultSetHeader } from "mysql2";
-import type { Pool } from "mysql2/promise";
+import type { Pool, PoolConnection } from "mysql2/promise";
 
 import { scopes } from "./schema.ts";
 
 export type Database = MySqlAsyncDatabase<MySql2QueryResultHKT>;
 
 export type PoolDatabase = Database & { readonly $client: Pool };
+
+export type ConnectionDatabase = Database & { readonly $client: PoolConnection };
 
 export type PacketResult = Record<string, unknown>[] | ResultSetHeader;
 
@@ -56,12 +58,31 @@ export const expiryIn = (ms: number): SQL => sql`UTC_TIMESTAMP(3) + INTERVAL ${M
 export const epochMs = (column: SQLWrapper): SQL =>
   sql`TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', ${column}) DIV 1000`;
 
-export const freshNonce = (): Buffer => randomBytes(16);
+export interface Nonce {
+  readonly value: Buffer;
+  fence(scopeId: number): SQL;
+}
 
-export const fenced = (scopeId: number, nonce: Buffer): SQL =>
-  sql`EXISTS (SELECT 1 FROM ${scopes} AS fence WHERE fence.scope_id = ${scopeId} AND fence.commit_nonce = ${nonce})`;
+export interface FencedStatements {
+  readonly stamp: SQL;
+  readonly fencedWrites?: readonly SQL[];
+  readonly outcome: SQL;
+}
 
-export const scopeKey = (kind: string, name: string): SQL => sql`UNHEX(SHA2(CONCAT(${kind}, X'00', ${name}), 256))`;
+export async function fencedTransaction<Outcome extends Record<string, unknown>>(
+  db: PoolDatabase,
+  statements: (nonce: Nonce) => FencedStatements,
+): Promise<Outcome> {
+  const value = randomBytes(16);
+  const nonce: Nonce = {
+    value,
+    fence: (scopeId) =>
+      sql`EXISTS (SELECT 1 FROM ${scopes} AS fence WHERE fence.scope_id = ${scopeId} AND fence.commit_nonce = ${value})`,
+  };
+  const { stamp, fencedWrites = [], outcome } = statements(nonce);
+  const results = await packet(db, [stamp, ...fencedWrites, outcome]);
+  return (results.at(-1) as [Outcome])[0];
+}
 
 /**
  * A hint for a statement whose recursive CTE walks a fork chain or an ownership tree, as deep as its data goes. MySQL's

@@ -3,6 +3,12 @@ import type { PgAsyncDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 export type Database = PgAsyncDatabase<PgQueryResultHKT>;
 
+declare const oneConnection: unique symbol;
+
+export type ConnectionDatabase = Database & { readonly [oneConnection]: true };
+
+export const asConnectionDatabase = (db: Database): ConnectionDatabase => db as ConnectionDatabase;
+
 /**
  * Runs one `sql` statement, one round trip, and returns its rows as objects, as the driver parsed them. int8 is a
  * `string` on node-postgres and a `number` on PGlite. Both drivers parse json and arrays.

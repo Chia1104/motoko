@@ -19,7 +19,7 @@ import type {
   WriteOutcome,
 } from "@chia1104/motoko-core/store";
 
-import { fenced, freshNonce, isTransientError, now, packet, rowsOf } from "./database.ts";
+import { fencedTransaction, isTransientError, now, rowsOf } from "./database.ts";
 import type { Database, PoolDatabase } from "./database.ts";
 import {
   conversations,
@@ -172,6 +172,17 @@ function insertRows<R>(
   return sql`INSERT INTO ${table} (${names}) SELECT * FROM (VALUES ${values}) AS v (${names}) WHERE ${fence}${upsert}`;
 }
 
+const WRITE_ORDER = [
+  "recordIds",
+  "conversations",
+  "entries",
+  "tasks",
+  "submissions",
+  "documents",
+  "clearedRevisions",
+  "revisions",
+] as const;
+
 function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
   for (const task of plan.tasks) assertFits(encodeIndexedString(task.kind), INDEXED_LENGTHS.taskKind, "A task's kind");
   for (const submission of plan.submissions) {
@@ -184,8 +195,8 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
     assertFits(part.kind, INDEXED_LENGTHS.documentKind, "A document's kind");
     assertFits(part.keyValue, INDEXED_LENGTHS.documentKey, "A document's key");
   }
-  const statements = [
-    insertRows(
+  const writes: Record<(typeof WRITE_ORDER)[number], SQL | undefined> = {
+    recordIds: insertRows(
       recordIds,
       scopeId,
       [
@@ -195,7 +206,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.claims,
       fence,
     ),
-    insertRows(
+    conversations: insertRows(
       conversations,
       scopeId,
       [
@@ -209,7 +220,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.conversations,
       fence,
     ),
-    insertRows(
+    entries: insertRows(
       entries,
       scopeId,
       [
@@ -222,7 +233,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.entries,
       fence,
     ),
-    insertRows(
+    tasks: insertRows(
       tasks,
       scopeId,
       [
@@ -238,7 +249,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [tasks.conversationId, tasks.kind, tasks.status, tasks.abortRequested, tasks.background, tasks.record],
     ),
-    insertRows(
+    submissions: insertRows(
       submissions,
       scopeId,
       [
@@ -255,7 +266,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [submissions.conversationId, submissions.requestId, submissions.status, submissions.record],
     ),
-    insertRows(
+    documents: insertRows(
       documents,
       scopeId,
       [
@@ -273,12 +284,13 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [documents.retiredAt, documents.record],
     ),
-    plan.cleared.length === 0
-      ? undefined
-      : sql`DELETE FROM ${documentRevisions}
+    clearedRevisions:
+      plan.cleared.length === 0
+        ? undefined
+        : sql`DELETE FROM ${documentRevisions}
         WHERE ${and(eq(documentRevisions.scopeId, scopeId), inArray(documentRevisions.documentId, [...plan.cleared]))}
           AND ${fence}`,
-    insertRows(
+    revisions: insertRows(
       documentRevisions,
       scopeId,
       [
@@ -291,8 +303,8 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.revisions,
       fence,
     ),
-  ];
-  return statements.filter((statement) => statement !== undefined);
+  };
+  return WRITE_ORDER.map((phase) => writes[phase]).filter((statement) => statement !== undefined);
 }
 
 async function writePlan(
@@ -301,21 +313,18 @@ async function writePlan(
   guard: CommitGuard,
   plan: CommitPlan,
 ): Promise<WriteOutcome> {
-  const nonce = freshNonce();
-  const writes = planStatements(scopeId, plan, fenced(scopeId, nonce));
-  const results = await packet(db, [
-    sql`UPDATE ${scopes} SET next_seq = ${guard.nextSeq}, next_id = GREATEST(next_id, ${guard.nextId}),
-        commit_nonce = ${nonce}
+  const { outcome } = await fencedTransaction<{ outcome: WriteOutcome }>(db, (nonce) => ({
+    stamp: sql`UPDATE ${scopes} SET next_seq = ${guard.nextSeq}, next_id = GREATEST(next_id, ${guard.nextId}),
+        commit_nonce = ${nonce.value}
       WHERE scope_id = ${scopeId} AND next_seq = ${guard.expectedSeq}
         AND lease_token = ${guard.leaseToken} AND lease_expires_at > ${now}`,
-    ...writes,
-    sql`SELECT CASE WHEN s.scope_id IS NULL THEN 'deleted'
-        WHEN s.commit_nonce = ${nonce} THEN 'stored'
+    fencedWrites: planStatements(scopeId, plan, nonce.fence(scopeId)),
+    outcome: sql`SELECT CASE WHEN s.scope_id IS NULL THEN 'deleted'
+        WHEN s.commit_nonce = ${nonce.value} THEN 'stored'
         WHEN s.lease_token <> ${guard.leaseToken} THEN 'taken'
         WHEN s.lease_expires_at > ${now} THEN 'concurrent'
         ELSE 'expired' END AS outcome
       FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_id = ${scopeId}`,
-  ]);
-  const [row] = results.at(-1) as [{ outcome: WriteOutcome }];
-  return row.outcome;
+  }));
+  return outcome;
 }

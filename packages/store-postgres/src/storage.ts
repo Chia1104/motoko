@@ -129,52 +129,47 @@ const documentRows = (row: DocumentRow): DocumentRows => ({
   })),
 });
 
+export async function openStorage(db: Database, lease: FencedLease, attempts: number): Promise<PostgresStorage> {
+  if (lease.signal.aborted) throw lease.signal.reason;
+  const rows = await missingJournalAsVersionError(db, () =>
+    rowsOf<{ applied: string[]; scope_id: unknown; next_id: unknown }>(
+      db,
+      sql`SELECT ${journalCheck.applied} AS applied, s.${sql.identifier(scopes.scopeId.name)} AS scope_id,
+          s.${sql.identifier(scopes.nextId.name)} AS next_id
+        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s
+          ON s.${sql.identifier(scopes.kind.name)} = ${lease.scope.kind}::text AND s.${sql.identifier(scopes.name.name)} = ${lease.scope.name}::text`,
+    ),
+  );
+  const row = rows[0];
+  journalCheck.assertCurrent(row?.applied);
+  if (row === undefined || deletedSinceLeased(row.scope_id, lease)) {
+    lease.lose("deleted");
+    throw lease.signal.reason;
+  }
+  return new PostgresStorage(db, lease, toNumber(row.next_id), attempts);
+}
+
+const deletedSinceLeased = (scopeIdNow: unknown, lease: FencedLease): boolean =>
+  scopeIdNow === null || toNumber(scopeIdNow) !== lease.scopeId;
+
 /**
  * pi-durable Storage over one scope of the shared tables, fenced by the scope's lease. Open it with `store.storage()`.
  * It does not own the database. `close()` waits for its own calls to settle and leaves the pool open.
  */
-export class PostgresStorage implements Storage {
+class PostgresStorage implements Storage {
   readonly scope: StorageScope;
   readonly scopeId: number;
   readonly #db: Database;
   readonly #shell: StorageShell;
 
-  private constructor(
-    db: Database,
-    scope: StorageScope,
-    scopeId: number,
-    nextId: number,
-    lease: FencedLease,
-    attempts: number,
-  ) {
+  constructor(db: Database, lease: FencedLease, nextId: number, attempts: number) {
     this.#db = db;
-    this.scope = scope;
-    this.scopeId = scopeId;
-    const port = commitPort(db, scopeId, (source) =>
+    this.scope = lease.scope;
+    this.scopeId = lease.scopeId;
+    const port = commitPort(db, lease.scopeId, (source) =>
       this.#documentRows(source.id, source.at).then((rows) => () => materializeDocument(rows, source.id, source.at)),
     );
     this.#shell = new StorageShell({ name: "PostgresStorage", lease, attempts, port, nextId });
-  }
-
-  /** @internal Use `store.storage()`. */
-  static async open(db: Database, lease: FencedLease, attempts: number): Promise<PostgresStorage> {
-    if (lease.signal.aborted) throw lease.signal.reason;
-    const rows = await missingJournalAsVersionError(db, () =>
-      rowsOf<{ applied: string[]; scope_id: unknown; next_id: unknown }>(
-        db,
-        sql`SELECT ${journalCheck.applied} AS applied, s.${sql.identifier(scopes.scopeId.name)} AS scope_id,
-            s.${sql.identifier(scopes.nextId.name)} AS next_id
-          FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s
-            ON s.${sql.identifier(scopes.kind.name)} = ${lease.scope.kind}::text AND s.${sql.identifier(scopes.name.name)} = ${lease.scope.name}::text`,
-      ),
-    );
-    const row = rows[0];
-    journalCheck.assertCurrent(row?.applied);
-    if (row === undefined || row.scope_id === null || toNumber(row.scope_id) !== lease.scopeId) {
-      lease.lose("deleted");
-      throw lease.signal.reason;
-    }
-    return new PostgresStorage(db, lease.scope, lease.scopeId, toNumber(row.next_id), lease, attempts);
   }
 
   /**
@@ -268,7 +263,7 @@ export class PostgresStorage implements Storage {
         sql`${this.#chain(sql`${conversationId}::bigint`, sql`NULL::bigint`)}
           SELECT EXISTS (SELECT 1 FROM chain) AS found, ${e.record}, ${e.commitSeq},
             EXISTS (SELECT 1 FROM chain s WHERE s.conversation_id = ${e.conversationId}
-              AND ${e.id} <= COALESCE(s.upper, ${MAX_BIGINT})) AS visible
+              AND ${e.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})) AS visible
           FROM (SELECT 1) AS one
             LEFT JOIN ${entries} AS ${e} ON ${e.scopeId} = ${this.scopeId}::bigint AND ${e.id} = ${idOrContext}::bigint`,
       );
@@ -293,9 +288,9 @@ export class PostgresStorage implements Storage {
             SELECT e.record FROM chain s CROSS JOIN LATERAL (
               SELECT ${x.id}, ${x.record} FROM ${entries} AS ${x}
                 WHERE ${x.scopeId} = ${this.scopeId}::bigint AND ${x.conversationId} = s.conversation_id
-                AND ${x.head} IS NOT NULL AND ${x.id} <= COALESCE(s.upper, ${MAX_BIGINT})
+                AND ${x.head} IS NOT NULL AND ${x.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})
                 ORDER BY ${x.id} DESC LIMIT 1
-            ) e ORDER BY s.ord LIMIT 1
+            ) e ORDER BY s.distance LIMIT 1
           ) AS record`,
       );
       const row = rows[0];
@@ -341,9 +336,9 @@ export class PostgresStorage implements Storage {
             SELECT e.record FROM chain s CROSS JOIN LATERAL (
               SELECT ${x.id}, ${x.record} FROM ${entries} AS ${x}
                 WHERE ${x.scopeId} = ${this.scopeId}::bigint AND ${x.conversationId} = s.conversation_id
-                AND ${x.id} <= COALESCE(s.upper, ${MAX_BIGINT})${bound}
+                AND ${x.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})${bound}
                 ORDER BY ${x.id} ${direction} LIMIT ${limit + 1}::bigint
-            ) e ORDER BY s.ord ${segments}, e.id ${direction} LIMIT ${limit + 1}::bigint
+            ) e ORDER BY s.distance ${segments}, e.id ${direction} LIMIT ${limit + 1}::bigint
           ) AS records`,
       );
       const row = rows[0];
@@ -551,17 +546,19 @@ export class PostgresStorage implements Storage {
     return this.#shell.close();
   }
 
-  #chain(conversation: SQL, upper: SQL, min?: SQL): SQL {
+  #chain(conversation: SQL, maxEntryId: SQL, minEntryId?: SQL): SQL {
     const c = alias(conversations, "c");
     const scopeId = sql`${this.scopeId}::bigint`;
+    const parentMax = sql`LEAST(ch.max_entry_id, ch.parent_at)`;
+    const reachesMin = minEntryId === undefined ? sql`` : sql`WHERE ${parentMax} >= ${minEntryId}`;
     return sql`WITH RECURSIVE chain AS (
-        SELECT 0 AS ord, ${c.id} AS conversation_id, ${upper} AS upper,
+        SELECT 0 AS distance, ${c.id} AS conversation_id, ${maxEntryId} AS max_entry_id,
           ${c.parentConversationId} AS parent_conversation_id, ${c.parentAt} AS parent_at
           FROM ${conversations} AS ${c} WHERE ${c.scopeId} = ${scopeId} AND ${c.id} = ${conversation}
         UNION ALL
-        SELECT ch.ord + 1, ${c.id}, LEAST(ch.upper, ch.parent_at), ${c.parentConversationId}, ${c.parentAt}
+        SELECT ch.distance + 1, ${c.id}, ${parentMax}, ${c.parentConversationId}, ${c.parentAt}
           FROM chain ch JOIN ${conversations} AS ${c} ON ${c.scopeId} = ${scopeId} AND ${c.id} = ch.parent_conversation_id
-          ${min === undefined ? sql`` : sql`WHERE LEAST(ch.upper, ch.parent_at) >= ${min}`}
+          ${reachesMin}
       )`;
   }
 
@@ -601,3 +598,5 @@ function aliveAt(at: DocumentPoint): SQL | undefined {
   if (at === "current") return isNull(documents.retiredAt);
   return and(lte(documents.createdAt, at), or(isNull(documents.retiredAt), gt(documents.retiredAt, at)));
 }
+
+export type { PostgresStorage };

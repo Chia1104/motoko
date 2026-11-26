@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
+import { asConnectionDatabase } from "./database.ts";
 import { checkSchemaOf, migrateOn } from "./migrations.ts";
 import type { MigrateResult } from "./migrations.ts";
 import { createStore } from "./store.ts";
@@ -47,7 +48,7 @@ export async function migrate(pool: Pool): Promise<MigrateResult> {
   const ignore = () => undefined;
   client.on("error", ignore);
   try {
-    const result = await migrateOn(drizzle({ client }));
+    const result = await migrateOn(asConnectionDatabase(drizzle({ client })));
     client.off("error", ignore);
     client.release();
     return result;
