@@ -11,7 +11,7 @@ export interface WakeTiming {
 
 /** What the wake loop resumes, and how it keeps the wake job. */
 export interface WakeTarget {
-  /** The runtime open now. A wait lasts while the runtime it began in is still this one. */
+  /** The runtime open now. A wait lasts while the runtime its step resumed the instance in is still this one. */
   runtime(): AgentRuntime | undefined;
   instance(): AgentInstance;
   /** Keeps the wake job at what `wake` says is due. */
@@ -60,22 +60,23 @@ export class WakeLoop {
     if (this.#phase.kind === "waiting") return heartbeat;
     this.#phase = STEPPING;
     let instance: AgentInstance;
+    let runtime: AgentRuntime | undefined;
     try {
       instance = this.#target.instance();
+      runtime = this.#target.runtime();
       await instance.resume();
     } finally {
       this.#phase = IDLE;
     }
     const wake = this.#wake;
     if (wake?.active === true) {
-      this.#waitPastTheStep(instance);
+      this.#waitPastTheStep(instance, runtime);
       return heartbeat;
     }
     return wake?.at === undefined ? undefined : { rescheduleAt: wake.at };
   }
 
-  #waitPastTheStep(instance: AgentInstance): void {
-    const runtime = this.#target.runtime();
+  #waitPastTheStep(instance: AgentInstance, runtime: AgentRuntime | undefined): void {
     const sameRuntime = () => this.#target.runtime() === runtime;
     const waiting: Waiting = { kind: "waiting", endSleep: undefined };
     this.#phase = waiting;
