@@ -105,11 +105,14 @@ function assertApplied(applied: readonly string[]): void {
   if (state !== "current") throw new SchemaVersionError(state, applied, supported);
 }
 
+// The journal's `name` column has the app database's default collation, which can ignore case, accents and trailing
+// spaces. `stateOf` compares names exactly, so the guard compares their bytes.
+const nameBytes = sql`CAST(${journal.name} AS BINARY)`;
+
 export const journalCheck = {
   applied: sql`(SELECT JSON_ARRAYAGG(COALESCE(${journal.name}, '<unnamed>')) FROM ${journal})`,
-  current: sql`(SELECT COUNT(*) = ${SHIPPED_MIGRATIONS.length}
-      AND COUNT(DISTINCT CASE WHEN ${inArray(journal.name, [...SHIPPED_MIGRATIONS])} THEN ${journal.name} END)
-        = ${SHIPPED_MIGRATIONS.length}
+  current: sql`(SELECT COUNT(*) = COUNT(CASE WHEN ${inArray(nameBytes, [...SHIPPED_MIGRATIONS])} THEN 1 END)
+      AND COUNT(DISTINCT ${nameBytes}) = ${SHIPPED_MIGRATIONS.length}
     FROM ${journal})`,
   assertCurrent(applied: unknown): void {
     const names = typeof applied === "string" ? (JSON.parse(applied) as unknown) : applied;
