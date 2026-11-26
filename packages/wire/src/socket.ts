@@ -1,16 +1,12 @@
 import * as z from "zod";
 
 import { callErrorCodeSchema, callSchemas, followedEventSchema, followEndedSchema, sessionIdSchema } from "./call.ts";
-import type { CallSchema } from "./call.ts";
+import type { CallSchema, CallSchemaMap } from "./call.ts";
 import { cursorSchema } from "./cursor.ts";
 
 const callId = z.string().min(1).max(64);
 
-/**
- * Every call on the socket. These are the instance's calls in `callSchemas`, and the two that exist because one socket
- * follows several sessions. Over HTTP, following a session is a request of its own instead.
- */
-export const motokoCalls = {
+const calls = {
   /**
    * Follow a session's events on this connection from `from`, or from its start by default, replacing an earlier
    * follow of it.
@@ -25,15 +21,24 @@ export const motokoCalls = {
   ...callSchemas,
 } satisfies Record<string, CallSchema>;
 
-export type MotokoMethod = keyof typeof motokoCalls;
+/**
+ * Every call on the socket. These are the instance's calls in `callSchemas`, and the two that exist because one socket
+ * follows several sessions. Over HTTP, following a session is a request of its own instead.
+ */
+export const motokoCalls: CallSchemaMap<typeof calls> = calls;
+
+export type MotokoMethod = keyof typeof calls;
 /** What a call of `M` takes, as its sender writes it. */
-export type MotokoParams<M extends MotokoMethod> = z.input<(typeof motokoCalls)[M]["params"]>;
+export type MotokoParams<M extends MotokoMethod> = z.input<(typeof calls)[M]["params"]>;
 /** What a call of `M` answers, as its receiver reads it. */
-export type MotokoResult<M extends MotokoMethod> = z.output<(typeof motokoCalls)[M]["result"]>;
-/** A call as the server runs it, with its params parsed. `authorize` decides on it. */
-export type MotokoCall = {
-  readonly [M in MotokoMethod]: { readonly method: M; readonly params: z.output<(typeof motokoCalls)[M]["params"]> };
-}[MotokoMethod];
+export type MotokoResult<M extends MotokoMethod> = z.output<(typeof calls)[M]["result"]>;
+/**
+ * A call as the server runs it, with its params parsed. `authorize` decides on it. `MotokoCall<M>` is a call of `M`, or
+ * of any method in `M`.
+ */
+export type MotokoCall<M extends MotokoMethod = MotokoMethod> = {
+  readonly [K in M]: { readonly method: K; readonly params: z.output<(typeof calls)[K]["params"]> };
+}[M];
 
 const METHODS = Object.keys(motokoCalls) as [MotokoMethod, ...MotokoMethod[]];
 

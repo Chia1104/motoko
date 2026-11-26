@@ -242,8 +242,9 @@ token of its address. Its
 `outcome` is `applied`, or `already_replied` for a call that has its reply, so a delivery may be sent
 again.
 
-`CallParams<M>` is what a sender writes, `CallResult<M>` what a receiver reads, and `Call` a call with
-its params parsed, `{ method, params }`, as the server runs it. A readonly caller may make only the
+`CallParams<M>` is what a sender writes, `CallResult<M>` what a receiver reads, and `Call<M>` a call of
+method `M` with its params parsed, `{ method, params }`, as the server runs it. `Call` alone is a call of
+any method. A readonly caller may make only the
 calls whose `writes` is false. `@chia1104/motoko-core`'s `runCall` runs a `Call` on an instance, and
 its `callErrorOf` maps what the instance threw to a code.
 

@@ -355,8 +355,8 @@ The call protocol of [`@chia1104/motoko-wire`](../wire#the-call-protocol) maps o
 free of any transport:
 
 ```ts
-runCall(instance, call: Call): Promise<CallResult<call.method>>  // a call parsed with wire's callSchemas
-callErrorOf(error): CallError | undefined                       // { code, message }; undefined: not the runtime's
+runCall<M>(instance, call: Call<M>): Promise<CallResult<M>>  // a call parsed with wire's callSchemas
+callErrorOf(error): CallError | undefined                   // { code, message }; undefined: not the runtime's
 ```
 
 `runCall` runs the call on the instance and rejects with what the instance threw. `callErrorOf` maps

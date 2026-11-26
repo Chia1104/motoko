@@ -137,16 +137,15 @@ export class MotokoSockets {
   #answer(connection: Connection, id: string, method: MotokoMethod, params: unknown) {
     const reply = (result: unknown) => void send(connection, { type: "motoko:result", id, result });
     const fail = (error: unknown) => void send(connection, { type: "motoko:error", id, error: this.#errorOf(error) });
-    const parsed = motokoCalls[method].params.safeParse(params);
-    if (!parsed.success) {
-      send(connection, { type: "motoko:error", id, error: invalid(parsed.error) });
+    const call = parsedCall(method, params);
+    if (call instanceof z.ZodError) {
+      send(connection, { type: "motoko:error", id, error: invalid(call) });
       return;
     }
     if (motokoCalls[method].writes && this.#isReadonly(connection)) {
       fail(new RequestError("forbidden", "A readonly connection only follows sessions"));
       return;
     }
-    const call = { method, params: parsed.data } as MotokoCall;
     const run = (allowed: boolean) => {
       if (connection.readyState !== WebSocket.OPEN) return;
       if (allowed !== true) {
@@ -194,7 +193,7 @@ export class MotokoSockets {
     }
   }
 
-  #subscribe(connection: Connection, { sessionId, from }: Extract<MotokoCall, { method: "subscribe" }>["params"]) {
+  #subscribe(connection: Connection, { sessionId, from }: MotokoCall<"subscribe">["params"]) {
     if (from !== undefined && decodeCursor(from)?.session !== sessionId) throw new InvalidCursorError(from);
     const readers = this.#readersOf(connection);
     if (!readers.has(sessionId) && readers.size >= MAX_SUBSCRIPTIONS) {
@@ -277,6 +276,13 @@ export class MotokoSockets {
       this.#report(error);
     }
   }
+}
+
+function parsedCall<M extends MotokoMethod>(method: M, raw: unknown): MotokoCall<M> | z.ZodError {
+  const params = motokoCalls[method].params.safeParse(raw);
+  if (!params.success) return params.error;
+  const call: MotokoCall<M> = { method, params: params.data };
+  return call;
 }
 
 function invalid(error: z.ZodError): MotokoErrorBody {

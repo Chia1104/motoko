@@ -219,10 +219,16 @@ async function callOf(request: Request, maxBytes: number): Promise<{ call: Call;
   }
   const parsed = callBodySchema.safeParse(json);
   if (!parsed.success) return invalid(parsed.error);
-  const { method } = parsed.data;
-  const params = callSchemas[method].params.safeParse(parsed.data.params);
-  if (!params.success) return invalid(params.error);
-  return { call: { method, params: params.data } as Call, body: text };
+  const call = parsedCall(parsed.data.method, parsed.data.params);
+  if (call instanceof z.ZodError) return invalid(call);
+  return { call, body: text };
+}
+
+function parsedCall<M extends CallMethod>(method: M, raw: unknown): Call<M> | z.ZodError {
+  const params = callSchemas[method].params.safeParse(raw);
+  if (!params.success) return params.error;
+  const call: Call<M> = { method, params: params.data };
+  return call;
 }
 
 async function textOf(request: Request, maxBytes: number): Promise<string | undefined> {

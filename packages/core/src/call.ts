@@ -13,10 +13,8 @@ import {
 } from "./errors.ts";
 import type { AgentInstance } from "./runtime.ts";
 
-type CallOf<M extends CallMethod> = Extract<Call, { readonly method: M }>;
-
 const handlers: {
-  readonly [M in CallMethod]: (instance: AgentInstance, params: CallOf<M>["params"]) => Promise<CallResult<M>>;
+  readonly [M in CallMethod]: (instance: AgentInstance, params: Call<M>["params"]) => Promise<CallResult<M>>;
 } = {
   createSession: (instance, { requestId }) => instance.createSession(requestId === undefined ? {} : { requestId }),
   listSessions: (instance) => instance.listSessions(),
@@ -54,12 +52,8 @@ const handlers: {
 };
 
 /** Runs one parsed call on `instance`. It rejects with what the instance threw, which `callErrorOf` reads. */
-export async function runCall<C extends Call>(instance: AgentInstance, call: C): Promise<CallResult<C["method"]>> {
-  const handler = handlers[call.method] as (
-    instance: AgentInstance,
-    params: C["params"],
-  ) => Promise<CallResult<C["method"]>>;
-  return handler(instance, call.params);
+export async function runCall<M extends CallMethod>(instance: AgentInstance, call: Call<M>): Promise<CallResult<M>> {
+  return handlers[call.method](instance, call.params);
 }
 
 const CODES: readonly (readonly [abstract new (...args: never[]) => Error, CallErrorCode])[] = [

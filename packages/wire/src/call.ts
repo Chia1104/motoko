@@ -33,10 +33,17 @@ export interface CallSchema {
 }
 
 /**
- * Every call an instance answers, with what it takes, what it answers, and whether it changes the instance's sessions,
- * in `writes`. A readonly caller may make only the calls that do not.
+ * A map of calls whose entry for a method `M` parses to `M`'s own types, even where `M` is a type parameter. Indexing
+ * the plain map by a generic method gives the union of every method's schema instead.
  */
-export const callSchemas = {
+export type CallSchemaMap<T extends Record<string, CallSchema>> = {
+  readonly [M in keyof T]: T[M] & {
+    readonly params: z.ZodType<z.output<T[M]["params"]>, z.input<T[M]["params"]>>;
+    readonly result: z.ZodType<z.output<T[M]["result"]>, z.input<T[M]["result"]>>;
+  };
+};
+
+const schemas = {
   /**
    * A session with the agent's model, tools and approval policy. The app chooses what a session runs with. Its
    * `requestId`, like `submit`'s, makes a retry return the session the first call made.
@@ -119,15 +126,21 @@ export const callSchemas = {
   deleteSession: { params: z.object({ sessionId: sessionIdSchema }), result: z.null(), writes: true },
 } satisfies Record<string, CallSchema>;
 
-export type CallMethod = keyof typeof callSchemas;
+/**
+ * Every call an instance answers, with what it takes, what it answers, and whether it changes the instance's sessions,
+ * in `writes`. A readonly caller may make only the calls that do not.
+ */
+export const callSchemas: CallSchemaMap<typeof schemas> = schemas;
+
+export type CallMethod = keyof typeof schemas;
 /** What a call of `M` takes, as its sender writes it. */
-export type CallParams<M extends CallMethod> = z.input<(typeof callSchemas)[M]["params"]>;
+export type CallParams<M extends CallMethod> = z.input<(typeof schemas)[M]["params"]>;
 /** What a call of `M` answers, as its receiver reads it. */
-export type CallResult<M extends CallMethod> = z.output<(typeof callSchemas)[M]["result"]>;
-/** A call as the instance's side runs it, its params parsed. */
-export type Call = {
-  readonly [M in CallMethod]: { readonly method: M; readonly params: z.output<(typeof callSchemas)[M]["params"]> };
-}[CallMethod];
+export type CallResult<M extends CallMethod> = z.output<(typeof schemas)[M]["result"]>;
+/** A call as the instance's side runs it, its params parsed. `Call<M>` is a call of `M`, or of any method in `M`. */
+export type Call<M extends CallMethod = CallMethod> = {
+  readonly [K in M]: { readonly method: K; readonly params: z.output<(typeof schemas)[K]["params"]> };
+}[M];
 
 /** The errors a call is answered with. `internal` carries no detail, because the server reports it. */
 export const callErrorCodeSchema = z.enum([

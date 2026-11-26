@@ -268,7 +268,7 @@ class TransportClient implements MotokoClient {
     const answer = await this.#transport.call(method, params, this.#closing.signal);
     const result = callSchemas[method].result.safeParse(answer);
     if (!result.success) throw new MotokoError("internal", `Malformed result of ${method}`);
-    return result.data as CallResult<M>;
+    return result.data;
   }
 }
 

@@ -76,9 +76,9 @@ async function call<M extends CallMethod>(
   method: M,
   params: CallParams<M>,
 ): Promise<CallResult<M>> {
-  const parsed = { method, params: callSchemas[method].params.parse(params) } as Call & { method: M };
+  const parsed: Call<M> = { method, params: callSchemas[method].params.parse(params) };
   const result = await runCall(instance, parsed);
-  return callSchemas[method].result.parse(result) as CallResult<M>;
+  return callSchemas[method].result.parse(result);
 }
 
 async function failure(pending: Promise<unknown>) {
