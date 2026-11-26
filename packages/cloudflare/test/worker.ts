@@ -22,7 +22,7 @@ import type { AgentWireEvent } from "@chia1104/motoko-wire";
 
 import { setWakeTimingForTests } from "../src/capability.ts";
 import { durableObjectStore, MotokoCapability } from "../src/index.ts";
-import type { MotokoAuthorize, MotokoCall } from "../src/index.ts";
+import type { MotokoAuthorize, MotokoCall, MotokoCapabilityOptions } from "../src/index.ts";
 
 export type Step =
   | { readonly text: string }
@@ -36,8 +36,7 @@ const requests = new Map<string, number>();
 const held = new Map<string, (text: string) => void>();
 const authorized = new Map<string, (MotokoCall & { readonly connection: string })[]>();
 
-function guard(name: string): MotokoAuthorize | undefined {
-  if (!name.startsWith("guarded:")) return undefined;
+function guard(name: string): MotokoAuthorize {
   return async (connection, call) => {
     await new Promise((resolve) => setTimeout(resolve, 1));
     authorized.set(name, [...(authorized.get(name) ?? []), { connection: connection.id, ...call }]);
@@ -208,6 +207,34 @@ function echo(connection: Connection, message: WSMessage, seen: string[]) {
   if (frame.type === "echo") connection.send(JSON.stringify({ type: "echoed", text: frame.text }));
 }
 
+type FixtureOptions = Pick<MotokoCapabilityOptions<unknown>, "closeIdleAfterMs" | "store" | "authorize">;
+
+const ownStore = (name: string, storage: DurableObjectStorage) =>
+  durableObjectStore(storage, { kind: assistant.kind, name });
+
+const fixtures = {
+  idle: () => ({ closeIdleAfterMs: 200 }),
+  held: (name, storage) => ({ store: holdable(name, ownStore(name, storage)) }),
+  gated: (name, storage) => ({ store: gated(name, ownStore(name, storage)) }),
+  guarded: (name) => ({ authorize: guard(name) }),
+} satisfies Record<string, (name: string, storage: DurableObjectStorage) => FixtureOptions>;
+
+export type Fixture = keyof typeof fixtures;
+
+const FIXTURE_SEPARATOR = ":";
+
+/** A fresh `MotokoTestAgent`'s name, which the object reads `fixture` back from. An object of another name is plain. */
+export function objectName(fixture: Fixture): string {
+  return `${fixture}${FIXTURE_SEPARATOR}${crypto.randomUUID()}`;
+}
+
+const isFixture = (word: string | undefined): word is Fixture => word !== undefined && Object.hasOwn(fixtures, word);
+
+function fixtureOptions(name: string, storage: DurableObjectStorage): FixtureOptions {
+  const [fixture] = name.split(FIXTURE_SEPARATOR, 1);
+  return isFixture(fixture) ? fixtures[fixture](name, storage) : {};
+}
+
 export class MotokoTestAgent extends Agent<Cloudflare.Env, NotesState> {
   override initialState: NotesState = { notes: [] };
   readonly #faux = scriptedModels(() => this.name);
@@ -219,14 +246,7 @@ export class MotokoTestAgent extends Agent<Cloudflare.Env, NotesState> {
     ports: {},
     connections: this,
     deliverReply: (reply) => deliver(this.name, reply),
-    ...(this.name.startsWith("idle:") && { closeIdleAfterMs: 200 }),
-    ...(this.name.startsWith("held:") && {
-      store: holdable(this.name, durableObjectStore(this.ctx.storage, { kind: assistant.kind, name: this.name })),
-    }),
-    ...(this.name.startsWith("gated:") && {
-      store: gated(this.name, durableObjectStore(this.ctx.storage, { kind: assistant.kind, name: this.name })),
-    }),
-    authorize: guard(this.name),
+    ...fixtureOptions(this.name, this.ctx.storage),
   });
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {

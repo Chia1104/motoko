@@ -18,6 +18,8 @@ import type {
 import { MotokoSockets } from "./socket.ts";
 import type { MotokoAuthorize, MotokoConnections } from "./socket.ts";
 import { durableObjectStore } from "./store.ts";
+import { WakeLoop } from "./wake.ts";
+import type { WakeTiming } from "./wake.ts";
 
 /**
  * What `MotokoCapability` takes: the one agent the object runs, the runtime options of `createAgentRuntime` for it,
@@ -52,14 +54,6 @@ const CAPABILITY_ID = "motoko";
 const WAKE_JOB = "motoko-wake";
 const WAKE_FN = "wake";
 
-interface WakeTiming {
-  /** The longest one wake waits inside an alarm, which may run 15 minutes. Longer work is waited on across alarms. */
-  readonly waitBudgetMs: number;
-  readonly heartbeatMs: number;
-}
-
-const TIMING: WakeTiming = { waitBudgetMs: 10 * 60_000, heartbeatMs: 30_000 };
-
 const MAX_BACKOFF_MS = 10 * 60_000;
 const WAKE_ERRORS_KEY = "motoko:wake-errors";
 
@@ -83,16 +77,17 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
   readonly #options: MotokoCapabilityOptions<Ports>;
   #host: AgentHost | undefined;
   #runtime: AgentRuntime | undefined;
-  #wake: Wake | undefined;
-  #stepping = false;
-  #waiting: Promise<void> | undefined;
-  #changed: (() => void) | undefined;
-  #timing = TIMING;
+  readonly #wakeLoop = new WakeLoop({
+    runtime: () => this.#runtime,
+    instance: () => this.#instance(),
+    schedule: (wake) => this.#schedule(wake),
+    trackAlarmWork: (work) => this.lifecycle.trackAlarmWork(work),
+  });
   readonly #sockets: MotokoSockets | undefined;
 
   static {
     setTiming = (capability, timing) => {
-      capability.#timing = { ...capability.#timing, ...timing };
+      capability.#wakeLoop.timing = { ...capability.#wakeLoop.timing, ...timing };
     };
   }
 
@@ -175,7 +170,7 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
 
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     if (job.id !== WAKE_JOB || job.fn !== WAKE_FN) return undefined;
-    const outcome = await this.#step();
+    const outcome = await this.#wakeLoop.step();
     const { kv } = this.lifecycle.storage;
     if (kv.get(WAKE_ERRORS_KEY) !== undefined) kv.delete(WAKE_ERRORS_KEY);
     return outcome;
@@ -192,7 +187,8 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     const { kv } = this.lifecycle.storage;
     const errors = (kv.get<number>(WAKE_ERRORS_KEY) ?? 0) + 1;
     kv.put(WAKE_ERRORS_KEY, errors);
-    return { rescheduleAt: Date.now() + Math.min(this.#timing.heartbeatMs * 2 ** (errors - 1), MAX_BACKOFF_MS) };
+    const { heartbeatMs } = this.#wakeLoop.timing;
+    return { rescheduleAt: Date.now() + Math.min(heartbeatMs * 2 ** (errors - 1), MAX_BACKOFF_MS) };
   }
 
   /**
@@ -203,17 +199,14 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
     this.#sockets?.dispose();
     const runtime = this.#runtime;
     this.#runtime = undefined;
-    this.#changed?.();
+    this.#wakeLoop.runtimeClosed();
     await runtime?.close();
   }
 
   async #arm(scope: StorageScope, wake: Wake): Promise<void> {
     const own = scopeKey(this.scope);
     if (scopeKey(scope) !== own) throw new TypeError(`This Durable Object wakes its own scope ${own} alone`);
-    this.#wake = wake;
-    this.#changed?.();
-    if (this.#stepping || this.#waiting !== undefined) return;
-    await this.#schedule(wake);
+    await this.#wakeLoop.arm(wake);
   }
 
   async #schedule(wake: Wake): Promise<void> {
@@ -224,59 +217,5 @@ export class MotokoCapability<Ports = unknown> extends LifecycleCapability {
       return;
     }
     await jobs.push({ id: WAKE_JOB, fn: WAKE_FN, time, singleflight: true, recoveryLoop: true });
-  }
-
-  async #step(): Promise<LifecycleJobOutcome> {
-    const heartbeat = { rescheduleAt: Date.now() + this.#timing.heartbeatMs };
-    if (this.#waiting !== undefined) return heartbeat;
-    this.#stepping = true;
-    let instance: AgentInstance;
-    try {
-      instance = this.#instance();
-      await instance.resume();
-    } finally {
-      this.#stepping = false;
-    }
-    const wake = this.#wake;
-    if (wake?.active === true) {
-      const runtime = this.#runtime;
-      const waiting = this.#waitWhileActive(instance, () => this.#runtime === runtime).then(
-        async () => {
-          this.#waiting = undefined;
-          if (this.#runtime !== runtime) return;
-          await this.#schedule(this.#wake ?? { active: false });
-        },
-        (error: unknown) => {
-          this.#waiting = undefined;
-          throw error;
-        },
-      );
-      this.#waiting = waiting;
-      // Inside an alarm, this wait counts against the alarm's memory-limit breaker. Outside an alarm, the heartbeat
-      // alone covers it.
-      if (!this.lifecycle.trackAlarmWork(waiting)) waiting.catch(() => undefined);
-      return heartbeat;
-    }
-    return wake?.at === undefined ? undefined : { rescheduleAt: wake.at };
-  }
-
-  async #waitWhileActive(instance: AgentInstance, current: () => boolean): Promise<void> {
-    const deadline = Date.now() + this.#timing.waitBudgetMs;
-    for (let wake = this.#wake; wake?.active === true && current(); wake = this.#wake) {
-      const now = Date.now();
-      if (now >= deadline) return;
-      const until = Math.min(deadline, wake.at ?? deadline);
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, Math.max(until - now, 0));
-        this.#changed = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-      });
-      this.#changed = undefined;
-      const at = this.#wake?.at;
-      // With an alarm host, pi-durable arms no timer for a sleep of its own.
-      if (current() && at !== undefined && Date.now() >= at) await instance.resume();
-    }
   }
 }

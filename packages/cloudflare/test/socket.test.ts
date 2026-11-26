@@ -8,6 +8,7 @@ import { delegateOf, emptySessionView, foldEvents } from "@chia1104/motoko-wire"
 import type { AgentWireEvent, Cursor, ToolItem } from "@chia1104/motoko-wire";
 
 import { eventually, unhandledRejections } from "./helpers.ts";
+import { objectName } from "./worker.ts";
 
 const OPEN = 1;
 const CLOSED = 3;
@@ -362,7 +363,7 @@ describe("a socket client of an Agent with Motoko installed", () => {
   });
 
   it("asks the app's authorize about every call, with its connection and parsed params, before running it", async () => {
-    const stub = agent(`guarded:${crypto.randomUUID()}`);
+    const stub = agent(objectName("guarded"));
     await stub.script([{ text: "Hi." }]);
     const socket = await new TestSocket(() => stub, "http://motoko.test/?_pk=alice").connect();
     const client = clientOf(socket);
@@ -477,7 +478,7 @@ describe("a socket client of an Agent with Motoko installed", () => {
 
 describe("a socket client of an object whose scope's lease another writer holds", () => {
   it("is answered lease_held for its calls and its follows, leaving no rejection unhandled", async () => {
-    const stub = agent(`held:${crypto.randomUUID()}`);
+    const stub = agent(objectName("held"));
     await stub.holdLease(true);
     const client = clientOf(await new TestSocket(() => stub).connect());
     const unhandled = await unhandledRejections(async () => {
@@ -490,7 +491,7 @@ describe("a socket client of an object whose scope's lease another writer holds"
   });
 
   it("ends lease_held the follows it reattaches as it starts, leaving no rejection unhandled", async () => {
-    const name = `held:${crypto.randomUUID()}`;
+    const name = objectName("held");
     const socket = await new TestSocket(() => agent(name)).connect();
     const client = clientOf(socket);
     const { id: sessionId } = await client.createSession();

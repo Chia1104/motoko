@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
 import { eventually, pause, rejectionOf, unhandledRejections } from "./helpers.ts";
+import { objectName } from "./worker.ts";
 
 const fresh = (name: string = crypto.randomUUID()) => env.MOTOKO.getByName(name);
 
@@ -39,7 +40,7 @@ describe("an Agent with Motoko installed", () => {
 
 describe("with closeIdleAfterMs", () => {
   it("closes the idle instance, erasing a deleted session from the object's database, and reopens at a call", async () => {
-    const stub = fresh(`idle:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("idle"));
     await stub.script([{ text: "Kept answer." }, { text: "Secret answer." }]);
     const kept = await stub.createSession();
     const doomed = await stub.createSession();
@@ -141,7 +142,7 @@ describe("an ask from one object to another", () => {
 
 describe("an object whose scope's lease another writer holds", () => {
   it("refuses an RPC call with core's LeaseHeldError, leaving no rejection unhandled", async () => {
-    const name = `held:${crypto.randomUUID()}`;
+    const name = objectName("held");
     const stub = fresh(name);
     await stub.holdLease(true);
     let refusal: unknown;
@@ -158,7 +159,7 @@ describe("an object whose scope's lease another writer holds", () => {
   });
 
   it("has its wake job try again later, leaving no rejection unhandled, and completes it once the lease is free", async () => {
-    const stub = fresh(`held:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("held"));
     await stub.holdLease(true);
     const unhandled = await unhandledRejections(async () => {
       await stub.armActive();
@@ -182,7 +183,7 @@ describe("the wake job", () => {
   });
 
   it("stays while a call that can start work waits on its commit, though its own run found nothing to do", async () => {
-    const stub = fresh(`gated:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("gated"));
     await stub.script([{ text: "Done." }]);
     const session = await stub.createSession();
     await eventually(async () => (await stub.wakeJob()) === null);
