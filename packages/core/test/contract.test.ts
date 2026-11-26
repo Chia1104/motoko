@@ -54,7 +54,6 @@ describe("reports", () => {
     runtime = createAgentRuntime({
       agents: [agent],
       host: memoryHost(),
-      // The generation's own access to the models throws: pi faults the task and reports it.
       models: () => {
         calls += 1;
         if (calls === 2) throw new Error("models down");
@@ -74,7 +73,6 @@ describe("reports", () => {
       {
         source: "pi",
         scope: { kind: "r", name: "x" },
-        // Every field pi gave, the task and the reason included.
         report: {
           kind: "task_faulted",
           task: { id: expect.any(Number), kind: "pi.generation", conversationId: Number(id) },
@@ -95,7 +93,6 @@ describe("reports", () => {
       wake: {
         kind: "alarm",
         async arm(_scope, wake) {
-          // Once the instance is open, pi's idle wake reports fail; the runtime's arming before work does not.
           if (failing && !wake.active) throw new Error("alarm unavailable");
         },
       },

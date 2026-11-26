@@ -1,27 +1,23 @@
-// The lease's statements on MySQL: the holder, the expiry (`UTC_TIMESTAMP(3)`, the database clock) and the fencing
-// token live in the scope's row. Why a row lease and not a lock held by a connection (`GET_LOCK`): see
-// `@chia1104/motoko-core/store`'s lease.
-//
 // MySQL has no RETURNING, so a statement that takes or extends a lease cannot say which row it changed. Acquiring
-// stamps a nonce of its own on the row as it takes the lease, and reads the row back in the same transaction: the
-// lease is the acquirer's exactly when the row holds its nonce.
+// stamps a nonce of its own on the row as it takes the lease, and reads the row back in the same transaction. The lease
+// is the acquirer's exactly when the row holds its nonce.
 
 import type { Wake } from "@earendil-works/pi-durable";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import type { ResultSetHeader } from "mysql2";
 
 import type { StorageScope } from "@chia1104/motoko-core";
 import { toNumber } from "@chia1104/motoko-core/store";
 import type { LeaseHolder, LeaseRow, Renewal } from "@chia1104/motoko-core/store";
 
-import { epochMs, expiryIn, freshNonce, now, packet, rowsOf, run, scopeKey } from "./database.ts";
+import { epochMs, expiryIn, fencedTransaction, now, rowsOf, run } from "./database.ts";
 import type { Database, PoolDatabase } from "./database.ts";
-import { journalCheck, withJournal } from "./migrations.ts";
+import { scopeKeyOf } from "./expressions.ts";
+import { journalCheck, missingOrOlderSchemaAsVersionError } from "./migrations.ts";
 import { scopes } from "./schema.ts";
 
-// A type alias, not an interface: a packet's rows are `Record<string, unknown>`, and only an alias has the implicit
-// index signature that matches.
+// A type alias, not an interface, because a packet's rows are `Record<string, unknown>`. Only an alias has the implicit
+// index signature that matches them.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type AcquiredRow = {
   applied: unknown;
@@ -33,15 +29,10 @@ type AcquiredRow = {
 };
 
 /**
- * Takes the lease of `scope` if it is free or expired, creating the scope's row on first use, in one round trip: a
- * transaction of an upsert and a read of the row it left. The upsert writes only while the journal is this package's
- * migrations, and the read selects the journal too (the schema check). It inserts the row with the lease, or, when the
- * row exists and its lease is free, takes it: the next token, the holder, the expiry, and a fresh nonce. The read
- * finds the nonce exactly when the lease is the acquirer's; otherwise it names the holder. Concurrent acquirers of one
- * scope wait for each other on its row (or its key), so exactly one of them takes it.
+ * Concurrent acquirers of one scope wait for each other on its row or its key, so exactly one of them takes the lease.
  *
- * Every acquisition draws an `AUTO_INCREMENT` value, even when the row exists and the insert turns into the update,
- * so `scope_id` has gaps; nothing reads meaning into them.
+ * Every acquisition draws an `AUTO_INCREMENT` value, even when the row exists and the insert turns into the update, so
+ * `scope_id` has gaps. Nothing depends on the ids being contiguous.
  */
 export async function acquireLease(
   db: PoolDatabase,
@@ -49,16 +40,15 @@ export async function acquireLease(
   holder: string,
   ttlMs: number,
 ): Promise<LeaseRow | LeaseHolder> {
-  const nonce = freshNonce();
   const free = sql`(${scopes.leaseExpiresAt} IS NULL OR ${scopes.leaseExpiresAt} <= ${now})`;
-  // Assigned in order, each seeing the ones before it: the expiry, which `free` reads, goes last.
+  // MySQL assigns these in order, and each sees the ones before it. So the expiry, which `free` reads, goes last.
   const takeIfFree = (column: string, taken: SQL) =>
     sql`${sql.identifier(column)} = IF(${free}, ${taken}, ${scopes}.${sql.identifier(column)})`;
-  const [, [row]] = (await withJournal(db, () =>
-    packet(db, [
-      sql`INSERT INTO ${scopes} (kind, name, lease_token, lease_holder, lease_expires_at, commit_nonce)
+  const row = await missingOrOlderSchemaAsVersionError(db, () =>
+    fencedTransaction<AcquiredRow>(db, (nonce) => ({
+      stamp: sql`INSERT INTO ${scopes} (kind, name, lease_token, lease_holder, lease_expires_at, commit_nonce)
         SELECT * FROM (SELECT ${scope.kind} AS kind, ${scope.name} AS name, 1 AS lease_token,
-            ${holder} AS lease_holder, ${expiryIn(ttlMs)} AS lease_expires_at, ${nonce} AS commit_nonce) AS a
+            ${holder} AS lease_holder, ${expiryIn(ttlMs)} AS lease_expires_at, ${nonce.value} AS commit_nonce) AS a
           WHERE ${journalCheck.current}
         ON DUPLICATE KEY UPDATE ${sql.join(
           [
@@ -69,11 +59,11 @@ export async function acquireLease(
           ],
           sql`, `,
         )}`,
-      sql`SELECT ${journalCheck.applied} AS applied, s.scope_id, s.lease_token, s.lease_holder AS holder,
-          ${epochMs(sql`s.lease_expires_at`)} AS expires_ms, s.commit_nonce = ${nonce} AS taken
-        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_key = ${scopeKey(scope.kind, scope.name)}`,
-    ]),
-  )) as [ResultSetHeader, [AcquiredRow]];
+      outcome: sql`SELECT ${journalCheck.applied} AS applied, s.scope_id, s.lease_token, s.lease_holder AS holder,
+          ${epochMs(sql`s.lease_expires_at`)} AS expires_ms, s.commit_nonce = ${nonce.value} AS taken
+        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_key = ${scopeKeyOf(scope.kind, scope.name)}`,
+    })),
+  );
   journalCheck.assertCurrent(row.applied);
   if (Number(row.taken) === 1) return { scopeId: toNumber(row.scope_id), token: toNumber(row.lease_token) };
   return {
@@ -83,13 +73,9 @@ export async function acquireLease(
 }
 
 /**
- * Extends the expiry of each lease that is still its holder's and unexpired, in one statement. When it extended them
- * all, that is every lease's answer; otherwise one more statement reads each scope's token and expiry, so a lease that
- * was not extended learns why (taken, expired, or its scope deleted).
- *
  * The extending statement's count is of the rows it matched or of the rows it changed, as the client's
- * `CLIENT_FOUND_ROWS` flag says (mysql2 sets it); a row renewed twice within a millisecond counts only as matched, so
- * a count short of all of them is only ever answered by the read.
+ * `CLIENT_FOUND_ROWS` flag says, and mysql2 sets that flag. A row renewed twice within a millisecond counts only as
+ * matched. So when the count falls short of all the leases, the read decides each answer.
  */
 export async function renewLeases(db: Database, leases: readonly LeaseRow[], ttlMs: number): Promise<Renewal[]> {
   const ids = leases.map((lease) => lease.scopeId);
@@ -120,7 +106,6 @@ export async function renewLeases(db: Database, leases: readonly LeaseRow[], ttl
   });
 }
 
-/** Frees the scope if `lease` is still its holder's, recording `wake` (work that can run without one). */
 export async function releaseLease(db: Database, lease: LeaseRow, wake: Wake | undefined): Promise<void> {
   await db
     .update(scopes)

@@ -7,7 +7,7 @@ import type { FollowListener, MotokoTransport } from "./client.ts";
 export interface HttpTransportOptions {
   /** Where `motokoHandler`'s routes are, its `basePath` on the server: `/motoko`, or `https://api.example.com/motoko`. */
   readonly baseUrl: string;
-  /** Default: the global `fetch`. */
+  /** Defaults to the global `fetch`. */
   readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
   /** Sent with every request, such as `Authorization`; a function is asked again for each, so a token can change. */
   readonly headers?: HttpHeaders | (() => HttpHeaders | Promise<HttpHeaders>);
@@ -16,17 +16,19 @@ export interface HttpTransportOptions {
 /** What `fetch` takes as `headers`: a `Headers`, a record or a list of pairs. */
 export type HttpHeaders = NonNullable<RequestInit["headers"]>;
 
-/** How long a follow waits before it reconnects: doubling from the first wait up to the last, each with jitter. */
 const FIRST_RETRY_MS = 500;
 const LAST_RETRY_MS = 30_000;
 
+const reconnectDelay = (retries: number) =>
+  Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** retries) * (0.5 + Math.random() / 2);
+
 /**
- * Motoko's call protocol over HTTP, as `@chia1104/motoko-node`'s `motokoHandler` serves it: each call a `POST
- * {baseUrl}/call`, and each follow `GET {baseUrl}/sessions/:id/events`, its server-sent events read through `fetch`,
- * so a follow can send `headers` as a call does. A follow whose stream ends reconnects after a backoff, with
- * `Last-Event-ID` set to the client's cursor, as does one the server cannot serve now (a 408, a 429, a 5xx); one the
- * server refuses before streaming (a cursor or a session it cannot follow, a caller it does not let) ends with that
- * refusal, and is not tried again.
+ * Motoko's call protocol over HTTP, as `@chia1104/motoko-node`'s `motokoHandler` serves it. Each call is a `POST
+ * {baseUrl}/call`. Each follow is a `GET {baseUrl}/sessions/:id/events` whose server-sent events are read through
+ * `fetch`, so a follow can send `headers` as a call does. A follow whose stream ends reconnects after a backoff, with
+ * `Last-Event-ID` set to the client's cursor. So does a follow the server cannot serve now, answered with a 408, a 429
+ * or a 5xx. A follow the server refuses before streaming, for a cursor or a session it cannot follow or a caller it does
+ * not let, ends with that refusal and is not tried again.
  */
 export function httpTransport(options: HttpTransportOptions): MotokoTransport {
   const base = options.baseUrl.replace(/\/+$/, "");
@@ -50,7 +52,6 @@ export function httpTransport(options: HttpTransportOptions): MotokoTransport {
       });
       text = await response.text();
     } catch {
-      // Not answered, or cut off before the whole answer came: the call may or may not have run.
       throw closed();
     }
     const body = jsonOf(text);
@@ -63,10 +64,6 @@ export function httpTransport(options: HttpTransportOptions): MotokoTransport {
     const { signal } = stop;
     const url = `${base}/sessions/${encodeURIComponent(sessionId)}/events`;
 
-    /**
-     * One connection, and how it went: it ended the follow (or the follow was stopped), its stream dropped, or it never
-     * reached the server. Either of the last two is followed again.
-     */
     async function connect(): Promise<"ended" | "dropped" | "unreachable"> {
       const cursor = from();
       let response: Response;
@@ -82,8 +79,6 @@ export function httpTransport(options: HttpTransportOptions): MotokoTransport {
       if (signal.aborted) return "ended";
       if (response.status !== 200 || !isEventStream(response)) {
         const error = refusalOf(response, jsonOf(await response.text().catch(() => "")));
-        // A server that cannot serve now (a proxy's 502 in a deploy, a home failing over: 503 `lease_held`) is tried
-        // again. Any other refusal before the stream starts is the server's answer to this follow, and ends it.
         if (isTransient(response)) return "unreachable";
         if (!signal.aborted) listener.ended(error);
         return "ended";
@@ -110,7 +105,6 @@ export function httpTransport(options: HttpTransportOptions): MotokoTransport {
           }
         }
       } catch {
-        // The connection broke mid-stream.
         return "dropped";
       } finally {
         void reader.cancel().catch(() => undefined);
@@ -125,7 +119,7 @@ export function httpTransport(options: HttpTransportOptions): MotokoTransport {
           retries = 0;
           listener.dropped();
         }
-        await pause(Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** retries) * (0.5 + Math.random() / 2), signal);
+        await pause(reconnectDelay(retries), signal);
       }
       stop.abort();
     })();
@@ -145,17 +139,12 @@ function jsonOf(text: string): unknown {
   }
 }
 
-/** An answer that says "not now" rather than "no": a timeout, too many requests, or any 5xx. */
 const isTransient = (response: Response) =>
   response.status >= 500 || response.status === 408 || response.status === 429;
 
 const isEventStream = (response: Response) =>
   response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === "text/event-stream";
 
-/**
- * The error an answer that is not a result carries: the handler's `{ error }`, or for an answer of something else (the
- * app's own refusal in `resolve`, a proxy's error page) `forbidden` for a 401 or 403 and `internal` otherwise.
- */
 function refusalOf(response: Response, body: unknown): MotokoError {
   const error = callErrorSchema.safeParse(
     typeof body === "object" && body !== null && "error" in body ? body.error : undefined,
@@ -165,7 +154,6 @@ function refusalOf(response: Response, body: unknown): MotokoError {
   return new MotokoError(code, `The server answered ${response.status}`);
 }
 
-/** Resolves after `ms`, or as soon as `signal` aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -182,7 +170,6 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** One message of an event stream: its event type (`message` unless it names one) and its data lines, joined. */
 interface EventStreamMessage {
   readonly event: string;
   readonly data: string;
@@ -191,9 +178,9 @@ interface EventStreamMessage {
 const LINE_END = /\r\n|\r|\n/g;
 
 /**
- * An event stream's messages as the SSE spec reads them, fed its text as it arrives: lines end in CRLF, LF or CR (a
- * CRLF split across two chunks is one), a line starting with `:` is a comment, `data` lines join with `\n`, a blank
- * line dispatches a message with data, and `id` and `retry` are left alone, since the client keeps its own cursor.
+ * An event stream's messages as the server-sent events spec reads them, fed its text as it arrives. Lines end in CRLF,
+ * LF or CR, and a CRLF split across two chunks is one line end. A line starting with `:` is a comment, `data` lines join
+ * with `\n`, and a blank line dispatches a message with data.
  */
 function eventStreamParser(): (text: string) => EventStreamMessage[] {
   let buffer = "";

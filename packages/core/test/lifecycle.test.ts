@@ -1,6 +1,3 @@
-// An instance's lifecycle on a clock that moves only when the test moves it: every transition,
-// race and timer is driven step by step, with no real wait.
-
 import type { Wake } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -11,10 +8,8 @@ import { InstanceClosedError, LeaseHeldError } from "../src/index.ts";
 const IDLE = 1_000;
 const scope = { kind: "notes", name: "a" };
 
-/** Lets every promise chain started so far run until it waits on something outside it. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** A clock that moves only when the test moves it. */
 class TestClock implements Clock {
   #now = 1_000_000;
   readonly #timers = new Set<{ readonly at: number; readonly callback: () => void; readonly keepAlive: boolean }>();
@@ -29,12 +24,10 @@ class TestClock implements Clock {
     return () => void this.#timers.delete(timer);
   }
 
-  /** The timers waiting, by when they are due. */
   pending(): { at: number; keepAlive: boolean }[] {
     return [...this.#timers].map(({ at, keepAlive }) => ({ at, keepAlive })).sort((a, b) => a.at - b.at);
   }
 
-  /** Moves time on by `ms`, firing each timer as its time comes, and lets what each sets off settle. */
   async advance(ms: number): Promise<void> {
     const until = this.#now + ms;
     for (;;) {
@@ -62,10 +55,6 @@ interface Opened {
   readonly n: number;
 }
 
-/**
- * A lifecycle over a scripted instance: each open, release and arm is logged, and a test holds or
- * fails one by setting its step in `script`. `held()` is whether the runtime keeps the instance.
- */
 function world(options: { idleMs?: number | undefined; alarm?: boolean } = {}) {
   const clock = new TestClock();
   const log: string[] = [];
@@ -111,7 +100,6 @@ function world(options: { idleMs?: number | undefined; alarm?: boolean } = {}) {
   return { lifecycle, clock, log, reports, script, held: () => held };
 }
 
-/** Opens the instance, then closes it for idleness with a sleep due at `at`. */
 async function closedWithSleep({ lifecycle, clock, script }: ReturnType<typeof world>, at: number) {
   await lifecycle.run(async () => undefined);
   script.wake = { active: false, at };
@@ -274,7 +262,6 @@ describe("without an alarm host, a sleep the instance was closed with", () => {
     expect(await lifecycle.run(async ({ n }) => n)).toBe(2);
     expect(lifecycle.inspection().wakeAt).toBeUndefined();
     expect(clock.pending().every(({ keepAlive }) => !keepAlive)).toBe(true);
-    // The call ran what was due: the instance closes once idle, and the old sleep never reopens it.
     script.wake = { active: false };
     await clock.advance(at - clock.now() + IDLE);
     expect(log).toEqual(["open 1", "release 1", "open 2", "release 2"]);
@@ -450,7 +437,6 @@ describe("an end", () => {
   it("comes at once while the instance opens, and the instance is let go once the open has finished", async () => {
     const { lifecycle, log, script, held } = world();
     const opening = deferred();
-    // As an instance's open does, this one checks for an end before it writes.
     script.open = async () => {
       await opening.promise;
       if (lifecycle.ended !== undefined) throw new InstanceClosedError(scope, lifecycle.ended);
@@ -463,7 +449,6 @@ describe("an end", () => {
     await expect(call).rejects.toBeInstanceOf(InstanceClosedError);
     await ending;
     expect(held()).toBe(false);
-    // The open let go of what it took itself.
     expect(log).toEqual(["open 1"]);
   });
 
@@ -494,7 +479,6 @@ describe("an end", () => {
     });
     expect(lifecycle.state).toBe("closed");
     await clock.advance(0);
-    // The runtime keeps it until the lease is free.
     expect(done).toBe(false);
     expect(held()).toBe(true);
     releasing.resolve();

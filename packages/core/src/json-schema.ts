@@ -3,17 +3,17 @@ import type { JsonObject } from "@earendil-works/pi-durable";
 import * as z from "zod";
 
 /**
- * zod parameters as the JSON Schema pi-durable validates and coerces a call's arguments against.
+ * zod parameters as the JSON Schema that pi-durable validates and coerces a call's arguments against.
  *
- * Optional parameters are offered to the model as nullable, and a `null` it sends for one is dropped
- * before validation (chia's `pi/tools.ts` does the same): a model that fills every field otherwise
- * invents a value for one it meant to leave out. A parameter that is itself nullable keeps its
- * `null`. The zod parse that follows applies what JSON Schema cannot express and types the arguments.
+ * Optional parameters are offered to the model as nullable, and a `null` it sends for one is dropped before
+ * validation. Otherwise a model that fills every field invents a value for one it meant to leave out. A parameter that
+ * is itself nullable keeps its `null`. The zod parse that follows applies what JSON Schema cannot express and types the
+ * arguments.
  */
 export interface ToolJsonSchema {
-  /** The schema as written, input side. */
+  /** The schema as written, for the input side. */
   readonly schema: JsonObject;
-  /** What the model is offered: `schema` with optional properties made nullable. */
+  /** What the model is offered, which is `schema` with its optional properties made nullable. */
   readonly offered: JsonObject;
 }
 
@@ -22,7 +22,6 @@ export function toolJsonSchema(name: string, parameters: z.ZodType): ToolJsonSch
   if (json?.type !== "object") {
     throw new TypeError(`Tool \`${name}\` must take an object of parameters (z.object(...))`);
   }
-  // The provider reads the schema inline; a dialect URI is noise to it.
   const { $schema: _dialect, ...schema } = json;
   return { schema, offered: offerNull(schema) };
 }
@@ -49,7 +48,6 @@ const acceptsNull = (schema: JsonObject): boolean => {
 const requiredOf = (schema: JsonObject): ReadonlySet<string> =>
   new Set((asArray(schema.required) ?? []).flatMap((key) => (typeof key === "string" ? [key] : [])));
 
-/** Every optional property that rejects `null` is offered as nullable, at any depth. */
 function offerNull(schema: JsonObject): JsonObject {
   const next: Record<string, JsonValue> = { ...schema };
   const items = asObject(schema.items);
@@ -78,7 +76,6 @@ function offerNull(schema: JsonObject): JsonObject {
   return next;
 }
 
-/** Drops the `null` a model sent for a property `offerNull` made nullable. */
 export function omitOfferedNulls(schema: JsonObject, value: unknown): unknown {
   const items = asObject(schema.items);
   const list = asArray(value);

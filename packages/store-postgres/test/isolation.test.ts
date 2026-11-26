@@ -1,6 +1,3 @@
-// Opening a new scope is an INSERT, never DDL. That scopes in one database are apart, and what `deleteScope` removes,
-// is in the store suite (`conformance.test.ts`).
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";

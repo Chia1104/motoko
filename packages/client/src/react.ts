@@ -1,7 +1,3 @@
-/**
- * `@chia1104/motoko-client/react`: `useMotokoSession`, a thin hook over the client. React is an optional peer; nothing
- * else here needs it.
- */
 import { useCallback, useSyncExternalStore } from "react";
 
 import type {
@@ -17,7 +13,7 @@ import type {
 
 export interface MotokoSessionHandle extends MotokoSessionState {
   /**
-   * `requestId` defaults to a fresh one: pass your own to make a retry of the same message idempotent. Pass
+   * `requestId` defaults to a fresh one. Pass your own to make a retry of the same message idempotent. Pass
    * `whenBusy: "steer"` to have the run going on read it after its current tool round.
    */
   submit(text: string, options?: Partial<Omit<SubmitInput, "text">>): Promise<SubmitResult>;
@@ -32,8 +28,9 @@ export interface MotokoSessionHandle extends MotokoSessionState {
 }
 
 /**
- * Follows `sessionId` over `client`, whichever transport it has: its session view, folded from its events and resumed
- * from its cursor when the connection drops, and the calls on it. `status` is the follow's; the run's is `view.status`.
+ * Follows `sessionId` over `client`, whichever transport it has. It gives the session view, folded from its events and
+ * resumed from its cursor when the connection drops, and the calls on it. `status` is the follow's, and the run's is
+ * `view.status`.
  */
 export function useMotokoSession(client: MotokoClient, sessionId: string): MotokoSessionHandle {
   const follow = useCallback((onChange: () => void) => client.follow(sessionId, onChange), [client, sessionId]);

@@ -1,13 +1,9 @@
-// Migrations, the version check at open, and what the tables keep: the shipped SQL files match the schema module,
-// `migrate()` and the CLI apply them to a fresh database, every lease, storage open and delete refuses a database that
-// is missing the tables, older than this package, or migrated by a newer release; and the columns keep scope names,
-// indexed strings, records, integers and expiries exactly.
-
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -15,11 +11,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryId, StorageWrite, TaskId } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import type { Pool } from "mysql2/promise";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { rowsOf } from "../src/database.ts";
 import {
   checkSchema,
   createMysqlStore,
@@ -29,14 +26,15 @@ import {
   SchemaVersionError,
   supportedMigrations,
 } from "../src/index.ts";
-import { stateOf } from "../src/migrations.ts";
+import { journalCheck, stateOf } from "../src/migrations.ts";
 import { scopes } from "../src/schema.ts";
 
 import { MYSQL_URL, mysqlBackend, newPool, temporaryDatabase, uniqueName } from "./helpers.ts";
 import type { Backend } from "./helpers.ts";
 
 const run = promisify(execFile);
-const PACKAGE = new URL("..", import.meta.url).pathname;
+const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
+const DRIZZLE_KIT = join(PACKAGE, "node_modules", "drizzle-kit", "bin.js");
 const context = BACKGROUND_CONTEXT;
 const scope = { kind: "agent", name: "one" };
 const latest = supportedMigrations().at(-1) as string;
@@ -61,14 +59,13 @@ const cli = (env: Record<string, string>, args: string[] = []) =>
 
 describe("the shipped migrations", () => {
   it("are the SQL drizzle-kit generates from the schema module: no pending diff", async () => {
-    // Generate into a copy, so a drift shows as a failure here, never as a new file in the package.
     const out = await mkdtemp(join(tmpdir(), "agent-runtime-mysql-migrations-"));
     try {
       await cp(join(PACKAGE, "migrations"), out, { recursive: true });
       const before = await readdir(out);
       const { stdout } = await run(
-        "pnpm",
-        ["exec", "drizzle-kit", "generate", "--dialect", "mysql", "--schema", "./src/schema.ts", "--out", out],
+        process.execPath,
+        [DRIZZLE_KIT, "generate", "--dialect", "mysql", "--schema", "./src/schema.ts", "--out", out],
         { cwd: PACKAGE },
       );
       expect(stdout).toMatch(/No schema changes/);
@@ -95,7 +92,7 @@ describe("the shipped migrations", () => {
     expect(stateOf([], [latest])).toBe("missing");
     expect(stateOf(["20260101000000_init"], ["20260101000000_init", "20260201000000_next"])).toBe("older");
     expect(stateOf(["20260101000000_init", "20260201000000_next"], ["20260101000000_init"])).toBe("newer");
-    expect(stateOf([latest], [latest])).toBeUndefined();
+    expect(stateOf([latest], [latest])).toBe("current");
     const older = new SchemaVersionError(
       "older",
       ["20260101000000_init"],
@@ -136,7 +133,6 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
     expect(missing.applied).toEqual([]);
     expect(missing.message).toContain("no Motoko tables: run migrate()");
     await refusal(store.deleteScope(scope));
-    // The journal exists, but no migration was recorded: the same answer.
     await pool.query(
       `CREATE TABLE ${MIGRATIONS_TABLE} (id SERIAL PRIMARY KEY, hash TEXT NOT NULL, created_at BIGINT, name TEXT)`,
     );
@@ -172,9 +168,6 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
   });
 
   it("refuses tables its journal does not hold, whose tables lack what its statements name", async () => {
-    // The package ships one migration so far, so an older database cannot be built from it (the comparison above
-    // covers "older"). Tables the journal does not account for, missing a column the statements name, still get the
-    // version check's answer rather than the driver's unknown-column error.
     await migrate(pool);
     await pool.query("ALTER TABLE agent_runtime_scopes DROP COLUMN commit_nonce");
     await pool.query(`DELETE FROM ${MIGRATIONS_TABLE}`);
@@ -188,7 +181,6 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
   it("refuses a database a newer release migrated, at open and in migrate(), changing nothing", async () => {
     await migrate(pool);
     const store = createMysqlStore(pool);
-    // A lease held from before the newer release migrated the database.
     const held = await store.lease(scope);
     await pool.query(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, ?)`, [
       "29991231000000_from_the_future",
@@ -206,12 +198,76 @@ describe.skipIf(MYSQL_URL === undefined)("migrations and the version check on My
     expect((rows as { n: number }[])[0]?.n).toBe(supportedMigrations().length + 1);
   });
 
+  it("lets a statement write exactly when the journal it read is current", async () => {
+    await migrate(pool);
+    const db = drizzle({ client: pool });
+    const supported = supportedMigrations();
+    const future = "29991231000000_from_the_future";
+    const journals: readonly (readonly (string | null)[])[] = [
+      [],
+      supported,
+      [...supported].reverse(),
+      supported.slice(0, -1),
+      supported.slice(1),
+      [...supported, future],
+      [future],
+      [null],
+      [...supported, null],
+      [...supported, ...supported],
+      supported.map((name) => name.toUpperCase()),
+      supported.map((name) => `${name} `),
+    ];
+    // The journal's `name` column takes the database's default collation. MySQL 8 defaults to `utf8mb4_0900_ai_ci`, and
+    // a database created before 8.0 to `latin1_swedish_ci`, which also ignores trailing spaces.
+    for (const collation of ["utf8mb4_0900_ai_ci", "latin1_swedish_ci"]) {
+      await pool.query(`ALTER TABLE ${MIGRATIONS_TABLE} MODIFY name TEXT COLLATE ${collation}`);
+      for (const journal of journals) {
+        await pool.query(`DELETE FROM ${MIGRATIONS_TABLE}`);
+        for (const name of journal) {
+          await pool.query(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) VALUES ('x', 0, ?)`, [name]);
+        }
+        const [row] = await rowsOf<{ applied: string[] | null; current: unknown }>(
+          db,
+          sql`SELECT ${journalCheck.applied} AS applied, ${journalCheck.current} AS current`,
+        );
+        expect({ collation, journal, current: Number(row?.current) === 1 }).toEqual({
+          collation,
+          journal,
+          current: stateOf(row?.applied ?? [], supported) === "current",
+        });
+      }
+    }
+  });
+
+  it("leases a free scope while the journal holds a shipped migration twice", async () => {
+    await migrate(pool);
+    await pool.query(
+      `INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at, name) SELECT hash, created_at, name FROM ${MIGRATIONS_TABLE}`,
+    );
+    const store = createMysqlStore(pool);
+    const lease = await store.lease(scope);
+    expect(lease.token).toBe(1);
+    const storage = await store.storage(scope, lease);
+    expect(await storage.mintId()).toBe(2);
+    await lease.release();
+  });
+
+  it("refuses a journal that names the shipped migrations in another case, leaving the scope free", async () => {
+    await migrate(pool);
+    await pool.query(`UPDATE ${MIGRATIONS_TABLE} SET name = UPPER(name)`);
+    const store = createMysqlStore(pool);
+    expect((await refusal(store.lease(scope))).state).toBe("newer");
+    await pool.query(`UPDATE ${MIGRATIONS_TABLE} SET name = LOWER(name)`);
+    const lease = await store.lease(scope);
+    expect(lease.token).toBe(1);
+    await lease.release();
+  });
+
   it("migrates a fresh database with migrate(), serializing concurrent calls", async () => {
     const pools = [newPool(database.url, 1), newPool(database.url, 1), newPool(database.url, 1)];
     try {
       await expect(checkSchema(pools[0] as Pool)).rejects.toThrow(SchemaVersionError);
       const results = await Promise.all(pools.map((one) => migrate(one)));
-      // One call applied everything; the others waited on the lock and found nothing to do.
       expect(results.map((result) => result.applied.length).sort()).toEqual([0, 0, supportedMigrations().length]);
       for (const one of pools) await checkSchema(one);
     } finally {
@@ -253,7 +309,6 @@ describe.skipIf(MYSQL_URL === undefined)("what the tables keep on MySQL", () => 
     const scopes = [long, spaced, { ...spaced, name: `${spaced.name} ` }, { ...spaced, name: `${spaced.name}́` }];
     const leases = [];
     for (const each of scopes) leases.push(await backend.store.lease(each));
-    // Each is its own scope: a trailing space or a combining mark is a different name.
     expect(new Set(leases.map((lease) => lease.scopeId)).size).toBe(scopes.length);
     const [row] = await backend.query<{ kind: string; name: string; key: string }>(
       "SELECT kind, name, HEX(scope_key) AS `key` FROM agent_runtime_scopes WHERE scope_id = ?",
@@ -344,7 +399,6 @@ describe.skipIf(MYSQL_URL === undefined)("what the tables keep on MySQL", () => 
     );
     expect(row?.next_id).toBe(String(2 ** 53));
     await lease.release();
-    // Reopened, the counter is at 2^53 exactly: no ID is left to mint.
     const again = await backend.store.lease(scope);
     const reopened = await backend.store.storage(scope, again);
     expect((await reopened.entry(Number.MAX_SAFE_INTEGER as EntryId, context))?.entry.kind).toBe("last");
@@ -379,7 +433,6 @@ describe.skipIf(MYSQL_URL === undefined)("what the tables keep on MySQL", () => 
   });
 
   it("expires leases by the database clock in UTC, whatever the session's time zone", async () => {
-    // Every connection of this pool runs in UTC+14, the farthest zone from UTC there is.
     const pool = newPool(backend.url, 2);
     pool.pool.on("connection", (connection) => {
       connection.query("SET time_zone = '+14:00'");
@@ -392,7 +445,6 @@ describe.skipIf(MYSQL_URL === undefined)("what the tables keep on MySQL", () => 
       expect(held).toBeInstanceOf(LeaseHeldError);
       const expiresAt = (held as LeaseHeldError).expiresAt?.getTime() ?? 0;
       expect(Math.abs(expiresAt - (Date.now() + 60_000))).toBeLessThan(5_000);
-      // An app reading the column through `/schema` sees the same instant.
       const [row] = await drizzle({ client: pool })
         .select({ expiresAt: scopes.leaseExpiresAt })
         .from(scopes)

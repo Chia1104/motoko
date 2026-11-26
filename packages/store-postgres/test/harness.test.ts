@@ -1,6 +1,3 @@
-// End to end: a pi-durable Harness on the store's storage with pi-ai's faux provider (no network). Ask, get an answer,
-// close, reopen on the same scope, and read the transcript back.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, UserEntry } from "@earendil-works/pi-durable";
@@ -51,7 +48,6 @@ for (const factory of backendFactories) {
       const answer = "Paris is the capital of France, and it has been for a very long time indeed.";
       faux.setResponses([fauxAssistantMessage([fauxText(answer)])]);
 
-      // The storage's statements are recorded; the lease's renewals go through the unrecorded store.
       const { store, recording } = backend.recording();
       const lease = await backend.store.lease(scope);
       const storage = await store.storage(scope, lease);
@@ -86,17 +82,14 @@ for (const factory of backendFactories) {
       await harness.close(context);
       await lease.release();
 
-      // Every commit: two statements (read, guarded write); none was a copy.
       expect(commits.length).toBeGreaterThan(0);
       for (const commit of commits) expect(commit.statements).toBe(2);
-      // Each backend's counts are part of the test's output on purpose.
       // oxlint-disable-next-line no-console
       console.info(
         `[${factory.name}] ${commits.length} Storage.commit() calls, ${commits.reduce((n, c) => n + c.calls, 0)} batches, ` +
           `${commits.reduce((n, c) => n + c.statements, 0)} statements`,
       );
 
-      // Reopen: a new lease, a new storage, a new Harness on the same scope.
       const lease2 = await backend.store.lease(scope);
       const reopened = await backend.store.storage(scope, lease2);
       const transcript = await transcriptOf(reopened);
@@ -111,7 +104,6 @@ for (const factory of backendFactories) {
         { type: "input", content: "What is the capital of France?", requestId: "q-1" },
         context,
       );
-      // The same request ID finds the submission the first process admitted.
       expect(again.id).toBe(submission.id);
       const reread = await root2.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
       expect(textOf(reread?.model?.[0])).toBe(answer);

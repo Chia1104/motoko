@@ -34,34 +34,21 @@ import { SessionsDoc } from "./sessions.ts";
 
 const NEVER = new AbortController().signal;
 
-/** The extension name an agent's tools, prompt and gate are installed under. */
 export const extensionName = (agent: AgentDefinition) => `runtime:${agent.kind}`;
 
 interface BindOptions {
   readonly scope: StorageScope;
-  /** The ports of one call, resolved where it runs, right before it executes. */
   readonly ports: (target: PortsTarget) => unknown;
-  /** The ports of a call could not be resolved; the call fails with a `PortsUnavailableError`. */
   readonly portsFailed: (target: PortsTarget, error: unknown) => void;
-  /**
-   * The app's extensions as the open last resolved them, read at each use: what each agent's sessions select with its
-   * own, and their tools.
-   */
   readonly app: () => AppExtensions;
-  /** How long a nested call waits at the gate for a decision, in ms, before it fails for the tool that made it. */
   readonly nestedApprovalTimeoutMs: number;
 }
 
-/**
- * A runtime tool as pi-durable runs it: JSON Schema validation, then the zod parse, then the call's
- * ports, then `execute`.
- */
 function toPiTool(tool: AppToolDefinition, { scope, ports: portsOf, portsFailed }: BindOptions): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
   return defineTool({
     name: tool.name,
     description: tool.description,
-    // Plain JSON Schema: pi validates and coerces against it as written.
     parameters: offered,
     replay: tool.replay,
     ...(tool.executionMode !== undefined && { executionMode: tool.executionMode }),
@@ -81,7 +68,6 @@ function toPiTool(tool: AppToolDefinition, { scope, ports: portsOf, portsFailed 
       try {
         ports = await portsOf(target);
       } catch (error) {
-        // The call fails before it runs, so it had no effect; the model reads why, the app the cause.
         portsFailed(target, error);
         throw new PortsUnavailableError(tool.name, error);
       }
@@ -102,12 +88,10 @@ function toPiTool(tool: AppToolDefinition, { scope, ports: portsOf, portsFailed 
   });
 }
 
-/** The key a delegate's call parks on: one wait per call, for its child's one submission. */
 const ANSWERED = "answered";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
-/** The call's result once its child's submission settled: the sub-agent's answer, or why there is none. */
 async function delegateResult(
   settled: SignalState<Settled>,
   api: ToolExecutionApi,
@@ -122,15 +106,9 @@ async function delegateResult(
   return { output: text(answer.text), ...(answer.isError && { isError: true }), details };
 }
 
-/**
- * A delegate as pi-durable runs it: a replay-safe tool that parks. Its first run makes the child session (its
- * conversation, owned by the call's task, and its records, in one commit), submits the task to it with a request ID
- * of the call's, and parks until that submission settles. A rerun after a crash at any point finds the same child and
- * the same submission. Woken, it returns the child's answer.
- */
 function toDelegate(
   tool: DelegateDefinition,
-  extensions: ReadonlyMap<string, Extension>,
+  extensionOf: (agent: AgentDefinition) => Extension,
   app: () => AppExtensions,
 ): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
@@ -154,11 +132,10 @@ function toDelegate(
         const sessions = await tx.doc(SessionsDoc);
         const calls = await tx.doc(CallsDoc, api.conversationId);
         const { id } = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
-        // The child starts as a copy of its parent's agent: it takes the sub-agent's extension, after the app's that
-        // select the sub-agent, all of its tools, and its model when it names one.
+        // The child starts as a copy of its parent's agent. It takes the sub-agent's extension after the app's
+        // extensions that select the sub-agent, all of the sub-agent's tools, and its model when it names one.
         await configure(tx, id, {
-          // SAFETY: the instance installs an extension for every agent its delegates reach.
-          extensions: app().selectionOf(agent.kind, extensions.get(agent.kind)!),
+          extensions: app().selectionOf(agent.kind, extensionOf(agent)),
           tools: null,
           ...(agent.model !== undefined && { model: agent.model }),
         });
@@ -188,23 +165,19 @@ function toDelegate(
   });
 }
 
-/** What a deferred call memoizes on its first run, so that every rerun starts the same work and waits as long. */
-// A type alias, not an interface: a memo must be a pi `JsonValue`.
+// This is a type alias, not an interface, because a memo must be a pi `JsonValue`.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type Waiting = { token: string; until: number };
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/**
- * A deferred tool as pi-durable runs it: a replay-safe tool that parks on its reply. Its first run memoizes a token
- * and a deadline and records them in `CallsDoc`, from when its sleep is its own and not the gate's; then it resolves
- * the call's ports, runs `start` with a reply address, and parks until a reply arrives or the deadline passes. A rerun
- * after a crash starts the same work again, with the same request ID and token. Woken, it returns the reply.
- */
 function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFailed }: BindOptions): ToolRegistration {
   const { schema, offered } = tool.jsonSchema;
-  /** What `start` and `cancel` get: the call's ports, resolved where it runs, and its reply address. */
-  const contextOf = async (api: ToolExecutionApi, waiting: Waiting, signal: AbortSignal): Promise<DeferredContext> => {
+  const contextOf = async (
+    api: ToolExecutionApi,
+    waiting: Waiting,
+    signal: AbortSignal,
+  ): Promise<DeferredContext | PortsUnavailableError> => {
     const sessionId = String(api.conversationId);
     const target: PortsTarget = { scope, sessionId, toolCallId: api.callId, toolName: tool.name, signal };
     let ports: unknown;
@@ -212,7 +185,7 @@ function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFail
       ports = await portsOf(target);
     } catch (error) {
       portsFailed(target, error);
-      throw new PortsUnavailableError(tool.name, error);
+      return new PortsUnavailableError(tool.name, error);
     }
     return {
       ports,
@@ -248,12 +221,12 @@ function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFail
       );
       await api.commit(async (tx) => {
         const calls = await tx.doc(CallsDoc, api.conversationId);
-        // A record under this id that names another task is an earlier call's.
         if (startedCall(calls.calls, api.callId, api.taskId) === undefined) {
           calls.calls[api.callId] = { kind: "reply", token: waiting.token, until: waiting.until, taskId: api.taskId };
         }
       }, context);
       const deferred = await contextOf(api, waiting, context.abortSignal ?? NEVER);
+      if (deferred instanceof PortsUnavailableError) throw deferred;
       try {
         await tool.start(parsed.data, deferred);
       } catch (error) {
@@ -265,49 +238,44 @@ function toDeferred(tool: DeferredDefinition, { scope, ports: portsOf, portsFail
       const waiting = await api.memo<Waiting>("runtime.deferred", context);
       const parsed = tool.parameters.safeParse(args);
       if (tool.cancel === undefined || waiting === undefined || !parsed.success) return;
-      let deferred: DeferredContext;
-      try {
-        deferred = await contextOf(api, waiting, context.abortSignal ?? NEVER);
-      } catch {
-        // Reported as `ports_failed`; without its ports the app's `cancel` cannot run.
-        return;
-      }
+      const deferred = await contextOf(api, waiting, context.abortSignal ?? NEVER);
+      if (deferred instanceof PortsUnavailableError) return;
       await tool.cancel(parsed.data, deferred);
     },
   });
 }
 
-/**
- * Every agent of an instance as pi-durable extensions, one per agent, by kind: its tools, its prompt and its gate. A
- * conversation selects the one of its agent, after the app's extensions that select that agent, so a session sees its
- * own agent's tools and instructions, and no other agent's.
- */
-export function agentExtensions(
-  agents: ReadonlyMap<string, AgentDefinition>,
-  options: BindOptions,
-): ReadonlyMap<string, Extension> {
+export interface AgentExtensions {
+  readonly own: Extension;
+  readonly subAgents: readonly Extension[];
+}
+
+export function agentExtensions(root: AgentDefinition, options: BindOptions): AgentExtensions {
   const extensions = new Map<string, Extension>();
-  for (const agent of agents.values()) {
-    extensions.set(
-      agent.kind,
-      defineExtension({
-        name: extensionName(agent),
-        tools: agent.tools.map((tool) => {
-          switch (tool.kind) {
-            case "app":
-              return toPiTool(tool, options);
-            case "delegate":
-              return toDelegate(tool, extensions, options.app);
-            case "deferred":
-              return toDeferred(tool, options);
-          }
-        }),
-        sections: [section("agent", () => agent.instructions, { tag: false })],
-        hooks: [
-          approvalGate(agent, (name) => options.app().catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
-        ],
+  const extensionOf = (agent: AgentDefinition): Extension => {
+    const known = extensions.get(agent.kind);
+    if (known !== undefined) return known;
+    const extension = defineExtension({
+      name: extensionName(agent),
+      tools: agent.tools.map((tool) => {
+        switch (tool.kind) {
+          case "app":
+            return toPiTool(tool, options);
+          case "delegate":
+            return toDelegate(tool, extensionOf, options.app);
+          case "deferred":
+            return toDeferred(tool, options);
+        }
       }),
-    );
-  }
-  return extensions;
+      sections: [section("agent", () => agent.instructions, { tag: false })],
+      hooks: [
+        approvalGate(agent, (name) => options.app().catalog.tool(agent.kind, name), options.nestedApprovalTimeoutMs),
+      ],
+    });
+    extensions.set(agent.kind, extension);
+    for (const tool of agent.tools) if (tool.kind === "delegate") extensionOf(tool.agent);
+    return extension;
+  };
+  const own = extensionOf(root);
+  return { own, subAgents: [...extensions.values()].filter((extension) => extension !== own) };
 }

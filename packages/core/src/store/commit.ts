@@ -1,9 +1,3 @@
-// One `Storage.commit()` call of a shared-database store, whatever its dialect: the check state of every batch read in
-// one snapshot (`CommitPort.read`), each batch checked in memory against what the batches before it left (the checks
-// and their messages are ported unchanged from pi-durable 1.6.0 `storage/sqlite/commit.js`), and the accepted batches'
-// net effect written as one plan, atomically, only if a guard holds that advances the scope's counters only if no other
-// commit (and no other lease holder) got there first (`CommitPort.write`). `commitBatches` runs the whole call.
-
 import type { JsonValue } from "@earendil-works/chord/json";
 import type {
   ConversationRecord,
@@ -37,7 +31,7 @@ export interface CheckQuery {
   readonly documents: readonly number[];
   /** Documents whose latest revision's version to read. */
   readonly deltas: readonly number[];
-  /** Addresses whose current (unretired) document to read. */
+  /** Addresses whose current, unretired document to read. */
   readonly addresses: readonly AddressParts[];
 }
 
@@ -58,12 +52,12 @@ export interface CheckState {
 
 /** What the write of a plan requires and advances. */
 export interface CommitGuard {
-  /** The scope's `next_seq` this call read or last wrote: any other commit since changed it. */
+  /** The scope's `next_seq` that this call read or last wrote. Any other commit since then changed it. */
   readonly expectedSeq: number;
   readonly nextSeq: number;
   /** The scope's `next_id` becomes at least this. */
   readonly nextId: number;
-  /** Fencing token of the lease the storage holds; the write stores nothing unless it is current and unexpired. */
+  /** The fencing token of the lease the storage holds. The write stores nothing unless it is current and unexpired. */
   readonly leaseToken: number;
 }
 
@@ -77,14 +71,14 @@ export interface PlannedRevision {
 }
 
 /**
- * The net effect of the accepted batches not yet written, per table: a task or submission written twice is written
- * once, as last written; a current-only document's revisions before its latest base or retirement are dropped, and its
+ * The net effect, per table, of the accepted batches not yet written. A task or submission written twice is written
+ * once, as last written. A current-only document's revisions before its latest base or retirement are dropped, and its
  * stored ones deleted.
  */
 export interface CommitPlan {
   /**
-   * IDs the plan claims first. An ID claimed before (a task or submission written again) keeps its claim and is left
-   * out, so a plan that only rewrites records claims nothing.
+   * IDs the plan claims first. An ID claimed before, such as a task or submission written again, keeps its claim and is
+   * left out, so a plan that only rewrites records claims nothing.
    */
   readonly claims: readonly (readonly [id: number, table: RecordTable])[];
   readonly conversations: readonly ConversationRecord[];
@@ -94,11 +88,14 @@ export interface CommitPlan {
   readonly tasks: readonly TaskRecord<JsonValue, JsonValue, JsonValue>[];
   /** Submissions to insert, or whose stored row to replace. */
   readonly submissions: readonly SubmissionRecord[];
-  /** Documents to insert (created), or whose stored row to replace (retired): each record as the plan leaves it. */
+  /**
+   * Documents to insert because the plan created them, or whose stored row to replace because the plan retired them.
+   * Each record is as the plan leaves it.
+   */
   readonly documents: readonly DocumentRecord[];
   /**
-   * Documents whose stored revisions go; none of `revisions` is among the ones deleted. A document the plan creates
-   * has none stored, so it is left out.
+   * Documents whose stored revisions are deleted. None of `revisions` is among the ones deleted. A document the plan
+   * creates has none stored, so it is left out.
    */
   readonly cleared: readonly number[];
   /** New revisions, in seq order per document. */
@@ -106,46 +103,47 @@ export interface CommitPlan {
 }
 
 /**
- * How a plan's write ended without an error: `stored`, or why its guard refused it, having written nothing: the
- * scope's row is gone (`deleted`), its lease token is another holder's (`taken`), or the lease expired (`expired`),
- * or none of those, so another storage under the same lease committed first (`concurrent`).
+ * How a plan's write ended without an error. It is `stored`, or it says why the guard refused the write, which then
+ * wrote nothing. `deleted` means the scope's row is gone, `taken` that its lease token is another holder's, and
+ * `expired` that the lease expired. `concurrent` means none of those, so another storage under the same lease
+ * committed first.
  */
 export type WriteOutcome = "stored" | "deleted" | "taken" | "expired" | "concurrent";
 
 /** What one storage of a shared-database store sends for its commits, in its scope. */
 export interface CommitPort {
-  /** Reads the scope's row and what `query` names in one snapshot; `undefined` when the scope's row is gone. */
+  /** Reads the scope's row and what `query` names in one snapshot. It is `undefined` when the scope's row is gone. */
   read(query: CheckQuery): Promise<CheckState | undefined>;
   /**
-   * Writes `plan` atomically, only if `guard` holds: the scope's `next_seq` still equals `guard.expectedSeq`, and its
-   * lease token is `guard.leaseToken` and unexpired by the database clock. It then sets `next_seq` to `guard.nextSeq`
-   * and `next_id` to at least `guard.nextId`. A rejection is an unknown outcome when the dialect's `isTransientError`
-   * says so; the plan may be written again.
+   * Writes `plan` atomically, only if `guard` holds. The guard holds when the scope's `next_seq` still equals
+   * `guard.expectedSeq` and its lease token is `guard.leaseToken` and unexpired by the database clock. The write then
+   * sets `next_seq` to `guard.nextSeq` and `next_id` to at least `guard.nextId`. A rejection is an unknown outcome
+   * when the dialect's `isTransientError` says so, and the plan may be written again.
    */
   write(guard: CommitGuard, plan: CommitPlan): Promise<WriteOutcome>;
   /**
-   * Reads a copy's source as stored; the function it resolves returns the source's content, or throws when the stored
+   * Reads a copy's source as stored. The function it resolves returns the source's content, or throws when the stored
    * rows hold none to copy.
    */
   readSource(source: DocumentCopySource): Promise<() => StoredDocument | undefined>;
-  /** A failure of the connection, not of the statement: an idempotent statement may be sent again. */
+  /** A failure of the connection, not of the statement, so an idempotent statement may be sent again. */
   isTransientError(error: unknown): boolean;
 }
 
-/** The scope's row alone: what tells an unknown outcome apart. */
 const NOTHING: CheckQuery = { ids: [], documents: [], deltas: [], addresses: [] };
 
 /**
- * One `Storage.commit()` of `batches` to the lease's scope: the read (refused unless the lease token is still the
- * scope's), each batch's checks against what the batches before it left, and the guarded write of the accepted ones. A
- * batch with a document copy writes the batches before it and reads the copy's source first. Every read and write is
- * sent at most `attempts` times. A lease found lost is lost (`lease.lose`) before the call rejects.
+ * One `Storage.commit()` of `batches` to the lease's scope. It reads the scope's row and refuses unless the lease token
+ * is still the scope's. It checks each batch against what the batches before it left, then writes the accepted ones
+ * under the guard. A batch with a document copy writes the batches before it and reads the copy's source first. Every
+ * read and write is sent at most `attempts` times. A lease found lost is marked lost with `lease.lose` before the call
+ * rejects.
  *
- * `unminted` is the storage's lowest unminted ID, read as each write is sent; the scope's `next_id` is left at least
+ * `unminted` is the storage's lowest unminted ID, read as each write is sent. The scope's `next_id` is left at least
  * that, so no ID minted before is minted again after reopen.
  *
- * Resolves the seq of each stored batch, the refusal that stopped the call, and `nextId`: one past the highest ID the
- * stored batches claim (0 with none), the least the storage's next ID may be.
+ * Resolves the seq of each stored batch, the refusal that stopped the call, and `nextId`. `nextId` is one past the
+ * highest ID the stored batches claim, or 0 with none, and is the least the storage's next ID may be.
  */
 export async function commitBatches(
   port: CommitPort,
@@ -193,7 +191,6 @@ export async function commitBatches(
       break;
     }
     if ([...actions.values()].some((action) => action.copy !== undefined)) {
-      // A copy reads its source as the batches before it left it: those are written first.
       await flush();
       refused = await resolveCopies(actions, (source) => retry(attempts, transient, () => port.readSource(source)));
       if (refused !== undefined) break;
@@ -211,13 +208,6 @@ export async function commitBatches(
   return { seqs, refused, nextId };
 }
 
-/**
- * Writes `plan` under `guard`, at most `attempts` times. When the connection fails mid-write the outcome is unknown;
- * under the lease nothing else can move the scope's `next_seq` while the token is ours, so reading both tells: a token
- * that is no longer ours means the lease was taken (never "stored", whatever `next_seq` says), `nextSeq` that the plan
- * is stored, `expectedSeq` that it is not and may be sent again. A guard that refused loses the lease when the port
- * says it was lost; otherwise another storage under the same lease committed first.
- */
 async function writePlan(
   port: CommitPort,
   lease: FencedLease,
@@ -233,17 +223,17 @@ async function writePlan(
     } catch (error) {
       if (!transient(error) || attempt >= attempts) throw error;
       await backoff(attempt);
-      const now = await retry(attempts, transient, () => port.read(NOTHING));
-      if (now === undefined) {
+      const settled = await outcomeOfUnknownWrite(port, attempts, lease.token, guard);
+      if (settled === "deleted") {
         lease.lose("deleted", error);
         throw new ScopeDeletedError(lease.scope);
       }
-      if (now.leaseToken !== lease.token) {
+      if (settled === "taken") {
         lease.lose("taken", error);
         throw lease.signal.reason;
       }
-      if (now.nextSeq === guard.nextSeq) return;
-      if (now.nextSeq === guard.expectedSeq) continue;
+      if (settled === "stored") return;
+      if (settled === "resend") continue;
       throw error;
     }
     if (outcome === "stored") return;
@@ -257,10 +247,24 @@ async function writePlan(
   }
 }
 
-/**
- * Resolves each copy to a base of its source's state before this batch, which may not change the source. Resolves the
- * refusal of the first copy that cannot be made; a database failure rejects.
- */
+async function outcomeOfUnknownWrite(
+  port: CommitPort,
+  attempts: number,
+  leaseToken: number,
+  guard: CommitGuard,
+): Promise<"deleted" | "taken" | "stored" | "resend" | "unknown"> {
+  const now = await retry(
+    attempts,
+    (error) => port.isTransientError(error),
+    () => port.read(NOTHING),
+  );
+  if (now === undefined) return "deleted";
+  if (now.leaseToken !== leaseToken) return "taken";
+  if (now.nextSeq === guard.nextSeq) return "stored";
+  if (now.nextSeq === guard.expectedSeq) return "resend";
+  return "unknown";
+}
+
 async function resolveCopies(
   actions: Map<DocumentId, DocumentAction>,
   readSource: (source: DocumentCopySource) => Promise<() => StoredDocument | undefined>,
@@ -291,7 +295,6 @@ async function resolveCopies(
   return undefined;
 }
 
-/** The record ID a write claims and its table, if it claims one. */
 const claimOf = (write: StorageWrite): { id: number; table: RecordTable } | undefined => {
   switch (write.type) {
     case "conversation":
@@ -315,7 +318,6 @@ interface DocumentAction {
   retire: boolean;
 }
 
-/** One batch's writes per document; throws when a document gets two content commands or two retirements. */
 function prepareDocumentActions(writes: readonly StorageWrite[]): Map<DocumentId, DocumentAction> {
   const actions = new Map<DocumentId, DocumentAction>();
   for (const write of writes) {
@@ -363,43 +365,33 @@ function prepareDocumentActions(writes: readonly StorageWrite[]): Map<DocumentId
   return actions;
 }
 
-/** The scope row as a commit reads it. */
 interface ScopeCounters {
   readonly nextId: number;
   readonly nextSeq: number;
   readonly leaseToken: number;
 }
 
-/**
- * What the checks of one call's batches read: the stored state of every ID, document and address the batches touch,
- * read in one snapshot when the call starts, then advanced in memory by each accepted batch.
- */
+type CurrentDocument = { readonly exists: false } | { readonly exists: true; readonly id: number };
+const NO_CURRENT_DOCUMENT: CurrentDocument = { exists: false };
+
 class CommitState {
-  /** The table of each claimed ID; absent: unclaimed. */
   readonly #recordIds: Map<number, RecordTable>;
-  /** Each touched document's record; absent: no such document. */
   readonly #documents: Map<number, DocumentRecord>;
-  /** The version of each delta-changed document's latest revision; absent: no revision. */
   readonly #versions: Map<number, number>;
-  /** The current incarnation of each created address (`addressKey`); `undefined`: none. */
-  readonly #current: Map<string, number | undefined>;
+  readonly #createdAddresses: Map<string, CurrentDocument>;
 
   private constructor(
     recordIds: Map<number, RecordTable>,
     documents: Map<number, DocumentRecord>,
     versions: Map<number, number>,
-    current: Map<string, number | undefined>,
+    createdAddresses: Map<string, CurrentDocument>,
   ) {
     this.#recordIds = recordIds;
     this.#documents = documents;
     this.#versions = versions;
-    this.#current = current;
+    this.#createdAddresses = createdAddresses;
   }
 
-  /**
-   * Reads the scope's counters and the stored state the checks of `batches` need, in one snapshot. Resolves
-   * `undefined` when the scope row is gone (the scope was deleted).
-   */
   static async read(
     port: CommitPort,
     attempts: number,
@@ -443,31 +435,25 @@ class CommitState {
       () => port.read(query),
     );
     if (row === undefined) return undefined;
-    const current = new Map<string, number | undefined>();
-    for (const key of addresses.keys()) current.set(key, undefined);
-    for (const [document, address] of row.current) current.set(partsKey(address), document);
+    const createdAddresses = new Map<string, CurrentDocument>();
+    for (const key of addresses.keys()) createdAddresses.set(key, NO_CURRENT_DOCUMENT);
+    for (const [id, address] of row.current) createdAddresses.set(partsKey(address), { exists: true, id });
     return {
       state: new CommitState(
         new Map(row.claims),
         new Map(row.documents.map((record) => [record.id, record])),
         new Map(row.versions),
-        current,
+        createdAddresses,
       ),
       counters: { nextId: row.nextId, nextSeq: row.nextSeq, leaseToken: row.leaseToken },
     };
   }
 
-  /** Durable's own checks of one batch that need no copy source: throws the refusal. */
   check(writes: readonly StorageWrite[], actions: Map<DocumentId, DocumentAction>): void {
     this.#checkIds(writes);
     this.#checkDocuments(actions);
   }
 
-  /**
-   * Advances the state past an accepted batch stored at `seq`, its copies resolved to their content. Returns the record
-   * of each document the batch acts on, as the batch left it, and the IDs it claims that no earlier batch or stored
-   * record claimed.
-   */
   apply(
     writes: readonly StorageWrite[],
     actions: Map<DocumentId, DocumentAction>,
@@ -489,15 +475,14 @@ class CommitState {
           ...(action.retire ? { retiredAt: seq } : {}),
         } as DocumentRecord;
         this.#documents.set(id, record);
-        if (!action.retire) this.#current.set(addressKey(record), id);
+        if (!action.retire) this.#createdAddresses.set(addressKey(record), { exists: true, id });
       } else if (action.retire) {
         const record = { ...this.#documents.get(id), retiredAt: seq } as DocumentRecord;
         this.#documents.set(id, record);
-        // The batch may have created the address's next incarnation already: only this one leaves.
         const key = addressKey(record);
-        if (this.#current.get(key) === id) this.#current.set(key, undefined);
+        const current = this.#createdAddresses.get(key);
+        if (current?.exists === true && current.id === id) this.#createdAddresses.set(key, NO_CURRENT_DOCUMENT);
       }
-      // A retired document's versions are never read again: every later action on it is refused first.
       if (action.content !== undefined) this.#versions.set(id, action.content.version);
       records.set(id, this.#documents.get(id) as DocumentRecord);
     }
@@ -538,12 +523,11 @@ class CommitState {
         if (previous === undefined) throw new Error(`Document ${id} delta has no base`);
         if (previous !== action.content.version) throw new Error(`Document ${id} version transition requires a base`);
       }
-      // A plain change keeps its address's live count: only creations and retirements are counted.
       if (action.create === undefined && !action.retire) continue;
       const key = addressKey((action.create as DocumentRecord | undefined) ?? (existing as DocumentRecord));
-      let live = liveCounts.get(key);
-      // Only created addresses were read: an address no batch creates only loses incarnations, never exceeds one.
-      if (live === undefined) live = this.#current.get(key) === undefined ? 0 : 1;
+      const current = this.#createdAddresses.get(key);
+      if (current === undefined) continue;
+      let live = liveCounts.get(key) ?? (current.exists ? 1 : 0);
       if (action.retire && existing !== undefined) live--;
       if (action.create !== undefined && !action.retire) live++;
       liveCounts.set(key, live);
@@ -554,25 +538,17 @@ class CommitState {
   }
 }
 
-/** The writes of the accepted batches not yet written, collected as their net effect (`CommitPlan`). */
 class PendingWrites {
   #recordIds = new Map<number, RecordTable>();
   #conversations: ConversationRecord[] = [];
   #entries: { record: EntryRecord; seq: number }[] = [];
   #tasks = new Map<number, TaskRecord<JsonValue, JsonValue, JsonValue>>();
   #submissions = new Map<number, SubmissionRecord>();
-  /** Each created or retired document's record. */
   #documents = new Map<number, DocumentRecord>();
-  /** The documents whose stored revisions go. */
   #cleared = new Set<number>();
-  /** The documents this plan creates: none of them has a stored revision to clear. */
   #created = new Set<number>();
-  /** Each document's new revisions, in seq order. */
   #revisions = new Map<number, PlannedRevision[]>();
 
-  /**
-   * Adds a batch stored at `seq`, with the document records and the new claims `CommitState.apply` found for it.
-   */
   add(
     writes: readonly StorageWrite[],
     actions: Map<DocumentId, DocumentAction>,
@@ -609,7 +585,7 @@ class PendingWrites {
     if (action.create !== undefined) this.#created.add(id);
     const content = action.content;
     if (content !== undefined) {
-      if (content.kind === "base" && isCurrentOnly(record)) this.#clear(id);
+      if (content.kind === "base" && isCurrentOnly(record)) this.#discardRevisions(id);
       const encoded = content.kind === "base" ? encodeJson(content.value) : encodeJson(content.ops);
       let revisions = this.#revisions.get(id);
       if (revisions === undefined) {
@@ -618,16 +594,14 @@ class PendingWrites {
       }
       revisions.push({ document: id, seq, kind: content.kind, version: content.version, content: encoded });
     }
-    if (action.retire && isCurrentOnly(record)) this.#clear(id);
+    if (action.retire && isCurrentOnly(record)) this.#discardRevisions(id);
   }
 
-  /** Drops a document's revisions: the pending ones, and the stored ones (if any) when written. */
-  #clear(id: number): void {
+  #discardRevisions(id: number): void {
     if (!this.#created.has(id)) this.#cleared.add(id);
     this.#revisions.delete(id);
   }
 
-  /** Everything pending, as one plan. */
   plan(): CommitPlan {
     return {
       claims: [...this.#recordIds],
@@ -641,7 +615,6 @@ class PendingWrites {
     };
   }
 
-  /** Forgets everything pending, once its plan was written. */
   clear(): void {
     this.#recordIds.clear();
     this.#conversations = [];

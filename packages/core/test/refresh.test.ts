@@ -1,10 +1,4 @@
-// The app's extensions refreshed while an instance is open, driven through the runtime on the faux provider. Each
-// test expects what the README's "App extensions" says under "Refreshing": a tool a refresh adds is offered from the
-// next model request, also a run's already going, and `tool_search` loads a deferred one; a call waiting at the gate
-// for a tool a refresh drops ends as unavailable, and so does one that parked on its own work, when it wakes; a task
-// that a dropped extension's hook asked for still runs to its end; a refresh refuses what an open refuses (a failed
-// `extensionsFor`, the names) and then changes nothing; refreshes take effect in call order; and a refresh waits for
-// an open under way, and does nothing while the instance is not open.
+// Each test expects what the README's "App extensions" says under "Refreshing".
 
 import type { Message, SystemMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -50,7 +44,6 @@ const desk = defineAgent({
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
-/** A pi-durable tool of the app's, answering `answer` to every call. */
 const appTool = (name: string, answer: string, more: Partial<ToolRegistration> = {}): ToolRegistration =>
   definePiTool({
     name,
@@ -63,7 +56,6 @@ const appTool = (name: string, answer: string, more: Partial<ToolRegistration> =
   });
 
 const search: AppExtension = { extension: createToolSearchExtension(), tier: () => "read" };
-/** No tier: every call of it waits for approval. */
 const shell: AppExtension = { extension: defineExtension({ name: "shell", tools: [appTool("shell", "ran")] }) };
 const extra: AppExtension = {
   extension: defineExtension({ name: "extra", tools: [appTool("extra", "more")] }),
@@ -71,10 +63,8 @@ const extra: AppExtension = {
 };
 
 const done = { status: "terminal" as const, outcome: { status: "completed" as const, result: null } };
-/** How long the title task sleeps once it starts. */
 const NAP_MS = 150;
 
-/** Names a session after its run: it sleeps a little first, then ends, counting both in `progress`. */
 function titles(progress: { napped: number; named: number }): AppExtension {
   const title = defineTask<null, { phase: "nap" } | { phase: "name" }, null>({
     name: "app.title",
@@ -112,7 +102,6 @@ afterEach(async () => {
   runtime = undefined;
 });
 
-/** A runtime whose `extensionsFor` gives what `listed()` lists at each call. */
 function start(listed: ExtensionsResolver) {
   const models = fauxModels();
   const reports: InstanceReport[] = [];
@@ -131,7 +120,6 @@ function start(listed: ExtensionsResolver) {
 const call = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage(fauxToolCall(name, args, { id }), { stopReason: "toolUse" });
 
-/** The names of the tools a request offers, replayed from its system messages: each removes, then adds. */
 function offered(messages: readonly Message[]): string[] {
   const tools = new Set<string>();
   for (const message of messages.filter((each): each is SystemMessage => each.role === "system")) {
@@ -141,7 +129,6 @@ function offered(messages: readonly Message[]): string[] {
   return [...tools].sort();
 }
 
-/** `steps` as the model answers them, keeping the messages of every request in `requests`. */
 function recorded(steps: readonly FauxResponseStep[]) {
   const requests: Message[][] = [];
   const respond = steps.map((step): FauxResponseFactory => (request, options, state, model) => {
@@ -179,7 +166,6 @@ describe("refreshing app extensions", () => {
 
     listed = [search, extra];
     await instance.refreshExtensions();
-    // A call waiting at the gate for a tool still selected keeps waiting for its decision.
     expect(await session.approve([{ toolCallId: "r-1", approved: true }])).toEqual([
       { toolCallId: "r-1", outcome: "applied" },
     ]);
@@ -296,7 +282,6 @@ describe("refreshing app extensions", () => {
     await readUntil(session, isRunEnd);
     await eventually(() => progress.napped === 1);
 
-    // The task sleeps, and wakes after the refresh to a definition the instance still holds.
     listed = [search];
     await instance.refreshExtensions();
     await session.submit({ text: "Again", requestId: "2" });
@@ -337,7 +322,6 @@ describe("refreshing app extensions", () => {
     faux.setResponses(respond);
     const session = instance.session((await instance.createSession()).id);
 
-    // An extension a partial refresh would have installed comes first.
     listed = [search, extra, ...extensions];
     const refused = await instance.refreshExtensions().catch((error: unknown) => error);
     const opening = await runtime!

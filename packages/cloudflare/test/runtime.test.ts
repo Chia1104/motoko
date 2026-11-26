@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
 import { eventually, pause, rejectionOf, unhandledRejections } from "./helpers.ts";
+import { objectName } from "./worker.ts";
 
 const fresh = (name: string = crypto.randomUUID()) => env.MOTOKO.getByName(name);
 
@@ -20,13 +21,11 @@ describe("an Agent with Motoko installed", () => {
       end: { reason: "done" },
     });
     expect(await stub.requests()).toBe(2);
-    // Nothing is due once the run is over: the wake job is gone, and so is the reason to wake the object.
     await eventually(async () => (await stub.wakeJob()) === null);
   });
 
   it("keeps the Agents SDK's scheduler and state working beside it, on the object's one alarm", async () => {
     const stub = fresh();
-    // The SDK's job is due first; Motoko's wake job comes and goes on the same queue meanwhile.
     await stub.scheduleNote("scheduled", 1);
     await stub.script([{ text: "Done." }]);
     const session = await stub.createSession();
@@ -41,7 +40,7 @@ describe("an Agent with Motoko installed", () => {
 
 describe("with closeIdleAfterMs", () => {
   it("closes the idle instance, erasing a deleted session from the object's database, and reopens at a call", async () => {
-    const stub = fresh(`idle:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("idle"));
     await stub.script([{ text: "Kept answer." }, { text: "Secret answer." }]);
     const kept = await stub.createSession();
     const doomed = await stub.createSession();
@@ -73,10 +72,7 @@ describe("an evicted object", () => {
     await stub.submit(session, "Work", "r-1");
     await eventually(async () => (await stub.requests()) === 1);
 
-    // The object dies with its model request in flight.
     await abortAllDurableObjects();
-    // Nothing calls Motoko now (`requests()` reads a counter): the wake job, a heartbeat out, restarts the object,
-    // which opens the instance, and pi-durable sends the request again.
     await eventually(async () => (await fresh(name).requests()) === 2);
     expect(await fresh(name).transcript(session)).toEqual({
       messages: [
@@ -95,7 +91,6 @@ describe("an evicted object", () => {
     await stub.submit(session, "Work", "r-1");
     const at = await stub.retryAt(session);
     expect(at).toBeGreaterThan(Date.now());
-    // Asleep and nothing running: the wake job is due when the sleep ends, not a heartbeat out.
     await eventually(async () => (await stub.wakeJob()) === at);
 
     await abortAllDurableObjects();
@@ -126,10 +121,8 @@ describe("an ask from one object to another", () => {
     ]);
     const session = await asker.createSession();
     await asker.submit(session, "Ask", "r-1");
-    // The asked object's run answered, and its first delivery failed.
     await eventually(async () => (await fresh(askedName).deliveries()).length === 1);
 
-    // Both objects reset: nothing calls Motoko now, and the asked object's wake job alone tries the delivery again.
     await abortAllDurableObjects();
     await eventually(async () => (await fresh(askedName).deliveries()).length === 2);
     expect(await fresh(askedName).deliveries()).toEqual(["failed", "applied"]);
@@ -149,7 +142,7 @@ describe("an ask from one object to another", () => {
 
 describe("an object whose scope's lease another writer holds", () => {
   it("refuses an RPC call with core's LeaseHeldError, leaving no rejection unhandled", async () => {
-    const name = `held:${crypto.randomUUID()}`;
+    const name = objectName("held");
     const stub = fresh(name);
     await stub.holdLease(true);
     let refusal: unknown;
@@ -166,10 +159,9 @@ describe("an object whose scope's lease another writer holds", () => {
   });
 
   it("has its wake job try again later, leaving no rejection unhandled, and completes it once the lease is free", async () => {
-    const stub = fresh(`held:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("held"));
     await stub.holdLease(true);
     const unhandled = await unhandledRejections(async () => {
-      // Armed as before a call that can start work: the job's runs cannot open the instance.
       await stub.armActive();
       const armed = (await stub.wakeJob())!;
       await eventually(async () => ((await stub.wakeJob()) ?? 0) > armed);
@@ -185,14 +177,13 @@ describe("the wake job", () => {
     const stub = fresh();
     await stub.createSession();
     await eventually(async () => (await stub.wakeJob()) === null);
-    // Armed active, as before a call that can start work, and then nothing started.
     await stub.armActive();
     expect(await stub.wakeJob()).not.toBeNull();
     await eventually(async () => (await stub.wakeJob()) === null, 3_000);
   });
 
   it("stays while a call that can start work waits on its commit, though its own run found nothing to do", async () => {
-    const stub = fresh(`gated:${crypto.randomUUID()}`);
+    const stub = fresh(objectName("gated"));
     await stub.script([{ text: "Done." }]);
     const session = await stub.createSession();
     await eventually(async () => (await stub.wakeJob()) === null);
@@ -200,10 +191,8 @@ describe("the wake job", () => {
     await stub.holdNextCommit();
     const submitted = stub.submit(session, "Work", "r-1");
     await eventually(() => stub.commitHeld());
-    // The submit armed the job due now. Its run resumes the instance, which has nothing to run before the commit.
     const armed = (await stub.wakeJob())!;
     await eventually(async () => (await stub.wakeJob()) !== armed);
-    // Not cancelled under the submit: a heartbeat out, waiting on the work.
     const job = await stub.wakeJob();
     expect(job).not.toBeNull();
     expect(job).toBeGreaterThan(armed);
@@ -216,7 +205,6 @@ describe("the wake job", () => {
 
   it("waits on running work at most its budget in one alarm, then waits on in a fresh one", async () => {
     const stub = fresh();
-    // A heartbeat far out, so only the budget's end can bring the job due sooner.
     await stub.wakeTiming({ heartbeatMs: 60_000, waitBudgetMs: 300 });
     await stub.script([{ hold: true }]);
     const session = await stub.createSession();
@@ -224,8 +212,6 @@ describe("the wake job", () => {
     await eventually(async () => (await stub.requests()) === 1);
     await eventually(async () => ((await stub.wakeJob()) ?? 0) > Date.now() + 30_000);
     const first = (await stub.wakeJob())!;
-    // The first wait ends at its budget with the run still going: the job is due at once, and its next run waits on
-    // in a fresh alarm with a heartbeat of its own.
     await eventually(async () => ((await stub.wakeJob()) ?? 0) > first);
     expect(await stub.release("Finally.")).toBe(true);
     expect((await stub.transcript(session)).end).toEqual({ reason: "done" });

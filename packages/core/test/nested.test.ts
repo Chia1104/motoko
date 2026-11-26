@@ -1,8 +1,4 @@
-// A nested call, one a tool makes through pi-durable's `executeTool()`, driven through the runtime on the faux provider
-// with pi-durable's real code mode: its script runs in pi-codemode's Node sandbox. Each test expects what the README's
-// "Durable approval" says of a nested call the gate holds: it is asked about under the call that made it, `approve()`
-// decides it, through a restart, and the script carries on with its result; with no decision by
-// `nestedApprovalTimeoutMs`, it fails for the script, and the instance may close idle again.
+// Each test expects what the README's "Durable approval" says.
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -30,7 +26,6 @@ import {
 
 interface Ports {
   readonly deleted: string[];
-  /** What a call of `pause` waits for. */
   readonly pause?: () => Promise<void>;
 }
 
@@ -45,7 +40,6 @@ const remove = defineTool({
   },
 });
 
-/** A tool the notes agent's policy does not gate, whose call waits for the test. */
 const pause = defineTool({
   name: "pause",
   description: "Wait for a moment",
@@ -75,11 +69,6 @@ afterEach(async () => {
   runtime = undefined;
 });
 
-/**
- * A runtime whose instances run code mode, at tier `exec`, which the notes agent's policy does not gate. With
- * `closeIdleAfterMs`, it closes idle instances; with `nestedApprovalTimeoutMs`, a nested call waits that long for a
- * decision.
- */
 function start(
   host: AgentHost,
   ports: Ports,
@@ -102,7 +91,6 @@ function start(
   return { faux: models.faux, instance: runtime.get(notes, "alice") };
 }
 
-/** The model runs a script that deletes note `a`, then answers. */
 const deleteByScript = [
   fauxAssistantMessage(fauxToolCall("codemode", { code: 'text(await tools.remove({ key: "a" }));' }, { id: "cm-1" }), {
     stopReason: "toolUse",
@@ -139,7 +127,6 @@ describe("a nested call the gate holds", () => {
       args: { key: "a" },
       parentToolCallId: "cm-1",
     });
-    // The script's call runs on, waiting on what it made; the run waits for the operator.
     expect(foldEvents(live.map((item) => item.event))).toMatchObject({
       status: "awaiting_approval",
       pendingApprovals: [question!.toolCallId],
@@ -149,14 +136,12 @@ describe("a nested call the gate holds", () => {
       nestedApprovals: [{ toolCallId: question!.toolCallId, toolName: "remove", tier: "write", args: { key: "a" } }],
     });
     expect(deleted).toEqual([]);
-    // A client that resumes while the call waits, from any cursor, folds the same view.
     await expectEveryResumeFolds(instance.session(id), live);
     await reader.stop();
     await runtime!.close();
 
     ({ instance } = start(durableMemoryHost(place), { deleted }, { models }));
     reader = follow(instance.session(id));
-    // A client arriving after the restart is asked the same, while the call still waits.
     await reader.until((items) => questions(items).length > 0);
     expect(questions(reader.items)).toEqual([question]);
     expect(await instance.session(id).approve([{ toolCallId: question!.toolCallId, approved: true }])).toEqual([
@@ -165,7 +150,6 @@ describe("a nested call the gate holds", () => {
     const items = [...(await reader.until((read) => read.some(({ event }) => isRunEnd(event))))];
 
     expect(deleted).toEqual(["a"]);
-    // The decision went out as the nested call moved on, before the script's call ended.
     expect(settledTypes(items)).toEqual([
       "run:start",
       "user",
@@ -185,7 +169,6 @@ describe("a nested call the gate holds", () => {
     const end = items.find(({ event }) => event.type === "tool:end" && event.toolCallId === "cm-1")?.event;
     expect(end).toMatchObject({ type: "tool:end", toolName: "codemode", status: "ok" });
     expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
-    // The nested question ended with the script's call.
     expect(codemodeItem(items)).not.toHaveProperty("nestedApprovals");
     expect(foldEvents(items.map((item) => item.event))).toMatchObject({ status: "idle", pendingApprovals: [] });
     await expectEveryResumeFolds(instance.session(id), items);
@@ -268,7 +251,6 @@ describe("a nested call the gate holds", () => {
     const reader = follow(session);
     await session.submit({ text: "Delete a", requestId: "1" });
     try {
-      // Nobody decides: the script reads why its call failed, and goes on to wait on a call that needs no decision.
       await pausing;
       const lapsed = { approved: false, comment: "No decision arrived in time." };
       const ended = (items: readonly StreamItem[]) => items.some(({ event }) => event.type === "approval:resolved");
@@ -280,7 +262,6 @@ describe("a nested call the gate holds", () => {
         toolCallId: question!.toolCallId,
         ...lapsed,
       });
-      // The script's call runs on, and nothing waits for the operator.
       expect(foldEvents(live.map((item) => item.event))).toMatchObject({ status: "running", pendingApprovals: [] });
       expect(codemodeItem(live)).toMatchObject({
         status: "running",
@@ -289,7 +270,6 @@ describe("a nested call the gate holds", () => {
       await expect(session.approve([{ toolCallId: question!.toolCallId, approved: true }])).rejects.toBeInstanceOf(
         ApprovalNotPendingError,
       );
-      // A client that resumes from any cursor folds the same view.
       await expectEveryResumeFolds(session, live);
     } finally {
       resume();

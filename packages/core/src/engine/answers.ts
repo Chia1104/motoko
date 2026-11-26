@@ -1,19 +1,13 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { EntryId, SignalToken, SubmissionSettled } from "@earendil-works/pi-durable";
 
-/** A submission's settled record, as `SubmissionSettled` delivers it. */
 export type Settled = typeof SubmissionSettled extends SignalToken<infer T> ? T : never;
 
-/** What another agent's run answered, as the call that waited for it returns it. */
 export interface Answer {
   readonly text: string;
   readonly isError: boolean;
 }
 
-/**
- * The answer of the run that settled `record`: its last reply's text, or why there is none. `read` reads the answer's
- * entry, and `who` names the agent in what the model reads.
- */
 export async function answerOf(
   record: Settled,
   read: (id: EntryId) => Promise<{ readonly model?: readonly Message[] } | undefined>,

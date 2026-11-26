@@ -1,9 +1,3 @@
-// pi-durable's own Storage conformance suite, unmodified, against the store's storage: on PGlite always, and on a real
-// Postgres when TEST_DATABASE_URL is set. Every case gets a fresh scope of one shared database, under the
-// scope's lease as a host opens it, so each case also runs beside the data of all the cases before it. Motoko's host
-// suite runs on the same database, against `nodeHost(store)` as an app hands it to `createAgentRuntime`, and so does
-// the shared-database store suite, against the store itself.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { registerStorageConformance } from "@earendil-works/pi-durable/testing";
 import { eq } from "drizzle-orm";
@@ -34,7 +28,6 @@ const targets: { name: string; open: () => Promise<Backend>; skip: boolean }[] =
   { name: "Postgres", open: () => postgresBackend(DATABASE_URL as string), skip: DATABASE_URL === undefined },
 ];
 
-/** Every table a scope's rows are in, its own row first. */
 const tables = [
   schema.scopes,
   schema.recordIds,
@@ -46,7 +39,6 @@ const tables = [
   schema.documentRevisions,
 ];
 
-/** The store suite's view of `backend`: its store, and what the suite cannot do through it. */
 function storeTarget(backend: Backend): StoreConformanceTarget<PostgresStorage> {
   const url = backend.url;
   return {
@@ -85,10 +77,8 @@ function storeTarget(backend: Backend): StoreConformanceTarget<PostgresStorage> 
         ? undefined
         : { active: row.wake_active, at: row.wake_at === null ? undefined : Number(row.wake_at) };
     },
-    // Counted by the app's own Drizzle instance over the runtime's tables, from `@chia1104/motoko-store-postgres/schema`.
     rows: (storage) =>
       Promise.all(tables.map((table) => backend.app.$count(table, eq(table.scopeId, storage.scopeId)))),
-    // PGlite is one connection: another process needs a server.
     ...(url !== undefined && {
       async otherProcess(options) {
         const pool = newPool(url, 2);

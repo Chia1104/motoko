@@ -30,7 +30,6 @@ const live: AgentWireEvent[] = [
   { type: "run:end", reason: "done" },
 ];
 
-// What the server replays from storage for the same conversation: no streaming, no drafts.
 const replayed: AgentWireEvent[] = [
   { type: "run:start" },
   { type: "user", messageId: "1", text: "hi", at: 1 },
@@ -65,7 +64,6 @@ describe("applyEvent", () => {
   });
 
   it("shows a call with the arguments its question carries, which the call runs with", () => {
-    // An app's hook rewrote the `{ path: "/x" }` the call started with.
     const rewritten = { path: "/x", at: "noon" };
     const question: AgentWireEvent = {
       type: "approval:request",
@@ -79,13 +77,11 @@ describe("applyEvent", () => {
       args: rewritten,
       status: "awaiting_approval",
     });
-    // Sent again to a resumed client, the question changes nothing.
     expect(applyEvent(asked, question)).toEqual(asked);
   });
 
   it("ends what a run left open, and notes a run that did not finish", () => {
     const view = foldEvents([...live.slice(0, 6), { type: "run:end", reason: "aborted", code: "aborted" }]);
-    // The reply that streamed was never stored and the draft never became a call.
     expect(view.items).toEqual([
       { kind: "user", messageId: "1", text: "hi", streaming: false, at: 1 },
       { kind: "notice", reason: "aborted", code: "aborted" },
@@ -108,20 +104,25 @@ describe("applyEvent", () => {
 });
 
 describe("resent state", () => {
-  it("folds into the same view when a resumed stream sends it again", () => {
+  it("changes nothing when a pending question comes again", () => {
     const asked = foldEvents(live.slice(0, 9));
-    // A resumed client gets the pending question again: nothing changes.
     expect(applyEvent(asked, live[8]!)).toEqual(asked);
-    // The run's end, once folded, is not folded twice.
+  });
+
+  it("does not fold a run's end twice", () => {
     const done = foldEvents(live);
     expect(applyEvent(done, { type: "run:end", reason: "aborted", code: "aborted" })).toEqual(done);
-    // A question or progress for a call that ended, or a question already decided, changes nothing.
+  });
+
+  it("changes nothing for a question or progress of a call that ended, or a question already decided", () => {
     const ended = foldEvents(live.slice(0, 11));
     expect(applyEvent(ended, live[8]!)).toEqual(ended);
     expect(applyEvent(ended, { type: "tool:update", toolCallId: "c1", output: "late" })).toEqual(ended);
     const decided = foldEvents(live.slice(0, 10));
     expect(applyEvent(decided, live[8]!)).toEqual(decided);
-    // The reply streamed so far, sent again as one delta under its stream id, replaces the partial.
+  });
+
+  it("replaces the partial reply with the reply streamed so far, sent again as one delta under its stream id", () => {
     const streaming = foldEvents(live.slice(0, 4));
     const resent = foldEvents(
       [
@@ -143,9 +144,7 @@ describe("the queue", () => {
   it("holds what the newest queue event lists, across runs, and nothing once it lists none", () => {
     const queued = foldEvents([...live.slice(0, 3), { type: "queue", items: waiting }]);
     expect(queued.queued).toEqual(waiting);
-    // A run's end leaves what waits for the next run.
     expect(applyEvent(queued, { type: "run:end", reason: "done" }).queued).toEqual(waiting);
-    // Sent again to a resumed client, it changes nothing.
     expect(applyEvent(queued, { type: "queue", items: waiting })).toEqual(queued);
     const emptied = applyEvent(queued, { type: "queue", items: [] });
     expect(emptied).not.toHaveProperty("queued");
@@ -195,12 +194,9 @@ describe("a deferred call", () => {
   it("awaits its reply until its deadline, runs again once the reply resumes it, then ends", () => {
     const waiting = foldEvents([{ type: "run:start" }, start, wait]);
     expect(tool(waiting)).toMatchObject({ status: "awaiting_reply", replyBy: 5_000 });
-    // The run goes on while the call is parked: nothing waits for an operator.
     expect(waiting).toMatchObject({ status: "running", pendingApprovals: [] });
-    // A resumed stream sends the wait again: nothing changes.
     expect(applyEvent(waiting, wait)).toEqual(waiting);
 
-    // Woken, it runs again without its deadline, as a resumed stream that never sent the wait shows it.
     const resumed = applyEvent(waiting, { type: "tool:update", toolCallId: "a1" });
     expect(tool(resumed)).toEqual({ ...tool(foldEvents([start])), status: "running" });
     expect(applyEvent(foldEvents([{ type: "run:start" }, start]), { type: "tool:update", toolCallId: "a1" })).toEqual(
@@ -208,7 +204,6 @@ describe("a deferred call", () => {
     );
     const ended = applyEvent(resumed, { type: "tool:end", toolCallId: "a1", toolName: "ask", status: "ok" });
     expect(tool(ended)).toEqual({ ...tool(foldEvents([start])), status: "ok" });
-    // Straight from the wait to the end, too, and a wait for a call that ended changes nothing.
     const direct = applyEvent(waiting, { type: "tool:end", toolCallId: "a1", toolName: "ask", status: "ok" });
     expect(direct).toEqual(ended);
     expect(applyEvent(ended, wait)).toEqual(ended);
@@ -267,7 +262,6 @@ describe("a nested call's question", () => {
       nestedApprovals: [{ toolCallId: "cm-1/c1", approval: { approved: false, comment: "no" } }],
     });
     expect(decided).toMatchObject({ status: "running", pendingApprovals: [] });
-    // A resumed stream sends the question again, or the decision: nothing changes.
     expect(applyEvent(asked, question)).toEqual(asked);
     expect(applyEvent(decided, question)).toEqual(decided);
     expect(applyEvent(decided, decision)).toEqual(decided);
@@ -278,7 +272,6 @@ describe("a nested call's question", () => {
     expect(script(ended)).toEqual({ ...script(foldEvents([start])), status: "ok" });
     expect(ended).toMatchObject({ status: "running", pendingApprovals: [] });
     expect(foldEvents([decision, end("ok")], asked)).toEqual(ended);
-    // A question or a decision for a call whose caller ended changes nothing.
     expect(foldEvents([question, decision], ended)).toEqual(ended);
 
     const aborted = applyEvent(asked, { type: "run:end", reason: "aborted" });
@@ -302,7 +295,6 @@ describe("a compaction", () => {
     expect(foldEvents([start, compacted, { type: "compaction:end" }]).compaction).toBeUndefined();
     const view = foldEvents([start, failed]);
     expect(view.compaction).toEqual({ status: "failed", error: "Summarization failed: overloaded" });
-    // A run neither starts nor ends it, and a resumed stream that states it again changes nothing.
     expect(foldEvents([...live, failed], view)).toEqual(foldEvents(live, view));
     expect(foldEvents([start, compacted, { type: "compaction:end" }], view).compaction).toBeUndefined();
     expect(() => agentWireEventSchema.parse({ type: "compaction:start", reason: "bored" })).toThrow();
@@ -316,7 +308,6 @@ describe("a wrap-up", () => {
     const wrapping = foldEvents([...live, start]);
     expect(wrapping).toEqual({ ...foldEvents(live), wrappingUp: true });
     expect(applyEvent(wrapping, end)).toEqual(foldEvents(live));
-    // A resumed stream that states it again changes nothing, and a run's start leaves it to its end.
     expect(foldEvents([start, end, end], wrapping)).toEqual(applyEvent(wrapping, end));
     expect(applyEvent(wrapping, start)).toEqual(wrapping);
     expect(applyEvent(wrapping, { type: "run:start" })).toMatchObject({ status: "running", wrappingUp: true });
@@ -349,7 +340,6 @@ describe("delegateOf", () => {
       details,
     });
     expect(delegateOf(tool(ended))).toEqual(details);
-    // Any other call's details name no child.
     const other = foldEvents([{ type: "run:start" }, { ...start, toolCallId: "c1", toolName: "rm" }]);
     expect(delegateOf(tool(other))).toBeUndefined();
     const noted = applyEvent(other, { type: "tool:update", toolCallId: "c1", details: { sessionId: 12 } });

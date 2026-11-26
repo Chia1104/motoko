@@ -1,11 +1,5 @@
-// A commit's statements on MySQL: two round trips, whatever its number of batches. The check state is read in one
-// statement (`readCheckState`), a single SELECT and so one snapshot. The plan is written in one transaction sent as one
-// multi-statement query (`writePlan`): the guard first, an UPDATE of the scope's row that advances its counters only
-// if the lease token is current and unexpired and `next_seq` is unchanged, which stamps a fresh nonce on the row and
-// locks it until COMMIT; then one multi-row statement per table the plan writes, each only where the row holds the
-// nonce; then a read of the row that says how the write ended. MySQL has no data-modifying CTEs or RETURNING, so the
-// tables cannot share a statement, but they can share a round trip. The checks between the read and the write are the
-// shared commit protocol's (`commitBatches`).
+// MySQL has no data-modifying CTEs or RETURNING, so the tables cannot share a statement, but they can share a round
+// trip.
 
 import type { DocumentCopySource, DocumentRecord, StoredDocument } from "@earendil-works/pi-durable";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
@@ -25,7 +19,7 @@ import type {
   WriteOutcome,
 } from "@chia1104/motoko-core/store";
 
-import { fenced, freshNonce, isTransientError, now, packet, rowsOf } from "./database.ts";
+import { fencedTransaction, isTransientError, now, rowsOf } from "./database.ts";
 import type { Database, PoolDatabase } from "./database.ts";
 import {
   conversations,
@@ -39,7 +33,6 @@ import {
   tasks,
 } from "./schema.ts";
 
-/** The commit port of one scope's storage; `readSource` is the storage's own read of a copy's source. */
 export function commitPort(
   db: PoolDatabase,
   scopeId: number,
@@ -53,15 +46,14 @@ export function commitPort(
   };
 }
 
-/** mysql2 parses a JSON column; a pool with `jsonStrings` returns its text. */
+/** mysql2 parses a JSON column. A pool with `jsonStrings` returns its text instead. */
 const jsonValue = <T>(value: unknown, empty: T): T =>
   value === null || value === undefined ? empty : typeof value === "string" ? (JSON.parse(value) as T) : (value as T);
 
-/** `scalar` when `values` is not empty, else NULL: MySQL has no empty `IN ()`. */
+/** `scalar` when `values` is not empty, else NULL, because MySQL has no empty `IN ()`. */
 const unlessEmpty = (values: readonly unknown[], scalar: () => SQL): SQL =>
   values.length === 0 ? sql`NULL` : scalar();
 
-/** The scope's counters and the stored state `query` names, in one statement (one snapshot). */
 async function readCheckState(db: Database, scopeId: number, query: CheckQuery): Promise<CheckState | undefined> {
   const ids = unlessEmpty(
     query.ids,
@@ -73,7 +65,6 @@ async function readCheckState(db: Database, scopeId: number, query: CheckQuery):
     () => sql`(SELECT JSON_ARRAYAGG(${documents.record}) FROM ${documents}
       WHERE ${and(eq(documents.scopeId, scopeId), inArray(documents.id, [...query.documents]))})`,
   );
-  // The latest revision's version of each queried document, one index lookup each.
   const versions = unlessEmpty(
     query.deltas,
     () => sql`(SELECT JSON_ARRAYAGG(JSON_ARRAY(q.id, (
@@ -143,24 +134,15 @@ async function readCheckState(db: Database, scopeId: number, query: CheckQuery):
   };
 }
 
-/**
- * Throws unless `value` (an indexed string's JSON encoding) fits its column. A column too short for its value would
- * reject it in a strict `sql_mode`, and truncate it in a lax one.
- */
+/** A column too short for its value would reject it in a strict `sql_mode`, and truncate it in a lax one. */
 function assertFits(value: string, length: number, what: string): void {
   if (value.length > length && [...value].length > length) {
     throw new Error(`${what} is too long for MySQL's index: at most ${length} characters of its JSON encoding`);
   }
 }
 
-/** A runtime table: every one but `scopes` is keyed by `scope_id` first. */
 type ScopedTable = MySqlTable & { scopeId: MySqlColumn };
 
-/**
- * `INSERT INTO table (scope_id, columns...)` of one row per element of `rows`, bound as a table value constructor
- * (`VALUES ROW(...), ...`), and only where `fence` holds; `undefined` when there are none. With `update`, rows whose key
- * exists replace those columns (`ON DUPLICATE KEY UPDATE`).
- */
 function insertRows<R>(
   table: ScopedTable,
   scopeId: number,
@@ -190,10 +172,17 @@ function insertRows<R>(
   return sql`INSERT INTO ${table} (${names}) SELECT * FROM (VALUES ${values}) AS v (${names}) WHERE ${fence}${upsert}`;
 }
 
-/**
- * The plan's statements after the guard, one per table it writes, in an order that keeps every key unique, each only
- * where `fence` holds.
- */
+const WRITE_ORDER = [
+  "recordIds",
+  "conversations",
+  "entries",
+  "tasks",
+  "submissions",
+  "documents",
+  "clearedRevisions",
+  "revisions",
+] as const;
+
 function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
   for (const task of plan.tasks) assertFits(encodeIndexedString(task.kind), INDEXED_LENGTHS.taskKind, "A task's kind");
   for (const submission of plan.submissions) {
@@ -206,8 +195,8 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
     assertFits(part.kind, INDEXED_LENGTHS.documentKind, "A document's kind");
     assertFits(part.keyValue, INDEXED_LENGTHS.documentKey, "A document's key");
   }
-  const statements = [
-    insertRows(
+  const writes: Record<(typeof WRITE_ORDER)[number], SQL | undefined> = {
+    recordIds: insertRows(
       recordIds,
       scopeId,
       [
@@ -217,7 +206,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.claims,
       fence,
     ),
-    insertRows(
+    conversations: insertRows(
       conversations,
       scopeId,
       [
@@ -231,7 +220,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.conversations,
       fence,
     ),
-    insertRows(
+    entries: insertRows(
       entries,
       scopeId,
       [
@@ -244,7 +233,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.entries,
       fence,
     ),
-    insertRows(
+    tasks: insertRows(
       tasks,
       scopeId,
       [
@@ -260,7 +249,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [tasks.conversationId, tasks.kind, tasks.status, tasks.abortRequested, tasks.background, tasks.record],
     ),
-    insertRows(
+    submissions: insertRows(
       submissions,
       scopeId,
       [
@@ -277,8 +266,7 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [submissions.conversationId, submissions.requestId, submissions.status, submissions.record],
     ),
-    // A created document is inserted, a stored one retired: one upsert writes both.
-    insertRows(
+    documents: insertRows(
       documents,
       scopeId,
       [
@@ -296,13 +284,13 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       fence,
       [documents.retiredAt, documents.record],
     ),
-    // Before the new revisions: none of them is among the ones cleared.
-    plan.cleared.length === 0
-      ? undefined
-      : sql`DELETE FROM ${documentRevisions}
+    clearedRevisions:
+      plan.cleared.length === 0
+        ? undefined
+        : sql`DELETE FROM ${documentRevisions}
         WHERE ${and(eq(documentRevisions.scopeId, scopeId), inArray(documentRevisions.documentId, [...plan.cleared]))}
           AND ${fence}`,
-    insertRows(
+    revisions: insertRows(
       documentRevisions,
       scopeId,
       [
@@ -315,40 +303,28 @@ function planStatements(scopeId: number, plan: CommitPlan, fence: SQL): SQL[] {
       plan.revisions,
       fence,
     ),
-  ];
-  return statements.filter((statement) => statement !== undefined);
+  };
+  return WRITE_ORDER.map((phase) => writes[phase]).filter((statement) => statement !== undefined);
 }
 
-/**
- * Writes `plan` in one transaction, sent as one round trip, if the guard holds: the scope row's `next_seq` still equals
- * `expectedSeq`, and the lease token is current and unexpired by the database clock. The guard is the transaction's
- * first statement; as it advances the counters it stamps a fresh nonce on the row, and every later statement writes
- * only where the row holds that nonce. So a refused guard writes nothing, even when another storage under the same
- * lease moved `next_seq` to exactly the value this one would have, and a held one locks the row, keeping every other
- * writer and acquirer of the scope waiting until COMMIT. The transaction's last statement reads the row to say how the
- * write ended: stored when the row holds the nonce, otherwise why the guard refused.
- */
 async function writePlan(
   db: PoolDatabase,
   scopeId: number,
   guard: CommitGuard,
   plan: CommitPlan,
 ): Promise<WriteOutcome> {
-  const nonce = freshNonce();
-  const writes = planStatements(scopeId, plan, fenced(scopeId, nonce));
-  const results = await packet(db, [
-    sql`UPDATE ${scopes} SET next_seq = ${guard.nextSeq}, next_id = GREATEST(next_id, ${guard.nextId}),
-        commit_nonce = ${nonce}
+  const { outcome } = await fencedTransaction<{ outcome: WriteOutcome }>(db, (nonce) => ({
+    stamp: sql`UPDATE ${scopes} SET next_seq = ${guard.nextSeq}, next_id = GREATEST(next_id, ${guard.nextId}),
+        commit_nonce = ${nonce.value}
       WHERE scope_id = ${scopeId} AND next_seq = ${guard.expectedSeq}
         AND lease_token = ${guard.leaseToken} AND lease_expires_at > ${now}`,
-    ...writes,
-    sql`SELECT CASE WHEN s.scope_id IS NULL THEN 'deleted'
-        WHEN s.commit_nonce = ${nonce} THEN 'stored'
+    fencedWrites: planStatements(scopeId, plan, nonce.fence(scopeId)),
+    outcome: sql`SELECT CASE WHEN s.scope_id IS NULL THEN 'deleted'
+        WHEN s.commit_nonce = ${nonce.value} THEN 'stored'
         WHEN s.lease_token <> ${guard.leaseToken} THEN 'taken'
         WHEN s.lease_expires_at > ${now} THEN 'concurrent'
         ELSE 'expired' END AS outcome
       FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_id = ${scopeId}`,
-  ]);
-  const [row] = results.at(-1) as [{ outcome: WriteOutcome }];
-  return row.outcome;
+  }));
+  return outcome;
 }

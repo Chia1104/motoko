@@ -1,17 +1,3 @@
-// What a cluster's forwarding costs, measured on two nodes in this process: how long an instance whose home crashed
-// stays unavailable (its failover), and what one more hop adds to a call.
-//
-//   pnpm bench                      # PGlite
-//   TEST_DATABASE_URL=... pnpm bench  # and Postgres
-//
-// Failover: B, the home, crashes (its database statements fail from then on, unsent, and its server closes), and A
-// polls a call every `POLL_MS` until it is answered. The lease that B renewed last expires `ttlMs` after that renewal,
-// so the failover from the crash is `ttlMs` minus how long before the crash B last renewed (up to `ttlMs / 3`), plus
-// one poll. "From renewal" measures from B's last statement instead, which should be `ttlMs` plus one poll.
-//
-// The hop: one call answered by the home directly, and the same call through a peer, which first asks the database for
-// the lease (refused, in two statements) and then forwards the call on a connection of its own.
-
 import { call } from "../test/http.ts";
 import { agent, cluster, pgliteDatabase, postgresDatabase, uniqueName } from "../test/nodes.ts";
 import type { Database } from "../test/nodes.ts";
@@ -37,7 +23,6 @@ async function failover(database: Database, ttlMs: number) {
     const user = uniqueName("alice");
     await b.runtime.get(agent, user).createSession();
     const as = { authorization: `Bearer ${user}` };
-    // A random point in B's renewal interval, as a crash would fall.
     await sleep(ttlMs * Math.random());
     await b.crash();
     const crashedAt = performance.now();
@@ -47,7 +32,6 @@ async function failover(database: Database, ttlMs: number) {
       await sleep(POLL_MS);
     }
     const servedAt = performance.now();
-    // Read now, not at the crash: a renewal in flight then still lands, and extends the lease.
     return { fromCrash: servedAt - crashedAt, fromRenewal: servedAt - b.lastStatementAt(), refusals };
   } finally {
     await nodes.close();
@@ -72,7 +56,6 @@ async function hop(database: Database) {
       }
       return times;
     };
-    // Warm both paths first, then measure each.
     await timed(b.url);
     await timed(a.url);
     const statement: number[] = [];
@@ -108,7 +91,6 @@ for (const [name, open] of databases) {
     console.log(`${name}, listSessions, ${CALLS} calls each, ms:`);
     console.log(`  to the home:         ${summary(direct, 2)}`);
     console.log(`  through a peer:      ${summary(forwarded, 2)}`);
-    // The peer's own part of a forward: its lease attempt, refused, is two statements (one names the holder).
     console.log(`  one statement alone: ${summary(statement, 2)}`);
   } finally {
     await database.close();

@@ -1,9 +1,3 @@
-// A commit's two statements on Postgres, whatever its number of batches: the check state read in one statement
-// (`readCheckState`), and the plan written in one (`writePlan`): data-modifying CTEs per table, each row set bound as
-// Postgres arrays through `unnest`, all conditioned on a guard that advances the scope's counters. A single statement
-// is atomic on its own, so the write needs no explicit transaction: no BEGIN/COMMIT round trips. The checks between the
-// two are the shared commit protocol's (`commitBatches`).
-
 import type { DocumentCopySource, DocumentRecord, StoredDocument } from "@earendil-works/pi-durable";
 import { eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
@@ -36,7 +30,6 @@ import {
   tasks,
 } from "./schema.ts";
 
-/** The commit port of one scope's storage; `readSource` is the storage's own read of a copy's source. */
 export function commitPort(
   db: Database,
   scopeId: number,
@@ -50,7 +43,6 @@ export function commitPort(
   };
 }
 
-/** The scope's counters and the stored state `query` names, in one statement (one snapshot). */
 async function readCheckState(db: Database, scopeId: number, query: CheckQuery): Promise<CheckState | undefined> {
   const address = query.addresses;
   const s = alias(scopes, "s");
@@ -116,17 +108,10 @@ async function readCheckState(db: Database, scopeId: number, query: CheckQuery):
   };
 }
 
-/** A column's bare name, as `INSERT` column lists, `SET` targets and `unnest` aliases need it. */
 const name = (column: PgColumn): SQL => sql`${sql.identifier(column.name)}`;
 
-/** A runtime table: every one but `scopes` is keyed by `scope_id` first. */
 type PgTableWithScope = PgTable & { scopeId: PgColumn };
 
-/**
- * One statement that writes `plan`, if the guard holds: the scope row's `next_seq` still equals `expectedSeq`, and
- * the lease token is current and unexpired by the database clock. It returns one row, `stored`: 1 when written, 0 when
- * the guard refused and nothing was written.
- */
 function planStatement(scopeId: number, guard: CommitGuard, plan: CommitPlan): SQL {
   const ctes: SQL[] = [];
   const leaseCondition = sql` AND ${scopes.leaseToken} = ${guard.leaseToken}::bigint AND ${scopes.leaseExpiresAt} > clock_timestamp()`;
@@ -136,10 +121,6 @@ function planStatement(scopeId: number, guard: CommitGuard, plan: CommitPlan): S
       WHERE ${scopes.scopeId} = ${scopeId}::bigint AND ${scopes.nextSeq} = ${guard.expectedSeq}::bigint${leaseCondition}
       RETURNING ${scopes.scopeId})`,
   );
-  /**
-   * `INSERT INTO table (scope_id, columns...) SELECT guard.scope_id, ... FROM guard, unnest(arrays...)`: nothing
-   * when the guard refused. `type` is each array's element type, `values` its elements.
-   */
   const insert = (
     cte: string,
     table: PgTableWithScope,
@@ -164,7 +145,6 @@ function planStatement(scopeId: number, guard: CommitGuard, plan: CommitPlan): S
         SELECT g.scope_id, ${selected} FROM guard g, unnest(${arrays}) AS u(${names})${conflict})`,
     );
   };
-  /** `ON CONFLICT (scope_id, id) DO UPDATE SET column = excluded.column, ...` */
   const upsert = (table: PgTableWithScope & { id: PgColumn }, columns: readonly PgColumn[]): SQL =>
     sql` ON CONFLICT (${name(table.scopeId)}, ${name(table.id)}) DO UPDATE SET ${sql.join(
       columns.map((column) => sql`${name(column)} = excluded.${name(column)}`),
@@ -245,7 +225,6 @@ function planStatement(scopeId: number, guard: CommitGuard, plan: CommitPlan): S
     ],
     upsert(submissions, [submissions.conversationId, submissions.requestId, submissions.status, submissions.record]),
   );
-  // A created document is inserted, a stored one retired: one upsert writes both.
   const documentRows = plan.documents;
   const parts = documentRows.map((record) => addressParts(record));
   insert(
@@ -283,11 +262,9 @@ function planStatement(scopeId: number, guard: CommitGuard, plan: CommitPlan): S
   return sql`WITH ${sql.join(ctes, sql`,\n`)}\nSELECT count(*)::int AS stored FROM guard`;
 }
 
-/** Sends `planStatement`; a guard that refused is explained by one more statement reading the scope row. */
 async function writePlan(db: Database, scopeId: number, guard: CommitGuard, plan: CommitPlan): Promise<WriteOutcome> {
   const rows = await rowsOf<{ stored: unknown }>(db, planStatement(scopeId, guard, plan));
   if (toNumber(rows[0]?.stored ?? 0) === 1) return "stored";
-  // The guard refused: find out why, for the error.
   const scope = await db
     .select({
       leaseToken: scopes.leaseToken,

@@ -1,7 +1,3 @@
-// The lease's statements on Postgres: the holder, the expiry (`clock_timestamp()`, the database clock) and the fencing
-// token live in the scope's row. Why a row lease and not a session advisory lock: see `@chia1104/motoko-core/store`'s
-// lease.
-
 import type { Wake } from "@earendil-works/pi-durable";
 import { and, eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
@@ -12,24 +8,17 @@ import type { LeaseHolder, LeaseRow, Renewal } from "@chia1104/motoko-core/store
 
 import { rowsOf } from "./database.ts";
 import type { Database } from "./database.ts";
-import { journalCheck, withJournal } from "./migrations.ts";
+import { journalCheck, missingJournalAsVersionError } from "./migrations.ts";
 import { scopes } from "./schema.ts";
 
-/** `clock_timestamp() + ms`: the database clock, never this process's. */
 const expiryIn = (ms: number) => sql`clock_timestamp() + ${ms}::double precision * interval '1 millisecond'`;
 
-/** A column's bare name, for `SET` targets, `INSERT` column lists and `ON CONFLICT` targets. */
 const name = (column: { name: string }): SQL => sql`${sql.identifier(column.name)}`;
 
 /**
- * Takes the lease of `scope`, creating the scope row if needed, in one statement that also checks the schema version:
- * an upsert of the scope row whose update takes the lease only if it is free or expired, written only if the journal
- * is at this package's migrations. Rejects with `SchemaVersionError` unless it is; resolves who holds the lease while
- * another holder's is unexpired (one more statement, to name the holder).
- *
- * Concurrent first acquisitions of a new scope are serialized by the unique key: the loser's upsert waits for the
- * winner's row and finds its lease unexpired. Each attempt draws a `scope_id` from the identity sequence even when
- * the row exists, so the sequence has gaps; nothing reads meaning into them.
+ * The unique key serializes concurrent first acquisitions of a new scope. The loser's upsert waits for the winner's row
+ * and finds its lease unexpired. Each attempt draws a `scope_id` from the identity sequence even when the row exists,
+ * so the sequence has gaps. Nothing depends on the ids being contiguous.
  */
 export async function acquireLease(
   db: Database,
@@ -39,7 +28,7 @@ export async function acquireLease(
 ): Promise<LeaseRow | LeaseHolder> {
   const kind = sql`${scope.kind}::text`;
   const label = sql`${scope.name}::text`;
-  const rows = await withJournal(db, () =>
+  const rows = await missingJournalAsVersionError(db, () =>
     rowsOf<{ applied: string[]; scope_id: unknown; lease_token: unknown }>(
       db,
       sql`WITH journal AS (SELECT ${journalCheck.applied} AS applied),
@@ -70,10 +59,6 @@ export async function acquireLease(
   return { scopeId: toNumber(row.scope_id), token: toNumber(row.lease_token) };
 }
 
-/**
- * One statement: extend the expiry of each lease that is still its holder's and unexpired, and read each scope's
- * token, so a lease that was not extended learns why (taken, expired, or its scope deleted).
- */
 export async function renewLeases(db: Database, leases: readonly LeaseRow[], ttlMs: number): Promise<Renewal[]> {
   const ids = sql`${sql.param(leases.map((lease) => lease.scopeId))}::bigint[]`;
   const tokens = sql`${sql.param(leases.map((lease) => lease.token))}::bigint[]`;
@@ -97,7 +82,6 @@ export async function renewLeases(db: Database, leases: readonly LeaseRow[], ttl
   }));
 }
 
-/** Frees the scope if `lease` is still its holder's, recording `wake` (work that can run without one). */
 export async function releaseLease(db: Database, lease: LeaseRow, wake: Wake | undefined): Promise<void> {
   await db
     .update(scopes)

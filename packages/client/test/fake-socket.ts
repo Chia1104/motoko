@@ -13,7 +13,6 @@ export interface SentCall {
   readonly params: Record<string, unknown>;
 }
 
-/** A connection the test drives: it opens, closes and delivers frames on cue, and keeps what the client sent. */
 export class FakeSocket extends EventTarget implements MotokoSocket {
   readyState = CONNECTING;
   readonly sent: SentCall[] = [];
@@ -39,7 +38,6 @@ export class FakeSocket extends EventTarget implements MotokoSocket {
     );
   }
 
-  /** The last call of `method` sent. */
   last(method: string): SentCall {
     const call = this.sent.findLast((sent) => sent.method === method);
     if (call === undefined) throw new Error(`No ${method} sent`);

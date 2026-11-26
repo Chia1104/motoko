@@ -4,8 +4,8 @@ import type { StorageScope } from "../host.ts";
 import { describeScope } from "./scope.ts";
 
 /**
- * Another holder has the scope's lease, and it has not expired. It is the runtime's `LeaseHeldError`, so a host built on
- * a shared-database store refuses a second writer the way every other host does.
+ * Another holder has the scope's lease, and it has not expired. It is the runtime's `LeaseHeldError`, so a host built
+ * on a shared-database store refuses a second writer the way every other host does.
  */
 export class LeaseHeldError extends RuntimeLeaseHeldError {
   /** The holder's label, as it acquired the lease. */
@@ -22,7 +22,7 @@ export class LeaseHeldError extends RuntimeLeaseHeldError {
 }
 
 export type LeaseLossReason =
-  /** Another holder acquired the lease (after it expired). */
+  /** Another holder acquired the lease after it expired. */
   | "taken"
   /** The lease expired before it was renewed. */
   | "expired"
@@ -33,7 +33,7 @@ export type LeaseLossReason =
   /** `release()` was called. */
   | "released";
 
-/** The lease is no longer held; `signal.reason` of a lost lease, and the error of a commit it fenced off. */
+/** The lease is no longer held. It is the `signal.reason` of a lost lease, and the error of a commit it fenced off. */
 export class LeaseLostError extends Error {
   readonly scope: StorageScope;
   readonly reason: LeaseLossReason;
@@ -45,7 +45,7 @@ export class LeaseLostError extends Error {
   }
 }
 
-/** A scope's row is gone: `deleteScope()` ran while this storage was open. */
+/** A scope's row is gone, because `deleteScope()` ran while this storage was open. */
 export class ScopeDeletedError extends Error {
   constructor(scope: StorageScope) {
     super(`Scope ${describeScope(scope)} was deleted`);
@@ -54,8 +54,8 @@ export class ScopeDeletedError extends Error {
 }
 
 /**
- * A commit found the scope's `next_seq` moved since it read it, under the same lease (two storages opened with one
- * lease); it wrote nothing.
+ * A commit found the scope's `next_seq` moved since it read it, under the same lease, so two storages were opened with
+ * one lease. The commit wrote nothing.
  */
 export class ConcurrentCommitError extends Error {
   constructor(scope: StorageScope) {

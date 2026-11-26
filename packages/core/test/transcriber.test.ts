@@ -1,10 +1,3 @@
-// The transcriber driven through its own interface. Each session is a real pi-durable conversation
-// on MemoryStorage: a test commits what pi-durable would (entries, `pi.live`, the decisions, the
-// inputs' settlements) through the Harness, and the transcriber reads history back through
-// `historyOf`, as a session's stream does. The gate's memo of a parked call's arguments lives on the
-// call's tool task, which no test here runs, so a session's `gate` stands in for it. Each test expects
-// what the wire contract says a client is sent.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Draft } from "@earendil-works/chord/delta";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -46,14 +39,12 @@ import { fauxModels } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** `remove` waits for an operator's decision; the other tools run at once. */
 const info = (toolName: string) => ({
   label: toolName,
   tier: toolName === "remove" ? "write" : "read",
   gated: toolName === "remove",
 });
 
-// SAFETY: nothing here reads a task; any id stands for the run's.
 const TASK = 1 as TaskId;
 
 const usage = {
@@ -64,7 +55,6 @@ const usage = {
   totalTokens: 8,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
 };
-/** A reply's usage as the wire carries it: the provider's counts and the total cost. */
 const wireUsage = { input: 3, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.01 };
 
 const text = (value: string) => ({ type: "text" as const, text: value });
@@ -77,7 +67,6 @@ const call = (id: string, name: string, args: Record<string, string> = {}) => ({
 });
 type Part = ReturnType<typeof text> | ReturnType<typeof thinking> | ReturnType<typeof call>;
 
-/** A reply, stored as an entry or streaming in `pi.live`. */
 const reply = (content: Part[], stopReason: AssistantMessage["stopReason"]) => ({
   role: "assistant" as const,
   content,
@@ -98,7 +87,6 @@ afterEach(async () => {
 
 type Write = (tx: Tx, live: Draft<LiveState>) => Promise<void>;
 
-/** A conversation, what is committed to it, and the view an observer of it holds. */
 async function session(window?: ConversationWindow) {
   const storage = new MemoryStorage();
   const { models, model } = fauxModels();
@@ -121,7 +109,6 @@ async function session(window?: ConversationWindow) {
     context,
     window,
   );
-  /** What the gate memoized of each parked call, by its tool task, while the task lives. */
   const gate = new Map<TaskId, JsonObject>();
   const history = {
     ...historyOf({ harness, storage, conversation }),
@@ -134,7 +121,6 @@ async function session(window?: ConversationWindow) {
     get view() {
       return current();
     },
-    /** Commits `write`; returns the view before it and the one it leaves. */
     async commit(write: Write) {
       const was = current();
       await harness.commit(async (tx) => write(tx, await tx.doc(LiveDoc, id)), context);
@@ -167,18 +153,14 @@ async function session(window?: ConversationWindow) {
           data: { diagnostics: codes.map((code) => ({ severity: "error" as const, message: code, code })) },
         })
       ).id,
-    /** The input that starts a run at `entry`, placed as the run takes it. */
     input: async (tx: Tx, entry: EntryId): Promise<SubmissionId> =>
       (await tx.createSubmission({ conversationId: id, type: "input", status: "placed", entry })).id,
-    /** A decision, with the arguments the gate saw when the call parked, as `decide` records it. */
     decide: async (tx: Tx, toolCallId: string, approved: boolean, args?: JsonObject) => {
       (await tx.doc(ApprovalsDoc, id)).decisions[toolCallId] = { approved, ...(args !== undefined && { args }), at: 4 };
     },
-    /** The record of a deferred call that task `taskId` started: it waits for a reply until 5000. */
     defer: async (tx: Tx, toolCallId: string, taskId: TaskId) => {
       (await tx.doc(CallsDoc, id)).calls[toolCallId] = { kind: "reply", taskId, token: "t", until: 5_000 };
     },
-    /** The reply that reached a deferred call, recorded with it. */
     replied: async (tx: Tx, toolCallId: string) => {
       const record = (await tx.doc(CallsDoc, id)).calls[toolCallId];
       if (record?.kind === "reply") record.repliedAt = 4_000;
@@ -188,17 +170,14 @@ async function session(window?: ConversationWindow) {
 
 type Session = Awaited<ReturnType<typeof session>>;
 
-/** The newest entry `view` reaches: where a stream that holds it stands. */
 const newestOf = (view: ConversationView) => view.entries.at(-1)?.id ?? view.before ?? 0;
 
-/** A client connected all along: a transcriber that takes up the session now and reads each commit. */
 async function follow(session: Session) {
   const transcriber = session.transcriber();
   await transcriber.start(session.view);
   const sent: Transcribed[] = [];
   return {
     sent,
-    /** Commits `write` and returns what the client is sent for it. */
     async commit(write: Write): Promise<AgentWireEvent[]> {
       const { was, next } = await session.commit(write);
       const transcribed = await transcriber.commit(was, next);
@@ -208,7 +187,6 @@ async function follow(session: Session) {
   };
 }
 
-/** What a client resuming at `from` (default: the session's start) is sent: history, then the in-flight state. */
 async function catchUp(session: Session, from?: Position): Promise<Transcribed[]> {
   const transcriber = session.transcriber();
   if (from !== undefined) expect(await transcriber.restore(from)).toBe(true);
@@ -219,7 +197,6 @@ async function catchUp(session: Session, from?: Position): Promise<Transcribed[]
   return sent;
 }
 
-/** A client resuming after each event of `sent` folds what it had and what it is sent into `sent`'s view. */
 async function expectEveryResumeFolds(s: Session, sent: readonly Transcribed[]) {
   const view = foldEvents(events(sent));
   for (const [index, { event, position }] of sent.entries()) {
@@ -228,7 +205,6 @@ async function expectEveryResumeFolds(s: Session, sent: readonly Transcribed[]) 
   }
 }
 
-/** The stream id every streaming event names: one reply streams at a time. */
 function streamIdOf(sent: readonly AgentWireEvent[]): string {
   const ids = new Set(
     sent.flatMap((event) =>
@@ -253,7 +229,6 @@ describe("a client resuming mid-run", () => {
       asked = await s.reply(tx, reply([text("Building."), call("b1", "build")], "toolUse"));
       pi.tools = [{ callId: "b1", name: "build", status: "running", taskId: TASK }];
     });
-    // The client goes away here, having folded the call's start.
     const cursor = live.sent.at(-1)!.position;
     expect(cursor).toEqual({ entry: asked, run: user });
     const seen = live.sent.length;
@@ -274,18 +249,15 @@ describe("a client resuming mid-run", () => {
     const back = await catchUp(s, cursor);
     const stream = streamIdOf(events(back));
     expect(events(back)).toEqual([
-      // It may still show inputs it saw queued, or a compaction going on: neither is.
       { type: "queue", items: [] },
       { type: "compaction:end" },
       { type: "tool:end", toolCallId: "b1", toolName: "build", status: "ok", details: { ok: true } },
-      // The client may still show a retry wait from before it left: none is going on.
       { type: "retry:end" },
       { type: "assistant:start", messageId: stream },
       { type: "assistant:delta", messageId: stream, channel: "thinking", delta: "Checking" },
       { type: "assistant:delta", messageId: stream, channel: "text", delta: "It is bu" },
       { type: "tool:draft", toolCallId: "d1", toolName: "deploy" },
     ]);
-    // Still in its run, past the result: the last cursor resumes there.
     expect(back.at(-1)!.position).toEqual({ entry: built, run: user });
 
     const view = foldEvents([...events(live.sent.slice(0, seen)), ...events(back)]);
@@ -310,7 +282,6 @@ describe("a client resuming mid-run", () => {
     });
     const transcriber = s.transcriber();
     expect(await transcriber.restore({ entry: 999_999, run: undefined })).toBe(false);
-    // A run is named by the user entry that started it; a reply starts none.
     expect(await transcriber.restore({ entry: answer!, run: answer! })).toBe(false);
     expect(transcriber.position).toEqual({ entry: 0, run: undefined });
     expect(await transcriber.restore({ entry: answer!, run: user! })).toBe(true);
@@ -334,7 +305,7 @@ describe("a run orphaned without an entry saying so", () => {
       asked = await s.reply(tx, reply([call("c1", "lookup", { key: "a" })], "toolUse"));
       pi.tools = [{ callId: "c1", name: "lookup", status: "running", taskId: TASK }];
     });
-    // pi-durable found no task for the run: it settles the input with why, and says `orphaned`.
+    // pi-durable found no task for the run, so it settles the input with the reason and fails the run as `orphaned`.
     await live.commit(async (tx, pi) => {
       delete pi.run;
       delete pi.tools;
@@ -358,7 +329,6 @@ describe("a run orphaned without an entry saying so", () => {
       { type: "user", messageId: String(first), text: "First", at: 1 },
       { type: "assistant:end", messageId: String(asked), text: "", stopReason: "toolUse", usage: wireUsage, at: 2 },
       { type: "tool:start", toolCallId: "c1", toolName: "lookup", label: "lookup", tier: "read", args: { key: "a" } },
-      // The call never got a result, and the run ended without an answer.
       { type: "tool:end", toolCallId: "c1", toolName: "lookup", status: "aborted" },
       { type: "run:end", reason: "error", code: "orphaned", error: "missing_task" },
       { type: "run:start" },
@@ -367,13 +337,11 @@ describe("a run orphaned without an entry saying so", () => {
       { type: "run:end", reason: "done" },
     ];
     expect(events(live.sent)).toEqual(expected);
-    // `pi.live` no longer says how the first run ended, and no entry does: its input's settlement does.
     expect(events(await catchUp(s))).toEqual(expected);
   });
 });
 
 describe("a run that no entry the stream reads starts", () => {
-  /** A stream that opens once the input's entry is stored, before its run starts; `input` places that input. */
   async function opened() {
     const s = await session();
     let user: EntryId | undefined;
@@ -385,7 +353,6 @@ describe("a run that no entry the stream reads starts", () => {
 
   it("starts before what it streams, so a client resuming anywhere in it folds how it ended", async () => {
     const { s, live, input } = await opened();
-    // The run's start and the first of its reply reach the stream in one commit.
     const started = await live.commit(async (tx, pi) => {
       pi.run = { taskId: TASK, inputs: [await input(tx)], turns: 0 };
       pi.generation = { attempt: 1, message: reply([text("Look")], "pending") };
@@ -397,7 +364,6 @@ describe("a run that no entry the stream reads starts", () => {
       { type: "assistant:delta", messageId: stream, channel: "text", delta: "Look" },
     ]);
     expect(live.sent.map(({ position }) => position.run)).toEqual(["*", "*", "*"]);
-    // The model request fails for good.
     await live.commit(async (tx, pi) => {
       await s.reply(tx, { ...reply([text("Look")], "error"), errorMessage: "overloaded" });
       delete pi.run;
@@ -494,7 +460,6 @@ describe("a call parked at the gate", () => {
       { kind: "notice", reason: "aborted", code: "aborted" },
     ]);
     expect(view.items[2]).not.toHaveProperty("approval");
-    // A client arriving later is not asked any more, and folds the same view.
     const late = events(await catchUp(s));
     expect(late.some((event) => event.type === "approval:request")).toBe(false);
     expect(foldEvents(late)).toEqual(view);
@@ -514,8 +479,6 @@ describe("a call parked at the gate", () => {
     });
     const seen = live.sent.findIndex(({ event }) => event.type === "approval:request") + 1;
     const back = events(await catchUp(s, at));
-    // The queue and compaction state it may hold, then the question, for a client that missed it, then its answer, then
-    // the call's end.
     expect(back).toEqual([
       { type: "queue", items: [] },
       { type: "compaction:end" },
@@ -529,13 +492,11 @@ describe("a call parked at the gate", () => {
 });
 
 describe("a call whose arguments a hook rewrote before the gate", () => {
-  // SAFETY: nothing here runs a task; the call's slot names its own, which holds the gate's memo.
   const CALL = 3 as TaskId;
   const rewritten = { key: "a", at: "noon" };
   const question = { type: "approval:request", toolCallId: "r1", toolName: "remove", tier: "write", args: rewritten };
   const toolOf = (sent: readonly Transcribed[]) => foldEvents(events(sent)).items.find((item) => item.kind === "tool");
 
-  /** A session whose run's reply asks for `remove`, the model's `{ key: "a" }`, and a client following it. */
   async function asking() {
     const s = await session();
     const live = await follow(s);
@@ -566,17 +527,14 @@ describe("a call whose arguments a hook rewrote before the gate", () => {
     const { s, live, park, decided, ran, answered } = await asking();
     s.gate.set(CALL, rewritten);
     const parked = await live.commit(park);
-    // The call starts with what the model wrote; the question shows what the gate saw.
     expect(parked.slice(1)).toEqual([
       { type: "tool:start", toolCallId: "r1", toolName: "remove", label: "remove", tier: "write", args: { key: "a" } },
       question,
     ]);
     expect(toolOf(live.sent)).toMatchObject({ status: "awaiting_approval", args: rewritten });
-    // While it waits, from the gate's memo.
     await expectEveryResumeFolds(s, live.sent);
 
     await live.commit(decided);
-    // The task ends, and its memo with it: from now on only the decision's record has the arguments.
     s.gate.delete(CALL);
     await live.commit(ran);
     await live.commit(answered);
@@ -590,7 +548,6 @@ describe("a call whose arguments a hook rewrote before the gate", () => {
 
   it("asks with the decision's arguments when the stream reads the park after the call was decided", async () => {
     const { s, park, decided } = await asking();
-    // A stream that falls behind: by the time it reads the park, the decision is stored and the memo is gone.
     const transcriber = s.transcriber();
     await transcriber.start(s.view);
     const parking = await s.commit(park);
@@ -603,12 +560,10 @@ describe("a call whose arguments a hook rewrote before the gate", () => {
 });
 
 describe("a nested call parked at the gate", () => {
-  // SAFETY: nothing here runs a task; each slot names its own, and the nested call's holds the gate's memo.
   const SCRIPT = 3 as TaskId;
   const NESTED = 4 as TaskId;
   const DEEPER = 5 as TaskId;
   type Status = NestedToolSlot["status"];
-  /** The script's call of `remove` on note `a`, the first call it makes. */
   const nested = (status: Status, args: JsonObject = { key: "a" }): NestedToolSlot => ({
     callId: "cm-1/c1",
     parentCallId: "cm-1",
@@ -631,7 +586,6 @@ describe("a nested call parked at the gate", () => {
   const scriptOf = (sent: readonly Transcribed[]) =>
     foldEvents(events(sent)).items.find((item) => item.kind === "tool" && item.toolCallId === "cm-1");
 
-  /** A session whose run's reply runs a script, and a client following it. */
   async function scripting() {
     const s = await session();
     const live = await follow(s);
@@ -664,7 +618,6 @@ describe("a nested call parked at the gate", () => {
         pi.nestedTools = [nested("pending")];
       }),
     ).toEqual([]);
-    // An app hook rewrote what the script called it with: the gate saw the rewrite.
     s.gate.set(NESTED, rewritten);
     expect(
       await live.commit(async (_tx, pi) => {
@@ -679,10 +632,8 @@ describe("a nested call parked at the gate", () => {
       status: "running",
       nestedApprovals: [{ toolCallId: "cm-1/c1", toolName: "remove", tier: "write", args: rewritten }],
     });
-    // While it waits, from the gate's memo.
     await expectEveryResumeFolds(s, live.sent);
 
-    // The decision lands while the call sleeps; it goes out as the call moves on, with the arguments it runs with.
     expect(await live.commit(async (tx) => s.decide(tx, "cm-1/c1", true, rewritten))).toEqual([]);
     s.gate.delete(NESTED);
     expect(
@@ -702,7 +653,6 @@ describe("a nested call parked at the gate", () => {
     ).toEqual([]);
     await expectEveryResumeFolds(s, live.sent);
 
-    // The question ends with the script's call: history keeps no nested call, and neither does the view.
     await live.commit(ended);
     expect(scriptOf(live.sent)).not.toHaveProperty("nestedApprovals");
     await live.commit(answered);
@@ -772,7 +722,6 @@ describe("a nested call parked at the gate", () => {
 
   it("raises no question while it is parked on its own work", async () => {
     const { s, live } = await scripting();
-    // A deferred call the script made, waiting for its reply after it started.
     await live.commit(async (tx, pi) => {
       await s.defer(tx, "cm-1/c1", NESTED);
       pi.nestedTools = [{ ...nested("sleeping"), name: "ask" }];
@@ -784,7 +733,6 @@ describe("a nested call parked at the gate", () => {
 });
 
 describe("a deferred call woken from its wait", () => {
-  // SAFETY: nothing here reads a task; the call's record and its slot name the same one.
   const CALL = 2 as TaskId;
   const slot = (status: "running" | "sleeping") => ({ callId: "a1", name: "ask", status, taskId: CALL });
   const runs: Write = async (_tx, pi) => {
@@ -792,9 +740,7 @@ describe("a deferred call woken from its wait", () => {
   };
 
   it.each<[string, (s: Session) => Write[]]>([
-    // The reply is recorded in the commit that wakes the call, which sleeps until it runs again.
     ["a reply", (s) => [async (tx) => s.replied(tx, "a1"), runs]],
-    // The deadline wakes it with nothing recorded.
     ["its deadline", () => [runs]],
   ])("runs again until it ends, for a client resuming anywhere too, once %s woke it", async (_by, wake) => {
     const s = await session();
@@ -816,7 +762,6 @@ describe("a deferred call woken from its wait", () => {
       await live.commit(write);
       const view = foldEvents(events(live.sent));
       expect(view.items.find((item) => item.kind === "tool")).toMatchObject({ status: "running" });
-      // A client that resumes at the wait, or anywhere else, has the call running too.
       await expectEveryResumeFolds(s, live.sent);
     }
   });
@@ -833,7 +778,7 @@ describe("a call cut off before its result", () => {
       await s.reply(tx, reply([call("w1", "wait")], "toolUse"));
       pi.tools = [{ callId: "w1", name: "wait", status: "running", taskId: TASK }];
     });
-    // pi-durable's result for a call a restart cut off: an error, marked unfinished.
+    // For a call that a restart cut off, pi-durable writes an error result marked unfinished.
     expect(
       await live.commit(async (tx, pi) => {
         const cut = await s.result(tx, "w1", "wait", "The call was interrupted.", {
@@ -932,7 +877,6 @@ describe("drafted calls", () => {
     const live = await follow(s);
     let first = await live.commit(async (tx, pi) => {
       pi.run = { taskId: TASK, inputs: [await s.input(tx, await s.user(tx, "Look up a, delete b"))], turns: 0 };
-      // The second call has no id yet: nothing can name it.
       pi.generation = {
         attempt: 1,
         message: reply([text("Let me"), call("c1", "lookup"), call("", "remove")], "pending"),
@@ -1024,7 +968,6 @@ describe("a stream that opens mid-run", () => {
     });
     const stream = streamIdOf(started);
 
-    // A second stream opens while the reply streams: it does not start the reply again.
     const later = await follow(s);
     let answer: EntryId | undefined;
     const delta = { type: "assistant:delta", messageId: stream, channel: "text", delta: "nd it" };
@@ -1083,7 +1026,6 @@ describe("a commit that appends more than the observer's window holds", () => {
 });
 
 describe("inputs placed by a generation", () => {
-  // SAFETY: stored history as pi-durable writes it, with the task that placed each entry; ids are pi's brands.
   const stored = (
     id: number,
     kind: string,
@@ -1120,7 +1062,6 @@ describe("inputs placed by a generation", () => {
       { diagnostics: [] },
     );
 
-  /** History as storage holds it: these entries, and how the runs that did not answer ended, by their inputs. */
   function history(entries: readonly EntryRecord[], endings: Endings): History {
     return {
       async *pages(min, max) {
@@ -1145,8 +1086,6 @@ describe("inputs placed by a generation", () => {
   const turnLimit = { reason: "turn_limit", detail: "1 turn" };
 
   it("start a run when a failed run hands them on, though the next run fails the same way", async () => {
-    // Run 1 (generation 11) fails at its round's boundary and hands the input waiting for its answer to the next run,
-    // which fails the same way: two runs, as the live stream showed.
     const entries = [
       input(1, UserEntry.kind, "First"),
       round(2, 11),

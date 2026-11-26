@@ -8,12 +8,6 @@ import { rowsOf } from "./database.ts";
 import type { Database } from "./database.ts";
 import { scopes } from "./schema.ts";
 
-/**
- * Delete everything `scope` owns: its row in `scopes`, which cascades to every record, document, revision and ID of
- * the scope, in one statement, unless a lease other than `lease` is unexpired. Resolves whether there was such a
- * scope, or who holds it. A storage still open on the scope fails its next commit (`ScopeDeletedError`); opening the
- * scope again starts an empty one. The schema check is the caller's.
- */
 export async function deleteScope(
   db: Database,
   scope: StorageScope,

@@ -1,6 +1,3 @@
-// Tables from the benchmark's JSON results. `run.ts` prints them after a run; run this file to print a saved run
-// again, or to compare two (`node --conditions=@chia1104/motoko-source bench/report.ts before.json after.json`).
-
 import { readFile } from "node:fs/promises";
 
 export interface Sample {
@@ -67,7 +64,6 @@ const groups = (samples: readonly Sample[]) => {
   return byScenario;
 };
 
-/** Scenario-specific metrics worth a column. */
 const EXTRA: Record<string, string[]> = {
   "turn.plain": [
     "submitMs",
@@ -139,7 +135,6 @@ export function formatReport(results: Results): string {
   return out.join("\n");
 }
 
-/** Statements per operation, by kind and by the code that caused them, from one target's median sample. */
 export function formatAttribution(results: Results, target: string): string {
   const out: string[] = [`### Statements per operation on ${target} (the sample with the median statement count)`, ""];
   for (const [scenario, targets] of groups(results.samples)) {
@@ -169,7 +164,6 @@ export function formatAttribution(results: Results, target: string): string {
   return out.join("\n");
 }
 
-/** Median wall time and statements of each scenario on each target, before and after. */
 export function formatComparison(before: Results, after: Results): string {
   const a = groups(before.samples);
   const b = groups(after.samples);

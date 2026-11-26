@@ -1,29 +1,15 @@
 import * as z from "zod";
 
 import { callErrorCodeSchema, callSchemas, followedEventSchema, followEndedSchema, sessionIdSchema } from "./call.ts";
-import type { CallSchema } from "./call.ts";
+import type { CallSchema, CallSchemaMap } from "./call.ts";
 import { cursorSchema } from "./cursor.ts";
-
-/**
- * `@chia1104/motoko-wire/socket`: Motoko's socket protocol, the one module its server (`@chia1104/motoko-cloudflare`'s
- * `MotokoCapability`) and its client (`@chia1104/motoko-client`'s `webSocketTransport`) both import: the call protocol in
- * frames of the socket's own. It rides a Durable Object's WebSockets beside the Agents SDK's own frames (`cf_agent_*`,
- * `rpc`) and the app's: every frame is a JSON text frame whose `type` starts with `motoko:`, and nothing else is
- * Motoko's.
- *
- * The client sends one frame, a call; the server answers each with a result or an error, and streams the events of
- * the sessions the connection follows.
- */
 
 const callId = z.string().min(1).max(64);
 
-/**
- * Every call on the socket: the instance's calls (`callSchemas`), and the two that exist because one socket follows
- * several sessions. Over HTTP, following a session is a request of its own instead.
- */
-export const motokoCalls = {
+const calls = {
   /**
-   * Follow a session's events from `from` (default: its start) on this connection, replacing an earlier follow of it.
+   * Follow a session's events on this connection from `from`, or from its start by default, replacing an earlier
+   * follow of it.
    * The result comes before the first event, so a client folds nothing of this follow before it.
    */
   subscribe: {
@@ -35,19 +21,28 @@ export const motokoCalls = {
   ...callSchemas,
 } satisfies Record<string, CallSchema>;
 
-export type MotokoMethod = keyof typeof motokoCalls;
+/**
+ * Every call on the socket. These are the instance's calls in `callSchemas`, and the two that exist because one socket
+ * follows several sessions. Over HTTP, following a session is a request of its own instead.
+ */
+export const motokoCalls: CallSchemaMap<typeof calls> = calls;
+
+export type MotokoMethod = keyof typeof calls;
 /** What a call of `M` takes, as its sender writes it. */
-export type MotokoParams<M extends MotokoMethod> = z.input<(typeof motokoCalls)[M]["params"]>;
+export type MotokoParams<M extends MotokoMethod> = z.input<(typeof calls)[M]["params"]>;
 /** What a call of `M` answers, as its receiver reads it. */
-export type MotokoResult<M extends MotokoMethod> = z.output<(typeof motokoCalls)[M]["result"]>;
-/** A call as the server runs it, its params parsed: what `authorize` decides on. */
-export type MotokoCall = {
-  readonly [M in MotokoMethod]: { readonly method: M; readonly params: z.output<(typeof motokoCalls)[M]["params"]> };
-}[MotokoMethod];
+export type MotokoResult<M extends MotokoMethod> = z.output<(typeof calls)[M]["result"]>;
+/**
+ * A call as the server runs it, with its params parsed. `authorize` decides on it. `MotokoCall<M>` is a call of `M`, or
+ * of any method in `M`.
+ */
+export type MotokoCall<M extends MotokoMethod = MotokoMethod> = {
+  readonly [K in M]: { readonly method: K; readonly params: z.output<(typeof calls)[K]["params"]> };
+}[M];
 
 const METHODS = Object.keys(motokoCalls) as [MotokoMethod, ...MotokoMethod[]];
 
-/** Client to server. `params` is checked against its method's schema in a second step, so a bad one still gets its id's error. */
+/** Client to server. The server checks `params` against its method's schema in a second step, so bad params still get an error for the frame's id. */
 export const callFrameSchema = z.object({
   type: z.literal("motoko:call"),
   id: callId,
@@ -57,8 +52,8 @@ export const callFrameSchema = z.object({
 export type CallFrame = z.output<typeof callFrameSchema>;
 
 /**
- * The errors the server answers with: the call protocol's, and the socket's own. `internal` carries no detail: the
- * object reports it as a `motoko:socket_error`.
+ * The errors the server answers with, the call protocol's and the socket's own. `internal` carries no detail, because
+ * the object reports it as a `motoko:socket_error`.
  */
 export const motokoErrorCodeSchema = z.enum([
   ...callErrorCodeSchema.options,

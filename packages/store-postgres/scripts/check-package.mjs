@@ -1,7 +1,3 @@
-// Checks the built package as an app sees it (run after `pnpm build`; the workspace packages it imports must be built
-// too): every subpath export resolves to a file in `files`, the root entry and `/schema` load no PGlite, `/schema`
-// loads no driver at all, and the CLI is an executable with a shebang. Exits 1 on the first failure.
-
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,10 +5,9 @@ import { fileURLToPath } from "node:url";
 const root = new URL("..", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
 const name = manifest.name;
-// The runtime's folder as this package resolves it: a workspace link resolves to its real path, outside node_modules.
+// A workspace link resolves to its real path, outside node_modules.
 const runtime = new URL("..", import.meta.resolve("@chia1104/motoko-core")).href;
 
-/** Imports `specifier` in a fresh Node (no source condition) and returns every URL the import resolved. */
 function loaded(specifier) {
   const program = `
     import { registerHooks } from "node:module";

@@ -9,23 +9,23 @@ export interface AgentPolicy {
 }
 
 export interface AgentDefinitionInput<Ports> {
-  /** The agent kind; with an instance name it forms the instance's `StorageScope`. */
+  /** The agent kind. With an instance's name it forms the instance's `StorageScope`. */
   readonly kind: string;
   /** The system prompt, rendered before every request. */
   readonly instructions: string;
   readonly tools: readonly ToolDefinition<Ports>[];
-  /** Tiers that need approval, or a function deciding it. Default: none. */
+  /** The tiers that need approval, or a function that decides it. By default no tier needs approval. */
   readonly policy?: { readonly requiresApproval: readonly string[] | AgentPolicy["requiresApproval"] };
-  /** The model a new session uses unless it names one: pi-durable's `ModelRef`, never a credential. */
+  /** The model a new session uses unless it names one. It is pi-durable's `ModelRef`, never a credential. */
   readonly model?: ModelRef;
 }
 
 /**
- * What an agent is, without ports or credentials: a client or a capability listing can import it.
- * `Ports` is the ports its tools need; it appears only in parameter positions, so an agent needing
- * fewer ports fits a runtime that has more.
+ * What an agent is, without ports or credentials, so a client or a capability listing can import it. `Ports` is the
+ * ports its tools need. It appears only in parameter positions, so an agent that needs fewer ports fits a runtime that
+ * has more.
  */
-// oxlint-disable-next-line typescript/no-explicit-any -- see above: any agent fits, whatever its ports
+// oxlint-disable-next-line typescript/no-explicit-any -- any agent fits, whatever its ports
 export interface AgentDefinition<Ports = any> {
   readonly kind: string;
   readonly instructions: string;
@@ -37,7 +37,6 @@ export interface AgentDefinition<Ports = any> {
 }
 
 export function defineAgent<Ports = unknown>(input: AgentDefinitionInput<Ports>): AgentDefinition<Ports> {
-  // The kind is half of every instance's scope, so it is held to the scope's rules.
   const problem = scopePartProblem(input.kind);
   if (problem !== undefined) throw new TypeError(`An agent's kind ${problem}`);
   const byName = new Map<string, ToolDefinition<Ports>>();
@@ -58,11 +57,6 @@ export function defineAgent<Ports = unknown>(input: AgentDefinitionInput<Ports>)
   });
 }
 
-/**
- * The agents `roots` reach, by kind: each root, and every sub-agent its delegates run, transitively. Delegates and
- * sub-agents are frozen once defined, so the walk ends. Throws a `TypeError` for two definitions of one kind, since a
- * kind names the agent a session runs.
- */
 export function agentsOf(roots: readonly AgentDefinition[]): Map<string, AgentDefinition> {
   const agents = new Map<string, AgentDefinition>();
   const visit = (agent: AgentDefinition) => {

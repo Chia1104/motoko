@@ -1,5 +1,3 @@
-// Round trips per commit, and what a commit does when its connection fails, before, during or after its write.
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -37,10 +35,6 @@ for (const factory of backendFactories) {
       await backend?.close();
     });
 
-    /**
-     * A storage with a root, a running task and a document, as a streaming generation has them. Its statements are
-     * recorded; its lease comes from an unrecorded store, so lease renewals never show among them.
-     */
     async function streaming(
       options: MysqlStoreOptions = {},
       { store, recording }: { store: MysqlStore; recording: Recording } = backend.recording(options),
@@ -82,7 +76,6 @@ for (const factory of backendFactories) {
         ],
         context,
       );
-      /** One streamed chunk: the live document's delta and the task's checkpoint. */
       const chunk = (n: number): StorageWrite[] => [
         {
           type: "document.change",
@@ -99,7 +92,6 @@ for (const factory of backendFactories) {
       recording.reset();
       await commitWrites(storage, chunk(1), context);
       expect(recording.statements.map(kindOf)).toEqual(["commitRead", "commitWrite"]);
-      // The task was claimed when it was first written: rewriting it claims nothing.
       expect(writeOf(recording.statements[1])).toEqual([
         "guard",
         "insert tasks",
@@ -121,7 +113,6 @@ for (const factory of backendFactories) {
         context,
       );
       expect(result).toEqual({ stored: 4 });
-      // A group of batches costs what its tables cost, however many batches it holds, in one round trip.
       expect(recording.statements.map(kindOf)).toEqual(["commitRead", "commitWrite"]);
       expect(writeOf(recording.statements[1])).toEqual([
         "guard",
@@ -195,7 +186,6 @@ for (const factory of backendFactories) {
         context,
       );
       expect(result).toEqual({ stored: 3 });
-      // read, write of the two batches before the copy, read of the copy source, write of the copy batch
       expect(recording.statements.map(kindOf)).toEqual(["commitRead", "commitWrite", "documentRead", "commitWrite"]);
       expect(writeOf(recording.statements[1])).toEqual([
         "guard",
@@ -249,8 +239,6 @@ for (const factory of backendFactories) {
 
     it("never counts an unknown outcome as stored once another holder took the lease, even at the same seq", async () => {
       const { scope, storage, recording, chunk } = await streaming();
-      // The write fails unsent; meanwhile the lease expires, another holder takes it and commits one batch, which
-      // moves the scope's next_seq to exactly the value this write would have left.
       recording.before = async (sql) => {
         if (!statements.commitWrite.test(sql)) return;
         recording.before = undefined;
@@ -281,7 +269,6 @@ for (const factory of backendFactories) {
         `SELECT t.record FROM agent_runtime_tasks t JOIN agent_runtime_scopes s USING (scope_id) WHERE s.kind = ? AND s.name = ?`,
         [scope.kind, scope.name],
       );
-      // The task still holds the checkpoint of the last stored chunk, not this one's.
       expect(rows.map((row) => JSON.parse(row.record).state.checkpoint)).toEqual([0]);
     });
 
@@ -296,7 +283,6 @@ for (const factory of backendFactories) {
       await lease.release();
     });
 
-    /** A storage of `streaming`, its store over a pool of one connection: the next query gets the one the last used. */
     async function streamingOnOneConnection() {
       const pool = newPool(backend.url, 1);
       const recording = new Recording(pool);
@@ -308,8 +294,6 @@ for (const factory of backendFactories) {
       const { storage, chunk, taskId, documentId, lease, end } = await streamingOnOneConnection();
       try {
         const seq = await commitWrites(storage, chunk(1), context);
-        // A revision at the next chunk's seq, written behind the store's back: that chunk's guard and its task's
-        // checkpoint apply, then its revision's INSERT fails on the duplicate key, in the middle of the write.
         await backend.query(
           `INSERT INTO agent_runtime_document_revisions (scope_id, document_id, seq, kind, version, content)
             VALUES (?, ?, ?, 'delta', 1, '[]')`,
@@ -318,8 +302,6 @@ for (const factory of backendFactories) {
         const error = await commitWrites(storage, chunk(2), context).catch((caught: unknown) => caught);
         expect(isTransientError(error)).toBe(false);
         expect(error).toMatchObject({ cause: { code: "ER_DUP_ENTRY" } });
-        // The next commit takes the seq the failed one would have: nothing of it was committed, not even by the next
-        // transaction on the connection it failed on.
         const entry = (await storage.mintId()) as EntryId;
         const next = await commitWrites(
           storage,
@@ -329,7 +311,8 @@ for (const factory of backendFactories) {
         expect(next).toBe(seq + 1);
         expect((await storage.task(taskId, context))?.state).toEqual({ status: "running", checkpoint: 1 });
       } finally {
-        // The pool first: a connection left inside a transaction would hold the scope's row from the release.
+        // End the pool first. A connection left inside a transaction would keep the scope's row locked against the
+        // release.
         await end();
         await lease.release();
       }
@@ -339,7 +322,6 @@ for (const factory of backendFactories) {
       const { storage, recording, chunk, taskId, documentId, lease, end } = await streamingOnOneConnection();
       const blocker = await mysql.createConnection({ uri: backend.url });
       try {
-        // Another transaction holds the task's row: the write's guard applies, then its task's INSERT waits.
         await blocker.query("START TRANSACTION");
         await blocker.query("SELECT id FROM agent_runtime_tasks WHERE scope_id = ? AND id = ? FOR UPDATE", [
           storage.scopeId,
@@ -362,7 +344,6 @@ for (const factory of backendFactories) {
         await blocker.query(`KILL QUERY ${Number(waiting)}`);
         await blocker.query("ROLLBACK");
         const seq = await write;
-        // The read after the failure found the guard not applied, so the write was sent again, and stored once.
         expect(recording.statements.map(kindOf)).toEqual(["commitRead", "commitWrite", "commitRead", "commitWrite"]);
         expect((await storage.task(taskId, context))?.state).toEqual({ status: "running", checkpoint: 5 });
         expect((await storage.document(documentId, "current", context))?.value).toEqual({ text: "5" });
@@ -387,7 +368,6 @@ for (const factory of backendFactories) {
       await lease.release();
     });
 
-    // That the guard refuses the write is in the store suite (`conformance.test.ts`); this is what the refusal costs.
     it("explains a write its guard refused in the same round trip, and writes nothing", async () => {
       const scope = { kind: "agent", name: uniqueName("two-writers") };
       const lease = await backend.store.lease(scope);
@@ -395,7 +375,6 @@ for (const factory of backendFactories) {
       await commitWrites(first, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
       const { store, recording } = backend.recording();
       const second = await store.storage(scope, lease);
-      // The first writer commits between the second's read and its write.
       recording.before = async (sql) => {
         if (!statements.commitWrite.test(sql)) return;
         recording.before = undefined;
@@ -417,7 +396,6 @@ for (const factory of backendFactories) {
           context,
         ),
       ).rejects.toThrow(ConcurrentCommitError);
-      // The guard refused, and the write's last statement said why: the read, the write, and nothing after them.
       expect(recording.statements.slice(1).map(kindOf)).toEqual(["commitRead", "commitWrite"]);
       const kinds = await first.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 10, undefined, context);
       expect(kinds.items.map((entry) => entry.kind)).toEqual(["first"]);
@@ -444,7 +422,6 @@ for (const factory of backendFactories) {
       await expect(commitWrites(storage, [task], context)).rejects.toThrow("too long for MySQL's index");
       expect(recording.statements.map(kindOf)).toEqual(["commitRead"]);
       expect(await storage.task(id, context)).toBeUndefined();
-      // The longest that fits is stored.
       await commitWrites(storage, [{ ...task, value: { ...task.value, kind: "k".repeat(758) } }], context);
       expect((await storage.task(id, context))?.kind).toBe("k".repeat(758));
       await lease.release();

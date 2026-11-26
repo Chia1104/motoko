@@ -1,11 +1,3 @@
-// pi-durable `Storage` on Postgres, one scope of the shared tables. Ported from pi-durable 1.6.0's SQLite storage
-// (`storage/sqlite/storage.js`), with every query restricted to the scope's `scope_id`, multi-query reads folded into
-// single statements (a recursive CTE walks a fork's ancestry), and commits written as one guarded statement.
-//
-// Point reads and scans are Drizzle query-builder statements; the fork walks, the document read and the commit
-// statements are Drizzle `sql` with table and column references from the schema, because the builder cannot express
-// them as one statement each.
-
 import type { JsonValue } from "@earendil-works/chord/json";
 import { StorageRequestError } from "@earendil-works/pi-durable";
 import type {
@@ -57,7 +49,7 @@ import type { DocumentRows, FencedLease } from "@chia1104/motoko-core/store";
 import { commitPort } from "./commit.ts";
 import { rowsOf } from "./database.ts";
 import type { Database } from "./database.ts";
-import { journalCheck, withJournal } from "./migrations.ts";
+import { journalCheck, missingJournalAsVersionError } from "./migrations.ts";
 import { conversations, documentRevisions, documents, entries, scopes, submissions, tasks } from "./schema.ts";
 
 type Context = Parameters<Storage["close"]>[0];
@@ -105,7 +97,6 @@ const page = <T extends { readonly id: number }>(
   return { items, next: { after: (items.at(-1) as T).id, order } };
 };
 
-/** The id range and order of a scan over `id`. */
 const scanBy = (column: PgColumn, start: { order: ScanOrder; after: number | undefined }) => ({
   where:
     start.after === undefined
@@ -116,8 +107,8 @@ const scanBy = (column: PgColumn, start: { order: ScanOrder; after: number | und
   orderBy: start.order === "ascending" ? asc(column) : desc(column),
 });
 
-// A type alias, not an interface: Drizzle's `execute` rows must satisfy `Record<string, unknown>`, and only an alias
-// has the implicit index signature that takes.
+// A type alias, not an interface, because Drizzle's `execute` rows must satisfy `Record<string, unknown>`. Only an
+// alias has the implicit index signature that this needs.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type DocumentRow = {
   record: string | null;
@@ -128,7 +119,6 @@ type DocumentRow = {
   tail_contents: string[];
 };
 
-/** A document read's one row as the shell's `DocumentRows`. */
 const documentRows = (row: DocumentRow): DocumentRows => ({
   record: row.record ?? undefined,
   base: row.base_content === null ? undefined : { version: toNumber(row.base_version), content: row.base_content },
@@ -139,64 +129,54 @@ const documentRows = (row: DocumentRow): DocumentRows => ({
   })),
 });
 
+export async function openStorage(db: Database, lease: FencedLease, attempts: number): Promise<PostgresStorage> {
+  if (lease.signal.aborted) throw lease.signal.reason;
+  const rows = await missingJournalAsVersionError(db, () =>
+    rowsOf<{ applied: string[]; scope_id: unknown; next_id: unknown }>(
+      db,
+      sql`SELECT ${journalCheck.applied} AS applied, s.${sql.identifier(scopes.scopeId.name)} AS scope_id,
+          s.${sql.identifier(scopes.nextId.name)} AS next_id
+        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s
+          ON s.${sql.identifier(scopes.kind.name)} = ${lease.scope.kind}::text AND s.${sql.identifier(scopes.name.name)} = ${lease.scope.name}::text`,
+    ),
+  );
+  const row = rows[0];
+  journalCheck.assertCurrent(row?.applied);
+  if (row === undefined || deletedSinceLeased(row.scope_id, lease)) {
+    lease.lose("deleted");
+    throw lease.signal.reason;
+  }
+  return new PostgresStorage(db, lease, toNumber(row.next_id), attempts);
+}
+
+const deletedSinceLeased = (scopeIdNow: unknown, lease: FencedLease): boolean =>
+  scopeIdNow === null || toNumber(scopeIdNow) !== lease.scopeId;
+
 /**
- * pi-durable Storage over one scope of the shared tables, fenced by the scope's lease. Open it with
- * `store.storage()`. It does not own the database: `close()` waits for its own calls to settle and leaves the pool
- * open.
+ * pi-durable Storage over one scope of the shared tables, fenced by the scope's lease. Open it with `store.storage()`.
+ * It does not own the database. `close()` waits for its own calls to settle and leaves the pool open.
  */
-export class PostgresStorage implements Storage {
+class PostgresStorage implements Storage {
   readonly scope: StorageScope;
   readonly scopeId: number;
   readonly #db: Database;
   readonly #shell: StorageShell;
 
-  private constructor(
-    db: Database,
-    scope: StorageScope,
-    scopeId: number,
-    nextId: number,
-    lease: FencedLease,
-    attempts: number,
-  ) {
+  constructor(db: Database, lease: FencedLease, nextId: number, attempts: number) {
     this.#db = db;
-    this.scope = scope;
-    this.scopeId = scopeId;
-    const port = commitPort(db, scopeId, (source) =>
+    this.scope = lease.scope;
+    this.scopeId = lease.scopeId;
+    const port = commitPort(db, lease.scopeId, (source) =>
       this.#documentRows(source.id, source.at).then((rows) => () => materializeDocument(rows, source.id, source.at)),
     );
     this.#shell = new StorageShell({ name: "PostgresStorage", lease, attempts, port, nextId });
   }
 
   /**
-   * @internal Use `store.storage()`. One round trip: the schema check and the scope row's counters, read together.
-   * The lease created the row; a row that is gone, or is another incarnation of the scope, means the scope was
-   * deleted since the lease was acquired.
-   */
-  static async open(db: Database, lease: FencedLease, attempts: number): Promise<PostgresStorage> {
-    if (lease.signal.aborted) throw lease.signal.reason;
-    const rows = await withJournal(db, () =>
-      rowsOf<{ applied: string[]; scope_id: unknown; next_id: unknown }>(
-        db,
-        sql`SELECT ${journalCheck.applied} AS applied, s.${sql.identifier(scopes.scopeId.name)} AS scope_id,
-            s.${sql.identifier(scopes.nextId.name)} AS next_id
-          FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s
-            ON s.${sql.identifier(scopes.kind.name)} = ${lease.scope.kind}::text AND s.${sql.identifier(scopes.name.name)} = ${lease.scope.name}::text`,
-      ),
-    );
-    const row = rows[0];
-    journalCheck.assertCurrent(row?.applied);
-    if (row === undefined || row.scope_id === null || toNumber(row.scope_id) !== lease.scopeId) {
-      lease.lose("deleted");
-      throw lease.signal.reason;
-    }
-    return new PostgresStorage(db, lease.scope, lease.scopeId, toNumber(row.next_id), lease, attempts);
-  }
-
-  /**
    * Store `batches` in two round trips: one statement reads the scope's counters and everything the checks need, the
    * checks run in memory, and one statement writes every accepted batch, guarded by the scope's `next_seq` and the
-   * lease token. A batch with a document copy writes the batches before it and reads the copy's source first: one
-   * more round trip each. Refusals come from Durable's own checks only; a database failure rejects.
+   * lease token. A batch with a document copy writes the batches before it and reads the copy's source first, which
+   * costs one more round trip each. Only Durable's own checks refuse a batch. A database failure rejects the call.
    */
   commit(
     batches: readonly (readonly StorageWrite[])[],
@@ -206,7 +186,7 @@ export class PostgresStorage implements Storage {
     return this.#shell.commit(batches, receive);
   }
 
-  /** In memory: see `StorageShell.mintId`. */
+  /** Runs in memory. See `StorageShell.mintId`. */
   mintId<I extends Id<string>>(): Promise<I> {
     return this.#shell.mintId<I>();
   }
@@ -283,7 +263,7 @@ export class PostgresStorage implements Storage {
         sql`${this.#chain(sql`${conversationId}::bigint`, sql`NULL::bigint`)}
           SELECT EXISTS (SELECT 1 FROM chain) AS found, ${e.record}, ${e.commitSeq},
             EXISTS (SELECT 1 FROM chain s WHERE s.conversation_id = ${e.conversationId}
-              AND ${e.id} <= COALESCE(s.upper, ${MAX_BIGINT})) AS visible
+              AND ${e.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})) AS visible
           FROM (SELECT 1) AS one
             LEFT JOIN ${entries} AS ${e} ON ${e.scopeId} = ${this.scopeId}::bigint AND ${e.id} = ${idOrContext}::bigint`,
       );
@@ -308,9 +288,9 @@ export class PostgresStorage implements Storage {
             SELECT e.record FROM chain s CROSS JOIN LATERAL (
               SELECT ${x.id}, ${x.record} FROM ${entries} AS ${x}
                 WHERE ${x.scopeId} = ${this.scopeId}::bigint AND ${x.conversationId} = s.conversation_id
-                AND ${x.head} IS NOT NULL AND ${x.id} <= COALESCE(s.upper, ${MAX_BIGINT})
+                AND ${x.head} IS NOT NULL AND ${x.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})
                 ORDER BY ${x.id} DESC LIMIT 1
-            ) e ORDER BY s.ord LIMIT 1
+            ) e ORDER BY s.distance LIMIT 1
           ) AS record`,
       );
       const row = rows[0];
@@ -320,9 +300,9 @@ export class PostgresStorage implements Storage {
   }
 
   /**
-   * One statement: the fork chain (recursive CTE) and, per segment, its entries in index order up to the limit
-   * (`LATERAL ... LIMIT`), concatenated in segment order: the child first for a descending scan, the root first for
-   * an ascending one, exactly as upstream's SQLite storage walks them query by query.
+   * One statement reads the fork chain with a recursive CTE and, per segment, its entries in index order up to the
+   * limit with `LATERAL ... LIMIT`. It concatenates the segments in order, the child first for a descending scan and
+   * the root first for an ascending one. Upstream's SQLite storage walks them in the same order, one query per segment.
    */
   scanEntries(
     query: EntryQuery,
@@ -356,9 +336,9 @@ export class PostgresStorage implements Storage {
             SELECT e.record FROM chain s CROSS JOIN LATERAL (
               SELECT ${x.id}, ${x.record} FROM ${entries} AS ${x}
                 WHERE ${x.scopeId} = ${this.scopeId}::bigint AND ${x.conversationId} = s.conversation_id
-                AND ${x.id} <= COALESCE(s.upper, ${MAX_BIGINT})${bound}
+                AND ${x.id} <= COALESCE(s.max_entry_id, ${MAX_BIGINT})${bound}
                 ORDER BY ${x.id} ${direction} LIMIT ${limit + 1}::bigint
-            ) e ORDER BY s.ord ${segments}, e.id ${direction} LIMIT ${limit + 1}::bigint
+            ) e ORDER BY s.distance ${segments}, e.id ${direction} LIMIT ${limit + 1}::bigint
           ) AS records`,
       );
       const row = rows[0];
@@ -479,9 +459,9 @@ export class PostgresStorage implements Storage {
   }
 
   /**
-   * One statement: the document's record and, beside it, its content at the same point (as `document()` reads it),
-   * which the shell keeps for the `document()` call that usually follows. A current address found empty costs nothing
-   * again until the next commit.
+   * One statement reads the document's record and its content at the same point, as `document()` reads it. The shell
+   * keeps the content for the `document()` call that usually follows. A current address found empty is not read again
+   * until the next commit.
    */
   findDocument(address: DocumentAddress, at: DocumentPoint, _context: Context): Promise<DocumentRecord | undefined> {
     return this.#shell.findDocument(address, at, async () => {
@@ -524,8 +504,8 @@ export class PostgresStorage implements Storage {
   }
 
   /**
-   * One statement, or none right after `findDocument` read the same document at the same point with nothing committed
-   * since.
+   * Costs one statement, or none when `findDocument` just read the same document at the same point and nothing was
+   * committed since.
    */
   document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
     return this.#shell.document(id, at, () => this.#documentRows(id, at));
@@ -566,26 +546,22 @@ export class PostgresStorage implements Storage {
     return this.#shell.close();
   }
 
-  /**
-   * The fork chain of `conversation` as the CTE `chain(ord, conversation_id, upper, ...)`: the conversation itself
-   * (`ord` 0) capped at `upper`, then each ancestor capped at the lowest fork point below it. With `min`, the walk
-   * stops at the first ancestor whose cap falls below it, as upstream's scans do.
-   */
-  #chain(conversation: SQL, upper: SQL, min?: SQL): SQL {
+  #chain(conversation: SQL, maxEntryId: SQL, minEntryId?: SQL): SQL {
     const c = alias(conversations, "c");
     const scopeId = sql`${this.scopeId}::bigint`;
+    const parentMax = sql`LEAST(ch.max_entry_id, ch.parent_at)`;
+    const reachesMin = minEntryId === undefined ? sql`` : sql`WHERE ${parentMax} >= ${minEntryId}`;
     return sql`WITH RECURSIVE chain AS (
-        SELECT 0 AS ord, ${c.id} AS conversation_id, ${upper} AS upper,
+        SELECT 0 AS distance, ${c.id} AS conversation_id, ${maxEntryId} AS max_entry_id,
           ${c.parentConversationId} AS parent_conversation_id, ${c.parentAt} AS parent_at
           FROM ${conversations} AS ${c} WHERE ${c.scopeId} = ${scopeId} AND ${c.id} = ${conversation}
         UNION ALL
-        SELECT ch.ord + 1, ${c.id}, LEAST(ch.upper, ch.parent_at), ${c.parentConversationId}, ${c.parentAt}
+        SELECT ch.distance + 1, ${c.id}, ${parentMax}, ${c.parentConversationId}, ${c.parentAt}
           FROM chain ch JOIN ${conversations} AS ${c} ON ${c.scopeId} = ${scopeId} AND ${c.id} = ch.parent_conversation_id
-          ${min === undefined ? sql`` : sql`WHERE LEAST(ch.upper, ch.parent_at) >= ${min}`}
+          ${reachesMin}
       )`;
   }
 
-  /** A document's record, newest base at or before `at`, and the deltas after it, in one statement (one snapshot). */
   async #documentRows(id: number, at: DocumentPoint): Promise<DocumentRows> {
     const r = alias(documentRevisions, "r");
     const scopeId = sql`${this.scopeId}::bigint`;
@@ -618,8 +594,9 @@ export class PostgresStorage implements Storage {
   }
 }
 
-/** Alive at `at`: current (not retired), or created at or before the seq and not yet retired at it. */
 function aliveAt(at: DocumentPoint): SQL | undefined {
   if (at === "current") return isNull(documents.retiredAt);
   return and(lte(documents.createdAt, at), or(isNull(documents.retiredAt), gt(documents.retiredAt, at)));
 }
+
+export type { PostgresStorage };

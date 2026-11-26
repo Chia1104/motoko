@@ -1,6 +1,3 @@
-// The host contract's suite against `nodeHost` as an app wires it: SQLite files in a directory of its own, and the
-// process's shared default leases.
-
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

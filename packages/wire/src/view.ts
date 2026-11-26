@@ -28,7 +28,7 @@ export interface MessageItem {
 
 export type ToolStatus = "drafting" | "running" | "awaiting_approval" | "awaiting_reply" | ToolEndStatus;
 
-/** A call a tool call made through pi-durable's `executeTool()` (a code mode script's, say) that was asked about. */
+/** A call that was asked about, made by a tool call through pi-durable's `executeTool()`, as a code mode script does. */
 export interface NestedApproval {
   readonly toolCallId: string;
   readonly toolName: string;
@@ -52,9 +52,9 @@ export interface ToolItem {
   readonly details?: unknown;
   readonly error?: string;
   readonly approval?: { readonly approved: boolean; readonly comment?: string };
-  /** A deferred call's deadline, epoch ms, while it waits for its reply. */
+  /** A deferred call's deadline in epoch milliseconds, while it waits for its reply. */
   readonly replyBy?: number;
-  /** The calls it made that were asked about, in the order they asked, while it runs: they end with it. */
+  /** The calls it made that were asked about, in the order they asked, while it runs. They end with it. */
   readonly nestedApprovals?: readonly NestedApproval[];
 }
 
@@ -116,10 +116,8 @@ export const emptySessionView = (): AgentSessionView => ({
 const isTool = (item: SessionViewItem | undefined, toolCallId: string): item is ToolItem =>
   item?.kind === "tool" && item.toolCallId === toolCallId;
 
-/** A call whose run is going: one that ended with it gets no result. */
-const OPEN: ReadonlySet<ToolStatus> = new Set(["running", "awaiting_approval", "awaiting_reply"]);
+const ABORTED_BY_RUN_END: ReadonlySet<ToolStatus> = new Set(["running", "awaiting_approval", "awaiting_reply"]);
 
-/** A call that ended: nothing but its own end event changes it again. */
 const hasEnded = (item: ToolItem) => item.status === "ok" || item.status === "error" || item.status === "aborted";
 
 const isStreaming = (item: SessionViewItem): item is MessageItem => item.kind === "assistant" && item.streaming;
@@ -141,7 +139,6 @@ function settle(
   return { ...view, items, pendingApprovals, status: statusOf(running, pendingApprovals) };
 }
 
-/** Replaces the tool item `toolCallId`, or appends `create()` when there is none. */
 function upsertTool(
   items: SessionViewItem[],
   toolCallId: string,
@@ -165,6 +162,11 @@ const placeholderTool = (toolCallId: string, toolName: string): ToolItem => ({
   status: "running",
 });
 
+function streamedReplyIndex(items: readonly SessionViewItem[], messageId: string): number {
+  const stored = items.findIndex((item) => item.kind === "assistant" && item.messageId === messageId);
+  return stored === -1 ? items.findIndex(isStreaming) : stored;
+}
+
 function assistantEnd(view: AgentSessionView, event: AgentWireEventOf<"assistant:end">) {
   const items = withoutDrafts(view.items).slice();
   const message: MessageItem = {
@@ -178,18 +180,12 @@ function assistantEnd(view: AgentSessionView, event: AgentWireEventOf<"assistant
     ...(event.usage !== undefined && { usage: event.usage }),
     ...(event.at !== undefined && { at: event.at }),
   };
-  // The stored reply replaces the one that streamed for it: one generation streams at a time.
-  let index = items.findIndex((item) => item.kind === "assistant" && item.messageId === event.messageId);
-  if (index === -1) index = items.findIndex(isStreaming);
+  const index = streamedReplyIndex(items, event.messageId);
   if (index === -1) items.push(message);
   else items[index] = message;
   return settle(view, items);
 }
 
-/**
- * The question of a nested call, under the call it was made under. A call that ended, or that the view does not hold,
- * waits on nothing; a question already decided waits no more.
- */
 function nestedRequest(view: AgentSessionView, event: AgentWireEventOf<"approval:request">, parentToolCallId: string) {
   const index = view.items.findIndex((item) => isTool(item, parentToolCallId));
   const parent = view.items[index];
@@ -214,7 +210,6 @@ function nestedRequest(view: AgentSessionView, event: AgentWireEventOf<"approval
   return settle(view, items, pending);
 }
 
-/** The decision of a nested call, on its question under the call it was made under, if the view holds it. */
 function nestedDecision(items: SessionViewItem[], event: AgentWireEventOf<"approval:resolved">): void {
   const index = items.findIndex(
     (item) => item.kind === "tool" && item.nestedApprovals?.some((nested) => nested.toolCallId === event.toolCallId),
@@ -231,13 +226,11 @@ function nestedDecision(items: SessionViewItem[], event: AgentWireEventOf<"appro
 }
 
 function runEnd(view: AgentSessionView, event: AgentWireEventOf<"run:end">): AgentSessionView {
-  // Nothing of the run goes on: a call still open gets no result, a reply still streaming was never
-  // stored, and a draft never became a call.
   const items: SessionViewItem[] = [];
   for (const item of view.items) {
     if (item.kind === "tool" && item.status === "drafting") continue;
     if (isStreaming(item)) continue;
-    if (item.kind === "tool" && OPEN.has(item.status)) {
+    if (item.kind === "tool" && ABORTED_BY_RUN_END.has(item.status)) {
       const { progress: _progress, replyBy: _replyBy, nestedApprovals: _nested, ...rest } = item;
       items.push({ ...rest, status: "aborted" });
       continue;
@@ -257,12 +250,12 @@ function runEnd(view: AgentSessionView, event: AgentWireEventOf<"run:end">): Age
 }
 
 /**
- * Pure: the same events in the same order always give the same view, so a replayed transcript and
- * the live stream share one renderer. Every event that names an item upserts it, and state a resumed
- * stream sends again is applied idempotently: a stored item already held, a question for a call
- * still waiting, the reply streamed so far, a run's end the view already shows (`run:end` while
- * idle), progress or a question for a call that already ended. So a client resuming from a cursor
- * folds into the view of a client connected all along.
+ * It is pure. The same events in the same order always give the same view, so a replayed transcript
+ * and the live stream share one renderer. Every event that names an item upserts it. State that a
+ * resumed stream sends again is applied idempotently: a stored item already held, a question for a
+ * call still waiting, the reply streamed so far, a `run:end` while the view is already idle, and
+ * progress or a question for a call that already ended. So a client resuming from a cursor folds
+ * into the view of a client connected all along.
  */
 export function applyEvent(view: AgentSessionView, event: AgentWireEvent): AgentSessionView {
   switch (event.type) {
@@ -287,7 +280,6 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     }
 
     case "assistant:start": {
-      // A new attempt supersedes drafts and any reply an abandoned attempt left streaming.
       const items: SessionViewItem[] = withoutDrafts(view.items).filter((item) => !isStreaming(item));
       items.push({ kind: "assistant", messageId: event.messageId, text: "", streaming: true });
       return settle(view, items);
@@ -334,7 +326,6 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
       const tool = view.items[index];
       if (tool?.kind !== "tool" || hasEnded(tool)) return view;
       const items = view.items.slice();
-      // A call that publishes progress runs: one that waited for its reply has it, or its deadline passed.
       const { replyBy: _replyBy, ...call } = tool;
       items[index] = {
         ...call,
@@ -346,8 +337,7 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     }
 
     case "tool:end": {
-      // The questions of the calls it made end with it.
-      const ending = new Set([event.toolCallId]);
+      const endingApprovalIds = new Set([event.toolCallId]);
       const items = upsertTool(view.items.slice(), event.toolCallId, (found) => {
         const {
           progress: _progress,
@@ -357,7 +347,7 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
           nestedApprovals,
           ...base
         } = found ?? placeholderTool(event.toolCallId, event.toolName);
-        for (const nested of nestedApprovals ?? []) ending.add(nested.toolCallId);
+        for (const nested of nestedApprovals ?? []) endingApprovalIds.add(nested.toolCallId);
         return {
           ...base,
           status: event.status,
@@ -368,16 +358,14 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
       return settle(
         view,
         items,
-        view.pendingApprovals.filter((id) => !ending.has(id)),
+        view.pendingApprovals.filter((id) => !endingApprovalIds.has(id)),
       );
     }
 
     case "approval:request": {
       if (event.parentToolCallId !== undefined) return nestedRequest(view, event, event.parentToolCallId);
       const asked = view.items.find((item) => isTool(item, event.toolCallId));
-      // A call that ended waits for nothing; one already decided waits no more.
       if (asked?.kind === "tool" && (hasEnded(asked) || asked.approval !== undefined)) return view;
-      // The question carries the arguments the call runs with, which may not be those the model wrote.
       const items = upsertTool(view.items.slice(), event.toolCallId, (found) => ({
         ...(found ?? { ...placeholderTool(event.toolCallId, event.toolName), tier: event.tier }),
         args: event.args,
@@ -400,7 +388,6 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
             approved: event.approved,
             ...(event.comment !== undefined && { comment: event.comment }),
           },
-          // Decided, not yet run: the call's own `tool:end` settles it.
           status: tool.status === "awaiting_approval" ? "running" : tool.status,
         };
       } else {
@@ -416,7 +403,6 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     case "reply:wait": {
       const index = view.items.findIndex((item) => isTool(item, event.toolCallId));
       const tool = view.items[index];
-      // A call that ended waits for nothing.
       if (tool?.kind !== "tool" || hasEnded(tool)) return view;
       const items = view.items.slice();
       items[index] = {
@@ -462,7 +448,6 @@ export function applyEvent(view: AgentSessionView, event: AgentWireEvent): Agent
     }
 
     case "run:end":
-      // The view shows no run: this end was folded already.
       return view.status === "idle" ? view : runEnd(view, event);
 
     case "wrapup:start":

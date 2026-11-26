@@ -1,11 +1,3 @@
-/**
- * `@chia1104/motoko-core`: agent definitions, the host contract and `createAgentRuntime`. Runtime-agnostic: it uses no
- * Node built-ins, so it runs in a Node process, Electron or a Durable Object.
- *
- * Motoko exports what it adds. pi itself (models and providers, storages, `Storage`, `Wake`,
- * `ModelRef`, `Report`) is a peer dependency the app installs and imports from `@earendil-works/*`;
- * pi types appear in Motoko's signatures where Motoko passes them through.
- */
 export { defineAgent } from "./agent.ts";
 export type { AgentDefinition, AgentDefinitionInput, AgentPolicy } from "./agent.ts";
 export {

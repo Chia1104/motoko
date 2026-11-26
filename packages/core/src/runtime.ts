@@ -7,6 +7,7 @@ import type {
   BlockedReason,
   Conversation,
   ConversationId,
+  Extension,
   HarnessOptions,
   JsonObject,
   ModelRef,
@@ -54,20 +55,21 @@ import {
 } from "./errors.ts";
 import { assertScope, scopeKey } from "./host.ts";
 import type { AgentHost, HostWake, Lease, StorageScope } from "./host.ts";
+import { idFromNumber } from "./ids.ts";
+import { serialPulls } from "./serial-pulls.ts";
 import type { PortsResolver, PortsTarget } from "./tool.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** The sessions record (`SessionsDoc`) as a snapshot reads it. */
 interface SessionsState {
   readonly sessions: Readonly<Record<string, Readonly<SessionRecord>>>;
   readonly erasing: readonly number[];
 }
 
 /**
- * Why the runtime itself reports: a session's commit it could not turn into events, a failed cleanup or
- * host call, `modelsFor` failing for an instance, a reopen for a due sleep that failed, or the host
- * failing to erase deleted sessions (tried again at the instance's next close).
+ * Why the runtime itself reports: a session's commit it could not turn into events, a failed cleanup or host call,
+ * `modelsFor` failing for an instance, a reopen for a due sleep that failed, or the host failing to erase deleted
+ * sessions, which the runtime tries again at the instance's next close.
  */
 export type AgentRuntimeReportKind =
   | "listener_error"
@@ -79,15 +81,15 @@ export type AgentRuntimeReportKind =
   | "erase_failed";
 
 /**
- * A failure that fails no call of the app's, about one instance. `source: "pi"` carries
- * pi-durable's report exactly as `HarnessOptions.onReport` received it; `source: "runtime"` is the
- * runtime's own. `ports_failed` names the tool call whose ports `portsFor` could not resolve; that call
- * ended with an error result. `reply_failed` names an ask of the instance whose reply `deliverReply` failed to
- * deliver (it is tried again unless `gaveUp`), or whose request was first submitted without a reply address.
- * `task_blocked` names a task of a session that cannot run on this open: no extension provides its definition
- * (`missing_task`), or the one that does cannot take over its state (`task_too_old`, `migration_failed`). It keeps
- * its session busy until an open provides the definition again, or the session is aborted. Each open reports a task
- * once, whether it is blocked when the instance opens or becomes blocked later.
+ * A failure about one instance that fails no call of the app's. `source: "pi"` carries pi-durable's report exactly as
+ * `HarnessOptions.onReport` received it, and `source: "runtime"` is the runtime's own. `ports_failed` names the tool
+ * call whose ports `portsFor` could not resolve, and that call ended with an error result. `reply_failed` names an ask
+ * of the instance whose reply `deliverReply` failed to deliver, or whose request was first submitted without a reply
+ * address. A failed delivery is tried again unless `gaveUp`. `task_blocked` names a task of a session that cannot run
+ * on this open. Either no extension provides its definition, as `missing_task`, or the one that does cannot take over
+ * its state, as `task_too_old` or `migration_failed`. The task keeps its session busy until an open provides the
+ * definition again or the session is aborted. Each open reports a task once, whether it is blocked when the instance
+ * opens or becomes blocked later.
  */
 export type InstanceReport =
   | { readonly source: "pi"; readonly scope: StorageScope; readonly report: Report }
@@ -121,61 +123,64 @@ interface AgentRuntimeCommonOptions<Ports> {
   readonly host: AgentHost;
   /** The model of a new session that names none and whose agent names none. */
   readonly defaultModel?: ModelRef;
-  /** Failures that fail no call: pi-durable's reports (a tool task that faulted, a storage failure) and the runtime's. */
+  /**
+   * Failures that fail no call. They are the runtime's own and pi-durable's reports, such as a tool task that faulted
+   * or a storage failure.
+   */
   readonly onReport?: (report: InstanceReport) => void;
   /**
-   * Closes an instance once it has been idle this long, in ms: its Harness closes, its lease is
-   * released and the runtime lets it go. Any handle the app still holds reopens it at its next call.
-   * Idle means no call of the runtime's under way on it, no event reader attached, no task that can
-   * run now or is running, and no sleep due within this time. Default: an instance stays open
-   * until `close()`.
+   * Closes an instance once it has been idle this long, in ms. Its Harness closes, its lease is released and the
+   * runtime lets it go. Any handle the app still holds reopens it at its next call. Idle means no call of the runtime's
+   * under way on it, no event reader attached, no task that can run now or is running, and no sleep due within this
+   * time. By default an instance stays open until `close()`.
    */
   readonly closeIdleAfterMs?: number;
   /**
-   * How long a nested call, one a tool makes through pi-durable's `executeTool()` (a code mode script's, say), waits at
-   * the approval gate for a decision, in ms, from when it first parks. The tool that made it awaits it, so its
-   * invocation runs and the instance does not close idle meanwhile. With no decision by then, the nested call fails for
-   * that tool with `No decision arrived in time.` A call of the model's holds no process while it waits, and waits until
-   * it is decided. Default: an hour.
+   * How long a nested call waits at the approval gate for a decision, in ms, from when it first parks. A nested call
+   * is one a tool makes through pi-durable's `executeTool()`, such as a call from a code mode script. The tool that
+   * made it awaits it, so its invocation runs and the instance does not close idle meanwhile. With no decision by
+   * then, the nested call fails for that tool with `No decision arrived in time.` A call of the model's holds no
+   * process while it waits, and waits until it is decided. It defaults to an hour.
    */
   readonly nestedApprovalTimeoutMs?: number;
   /**
-   * pi-durable's `HarnessOptions.settings` (such as `progress`), passed to every instance's Harness, read at each use
-   * as pi-durable reads it. `extensions` is the runtime's: a session selects the app's extensions and its own agent's.
+   * pi-durable's `HarnessOptions.settings`, such as `progress`, passed to every instance's Harness. pi-durable reads
+   * them at each use. The runtime sets `extensions` itself, because a session selects the app's extensions and its own
+   * agent's.
    */
   readonly settings?: HarnessOptions["settings"];
   /**
-   * The app's pi-durable extensions for one instance, from its scope: tools, prompt sections, hooks and tasks that
-   * use the app's resources. Called each time the instance opens, before anything of it runs, and on
-   * `refreshExtensions()`; a throw or rejection fails the open, or the refresh, which then changes nothing. Each
-   * extension's tools carry the tiers its `tier` gives them, and its `agents` say which agents' sessions select it: by
-   * default the instance's own agent's alone. Default: none.
+   * The app's pi-durable extensions for one instance, from its scope. They hold tools, prompt sections, hooks and tasks
+   * that use the app's resources. The runtime calls it each time the instance opens, before anything of it runs, and on
+   * `refreshExtensions()`. A throw or rejection fails the open, or fails the refresh, which then changes nothing. Each
+   * extension's tools carry the tiers its `tier` gives them. Its `agents` say which agents' sessions select it, and by
+   * default only the instance's own agent's sessions do. By default there are no app extensions.
    */
   readonly extensionsFor?: ExtensionsResolver;
   /**
-   * The telemetry of one instance, from its scope: pi-durable's `HarnessOptions.telemetry` (a pi-telemetry
-   * `TelemetryContext`), which receives its content-free `pi.durable.*` spans and metrics. Called each time the
-   * instance opens. Default: pi-durable's, which records nothing.
+   * The telemetry of one instance, from its scope. It is pi-durable's `HarnessOptions.telemetry`, a pi-telemetry
+   * `TelemetryContext` that receives the instance's content-free `pi.durable.*` spans and metrics. The runtime calls it
+   * each time the instance opens. It defaults to pi-durable's, which records nothing.
    */
   readonly telemetryFor?: (scope: StorageScope) => NonNullable<HarnessOptions["telemetry"]>;
   /**
-   * The execution environment of one instance, from its scope: pi-durable's `HarnessOptions.env`, which builds the
-   * `ExecutionEnv` a tool call reads as `api.env` (pi-durable's `bash` runs in its `cwd`). Called each time the instance
-   * opens. Default: none, so a tool that needs an environment fails its call.
+   * The execution environment of one instance, from its scope. It is pi-durable's `HarnessOptions.env`, which builds
+   * the `ExecutionEnv` a tool call reads as `api.env`. pi-durable's `bash` runs in its `cwd`. The runtime calls it each
+   * time the instance opens. By default there is none, so a tool that needs an environment fails its call.
    */
   readonly envFor?: (scope: StorageScope) => NonNullable<HarnessOptions["env"]>;
   /**
-   * How the runtime reaches a reply address: an ask's run ended, so its answer goes to the asker's instance, through
-   * the app's way to reach that instance's home (the local runtime's `session.reply`, a client of the cluster, a
-   * Durable Object's stub). Resolve once the reply was delivered or refused for good (map `reply_not_pending` and
-   * `session_not_found` to resolving); reject to have it tried again later. Without it, `submit` refuses `replyTo`.
+   * How the runtime reaches a reply address. When an ask's run ends, its answer goes to the asker's instance through
+   * the app's way to reach that instance's home, such as the local runtime's `session.reply`, a client of the cluster
+   * or a Durable Object's stub. Resolve once the reply was delivered or refused for good, and map `reply_not_pending`
+   * and `session_not_found` to resolving. Reject to have it tried again later. Without it, `submit` refuses `replyTo`.
    */
   readonly deliverReply?: DeliverReply;
 }
 
 /**
- * Model access: one `models` for every instance, or `modelsFor`, resolved per instance from its
- * scope, so each instance runs on its own caller's credentials.
+ * Model access, either one `models` for every instance or `modelsFor`, resolved per instance from its scope so each
+ * instance runs on its own caller's credentials.
  */
 export type AgentRuntimeModelsOption =
   | {
@@ -185,18 +190,17 @@ export type AgentRuntimeModelsOption =
     }
   | {
       /**
-       * The model access of one instance, from its scope: what `models` would be for it. It may be
-       * async. Resolved when the instance opens (also when it reopens after a restart or an idle
-       * close) and again before every `submit`, `approve` and `resume`, and on `refreshModels()`;
-       * pi-durable reads the newest result at each model request. A throw or rejection is
-       * reported as `models_failed`, and every model request fails with `ModelsUnavailableError`
-       * until a later resolution succeeds.
+       * The model access of one instance, from its scope, which is what `models` would be for it. It may be async. The
+       * runtime resolves it when the instance opens, also when it reopens after a restart or an idle close. It resolves
+       * it again before every `submit`, `approve` and `resume`, and on `refreshModels()`. pi-durable reads the newest
+       * result at each model request. A throw or rejection is reported as `models_failed`, and every model request
+       * fails with `ModelsUnavailableError` until a later resolution succeeds.
        */
       readonly modelsFor: ModelsResolver;
       readonly models?: never;
     };
 
-/** Ports: one object for every tool call, or `portsFor`, resolved for each call from where it runs. */
+/** Ports, either one object for every tool call or `portsFor`, resolved for each call from where it runs. */
 export type AgentRuntimePortsOption<Ports> =
   | {
       /** Handed to every tool call as `context.ports`. */
@@ -205,9 +209,9 @@ export type AgentRuntimePortsOption<Ports> =
     }
   | {
       /**
-       * The ports of one tool call, from its scope and session, resolved right before it
-       * executes (after its approval, and again for a call a restart reruns). It may be async; a
-       * failure fails that call alone and is reported as `ports_failed`.
+       * The ports of one tool call, from its scope and session. The runtime resolves them right before the call
+       * executes, after its approval, and again for a call that a restart reruns. It may be async. A failure fails
+       * that call alone and is reported as `ports_failed`.
        */
       readonly portsFor: PortsResolver<Ports>;
       readonly ports?: never;
@@ -219,35 +223,35 @@ export type AgentRuntimeOptions<Ports> = AgentRuntimeCommonOptions<Ports> &
 
 export interface SessionInfo {
   readonly id: string;
-  /** Epoch ms. */
+  /** Milliseconds since the epoch. */
   readonly createdAt: number;
 }
 
 export interface SessionOptions {
-  /** Default: the agent's model, else the runtime's `defaultModel`. */
+  /** It defaults to the agent's model, else the runtime's `defaultModel`. */
   readonly model?: ModelRef;
-  /** How hard the model thinks. Default: pi-durable's. */
+  /** How hard the model thinks. It defaults to pi-durable's level. */
   readonly thinkingLevel?: ModelThinkingLevel;
   /**
-   * Tool rounds one run takes at most: the round that reaches it runs its tools, then the run ends without an answer
-   * (`turn_limit`). An integer, 1 or more. Default: no limit.
+   * The most tool rounds one run takes. The round that reaches it runs its tools, then the run ends without an answer
+   * as `turn_limit`. It is an integer of 1 or more. By default there is no limit.
    */
   readonly maxTurns?: number;
-  /** The agent's tools the session may use. Default: all of them. */
+  /** The agent's tools the session may use. By default it may use all of them. */
   readonly tools?: ToolSelection;
-  /** Which of the session's calls wait for approval. Default: what the agent's policy gates. */
+  /** Which of the session's calls wait for approval. By default the agent's policy decides. */
   readonly requiresApproval?: ApprovalRule;
   /**
-   * Idempotency key: creating with the same one again returns the session it made, as it is, whatever the other
+   * An idempotency key. Creating with the same one again returns the session it made, as it is, whatever the other
    * options say, for as long as that session is not deleted.
    */
   readonly requestId?: string;
 }
 
 /**
- * A change to what a session runs with: a field left out keeps its value, `null` puts back the agent's: for `model`,
- * the model a new session gets (the agent's, else the runtime's `defaultModel`); for `thinkingLevel` and `maxTurns`,
- * pi-durable's default.
+ * A change to what a session runs with. A field left out keeps its value, and `null` puts back the agent's. For
+ * `model`, `null` puts back the model a new session gets, which is the agent's or else the runtime's `defaultModel`.
+ * For `thinkingLevel` and `maxTurns`, it puts back pi-durable's default.
  */
 export interface SessionChange {
   readonly model?: ModelRef | null;
@@ -261,32 +265,32 @@ export interface SessionChange {
 export interface SessionSettings {
   readonly model: ModelRef;
   readonly thinkingLevel: ModelThinkingLevel;
-  /** Tool rounds one run takes at most; absent, no limit. */
+  /** The most tool rounds one run takes. When absent, there is no limit. */
   readonly maxTurns?: number;
   /** The agent's tools the session may use, in the agent's order. */
   readonly tools: readonly string[];
-  /** The session's own approval rule; absent, the agent's policy decides. */
+  /** The session's own approval rule. When absent, the agent's policy decides. */
   readonly requiresApproval?: ApprovalRule;
 }
 
 export interface SubmitInput {
   readonly text: string;
-  /** Idempotency key: submitting the same one again returns the first submission. */
+  /** An idempotency key. Submitting the same one again returns the first submission. */
   readonly requestId: string;
   /**
-   * While a run is going: `queue` (default) waits for the run's answer and starts the next run; `steer` joins the run
-   * going on, which reads it after its current tool round; `reject` throws `SessionBusyError`. With no run going, each
-   * starts a run.
+   * What the input does while a run is going. `queue`, the default, waits for the run's answer and starts the next run.
+   * `steer` joins the run going on, which reads it after its current tool round. `reject` throws `SessionBusyError`.
+   * With no run going, each starts a run.
    */
   readonly whenBusy?: "queue" | "steer" | "reject";
   /**
-   * Makes the submission an ask: once the run it starts ends, its answer is delivered to this address through the
-   * runtime's `deliverReply`, tried again until it lands. An ask always queues.
+   * Makes the submission an ask. Once the run it starts ends, the runtime's `deliverReply` delivers its answer to this
+   * address, and tries again until the delivery succeeds. An ask always queues.
    */
   readonly replyTo?: ReplyAddress;
   /**
-   * Stored as it is on the input's entry, for the app's hooks to read back with `runInputs`, such as context a
-   * `beforeRequest` hook puts after the input in each request. A JSON object; an ask takes none.
+   * Stored as it is on the input's entry, for the app's hooks to read back with `runInputs`. A `beforeRequest` hook may
+   * read it to put context after the input in each request. It is a JSON object, and an ask takes none.
    */
   readonly metadata?: JsonObject;
 }
@@ -296,13 +300,13 @@ export interface SubmitResult {
 }
 
 export interface ContinueInput {
-  /** Idempotency key: continuing with the same one again returns the first continue. */
+  /** An idempotency key. Continuing with the same one again returns the first continue. */
   readonly requestId: string;
 }
 
 /**
- * What `withdraw` did: `withdrawn` (it was waiting, and it never reaches the agent), `already_placed` (a run took it
- * first), or `settled` (it was answered, withdrawn already, or dropped with its run).
+ * What `withdraw` did. `withdrawn` means the input was waiting and never reaches the agent. `already_placed` means a
+ * run took it first. `settled` means it was answered, withdrawn already, or dropped with its run.
  */
 export interface WithdrawResult {
   readonly outcome: "withdrawn" | "already_placed" | "settled";
@@ -314,55 +318,57 @@ export interface CompactOptions {
 }
 
 export interface EventsOptions {
-  /** Resume after this cursor; omitted, the stream replays from its start. */
+  /** Resume after this cursor. When omitted, the stream replays from its start. */
   readonly from?: Cursor | string;
   /** Ends the iteration. */
   readonly signal?: AbortSignal;
 }
 
 /**
- * One session: a pi-durable conversation of an agent instance. A child session, the one a delegate's call runs its
- * sub-agent in, is followed, decided in and aborted like any other, under its sub-agent's tools and policy; only its
+ * One session, a pi-durable conversation of an instance. A child session is the one a delegate's call runs its
+ * sub-agent in. It is followed, decided in and aborted like any other, under its sub-agent's tools and policy. Only its
  * delegate submits to it, so `submit`, `continue`, `withdraw`, `configure`, `compact` and `delete` reject with
  * `SessionOwnedError`.
  */
 export interface AgentSession {
   readonly id: string;
-  /** Admits the input durably and resolves once admitted; the run's progress arrives as events. */
+  /** Admits the input durably and resolves once admitted. The run's progress arrives as events. */
   submit(input: SubmitInput): Promise<SubmitResult>;
   /**
-   * Starts a run on the session's context as it is, without a new message: it carries on a run that ended without an
+   * Starts a run on the session's context as it is, without a new message. It carries on a run that ended without an
    * answer, such as one that reached its turn limit, from where it stopped. Inputs a failed run left waiting join it.
-   * Only while no run is going: a busy session rejects with `SessionBusyError`. A context with nothing to answer (an
-   * answer ends it) ends the run at once, `nothing_to_answer`. Resolves once admitted, as `submit` does.
+   * It works only while no run is going, and a busy session rejects with `SessionBusyError`. A context that ends with
+   * an answer has nothing to answer, so the run ends at once as `nothing_to_answer`. It resolves once admitted, as
+   * `submit` does.
    */
   continue(input: ContinueInput): Promise<SubmitResult>;
   /**
    * Takes back an input still waiting for a run, by the `submissionId` its `submit` gave. Rejects with
-   * `InvalidRequestError` for a submission of another session, or one of an ask: its asker waits for its answer.
+   * `InvalidRequestError` for a submission of another session, or for one of an ask, whose asker waits for its answer.
    */
   withdraw(submissionId: string): Promise<WithdrawResult>;
   /**
-   * From `from` (default: the session's start), then live until the instance closes, `signal`
-   * aborts or the iteration ends. A reader keeps the session's stream open while it iterates.
+   * The session's events from `from`, or from the session's start by default, then live until the instance closes,
+   * `signal` aborts or the iteration ends. A reader keeps the session's stream open while it iterates.
    */
   events(options?: EventsOptions): AsyncIterable<StreamItem>;
   /**
-   * Decides calls waiting for approval, all in one commit: every decision is applied, or, when any call is not
-   * waiting, none is (`ApprovalNotPendingError`). A call a decision reached first is `already_decided`.
+   * Decides calls waiting for approval, all in one commit. Every decision is applied, or none is when any call is not
+   * waiting, and then it rejects with `ApprovalNotPendingError`. A call that a decision reached first is
+   * `already_decided`.
    */
   approve(decisions: readonly ApprovalDecision[]): Promise<ApprovalOutcome[]>;
   /**
-   * Replies to a deferred call of the session with the token of its reply address: the call returns `text` as its
-   * result (an error result with `isError`). A closed instance reopens for it. A second reply to the same call is
+   * Replies to a deferred call of the session with the token of its reply address. The call returns `text` as its
+   * result, or as an error result with `isError`. A closed instance reopens for it. A second reply to the same call is
    * `already_replied`. Rejects with `ReplyNotPendingError`, changing nothing, for a call that waits for no reply, has
    * ended or passed its deadline, or whose token is another.
    */
   reply(input: ReplyInput): Promise<ReplyResult>;
-  /** Stops the run; what it produced so far is kept, ending as aborted. */
+  /** Stops the run. What it produced so far is kept, and the run ends as aborted. */
   abort(): Promise<void>;
   /**
-   * Summarizes the session's older messages into what the model reads from then on; the thread keeps them. Resolves
+   * Summarizes the session's older messages into what the model reads from then on. The thread keeps them. Resolves
    * once the compaction is admitted. It runs while the session keeps working, and its summary lands at once when the
    * session is idle, else at the run's next boundary. The stream shows `compaction:start`, then `session:compacted`
    * and `compaction:end`, or `compaction:end` with an `error`.
@@ -370,49 +376,49 @@ export interface AgentSession {
   compact(options?: CompactOptions): Promise<void>;
   /**
    * Changes which tools the session may use and which of its calls wait for approval, in one commit. A tool change
-   * applies from the run's next model request; an approval change to calls that reach the gate after it, while a
-   * call already waiting keeps waiting for its decision.
+   * applies from the run's next model request. An approval change applies to calls that reach the gate after it, and
+   * a call already waiting keeps waiting for its decision.
    */
   configure(change: SessionChange): Promise<void>;
   settings(): Promise<SessionSettings>;
   /**
-   * Deletes the session and its child sessions: stops its run, ends their readers and hides them at once (their calls
-   * reject with `SessionNotFoundError`). The host erases their data once the instance's storage is closed (an idle
-   * close, `close()`, or the next close after a crash); a host without `erase` keeps it.
+   * Deletes the session and its child sessions. It stops its run, ends their readers and hides them at once, so their
+   * calls reject with `SessionNotFoundError`. The host erases their data once the instance's storage is closed by an
+   * idle close, by `close()`, or by the next close after a crash. A host without `erase` keeps it.
    */
   delete(): Promise<void>;
 }
 
-/** One named agent instance: one open Harness over its scope's storage. */
+/** One named instance, which is one open Harness over its scope's storage. */
 export interface AgentInstance {
   readonly scope: StorageScope;
   readonly agent: AgentDefinition;
   readonly state: InstanceState;
   /**
-   * Opens the instance now rather than at first use. Rejects with `LeaseHeldError`. With
-   * `closeIdleAfterMs` it may close again once idle; the next call reopens it.
+   * Opens the instance now rather than at first use. Rejects with `LeaseHeldError`. With `closeIdleAfterMs` it may
+   * close again once idle, and the next call reopens it.
    */
   open(): Promise<void>;
-  /** With `requestId`, idempotent: a retry, also after a restart or from another process, returns the first session. */
+  /** Idempotent with `requestId`. A retry, also after a restart or from another process, returns the first session. */
   createSession(options?: SessionOptions): Promise<SessionInfo>;
-  /** Oldest first: one read of the instance's sessions record. A child session is left out; its parent names it. */
+  /** Oldest first, in one read of the instance's sessions record. A child session is left out. Its parent names it. */
   listSessions(): Promise<SessionInfo[]>;
   session(id: string): AgentSession;
-  /** For an `alarm` host: its alarm fired, so run what is due and what a lost process left. */
+  /** For an `alarm` host whose alarm fired. Runs what is due and what a lost process left. */
   resume(): Promise<void>;
   /**
-   * With `modelsFor`: resolves the instance's models again now, so the next model request of a run
-   * already going uses them. Does nothing while the instance is not open (its next open resolves
-   * them anyway), nor with a static `models`.
+   * With `modelsFor`, resolves the instance's models again now, so the next model request of a run already going uses
+   * them. It does nothing while the instance is not open, since its next open resolves them anyway. It also does
+   * nothing with a static `models`.
    */
   refreshModels(): Promise<void>;
   /**
-   * With `extensionsFor`: resolves the instance's app extensions again and puts them in place, so the next model
-   * request, also of a run already going, offers their tools. One of a name already installed replaces it, and one no
-   * longer listed is no longer selected but stays installed until the instance closes, so a task it started still
-   * runs. Rejects, and changes nothing, where an open would fail: a `TypeError` for their names. Refreshes take effect
-   * one at a time, in call order. While the instance opens it waits for the open; while it is not open it does nothing
-   * (its next open resolves them anyway).
+   * With `extensionsFor`, resolves the instance's app extensions again and puts them in place, so the next model
+   * request offers their tools, also in a run already going. An extension with the name of an installed one replaces
+   * it. One no longer listed is no longer selected but stays installed until the instance closes, so a task it started
+   * still runs. It rejects and changes nothing where an open would fail, with a `TypeError` for their names. Refreshes
+   * take effect one at a time, in call order. While the instance opens, it waits for the open. While the instance is
+   * not open, it does nothing, since its next open resolves them anyway.
    */
   refreshExtensions(): Promise<void>;
   close(): Promise<void>;
@@ -421,12 +427,12 @@ export interface AgentInstance {
 export interface AgentRuntimeInspection {
   /** Instances that hold, or are acquiring or releasing, their scope's lease. */
   readonly open: number;
-  /** Every instance the runtime holds: those, and those closed for idleness that it reopens for a due sleep. */
+  /** Every instance the runtime holds: the open ones, and those closed for idleness that it reopens for a due sleep. */
   readonly instances: readonly InstanceInspection[];
 }
 
 export interface RecoverOptions {
-  /** Instances opened at a time; default 4. */
+  /** How many instances open at a time. It defaults to 4. */
   readonly concurrency?: number;
 }
 
@@ -434,7 +440,7 @@ export interface RecoverOptions {
 export interface RecoverResult {
   /** Opened, so they carry on what they left: a run, a call, a due sleep. */
   readonly opened: readonly StorageScope[];
-  /** Another writer holds them, and carries on their work; a crashed one's lease frees them once it expires. */
+  /** Another writer holds them and carries on their work. A crashed writer's lease frees them once it expires. */
   readonly held: readonly StorageScope[];
   /** Of an agent kind this runtime does not have. */
   readonly unknown: readonly StorageScope[];
@@ -443,13 +449,13 @@ export interface RecoverResult {
 
 export interface AgentRuntime {
   /**
-   * The instance `name` of `agent`, opened lazily; one per scope per runtime. While the app holds a
-   * handle, `get` returns that same handle, also after an idle close.
+   * The instance `name` of `agent`, opened lazily. A runtime has one per scope. While the app holds a handle, `get`
+   * returns that same handle, also after an idle close.
    */
   get(agent: AgentDefinition | string, name: string): AgentInstance;
   /**
-   * Opens every instance the host's `unfinished()` lists, so work a crashed or closed process left (a run, a call, a
-   * sleep) carries on without waiting for a call. With `closeIdleAfterMs`, those with nothing to do close again once
+   * Opens every instance the host's `unfinished()` lists, so the run, call or sleep that a crashed or closed process
+   * left carries on without waiting for a call. With `closeIdleAfterMs`, those with nothing to do close again once
    * idle. Run it at startup, and again from time to time where several processes share a storage, to take over the
    * scopes of one that crashed once their leases expire. Throws a `TypeError` for a host without `unfinished`.
    */
@@ -460,53 +466,34 @@ export interface AgentRuntime {
 }
 
 const SESSION_ID = /^[1-9]\d{0,15}$/;
-/** A submission's id as `submit` hands it out: pi-durable's, a positive integer. */
 const SUBMISSION_ID = SESSION_ID;
 
-/** setTimeout's longest delay; a later deadline is reached in steps. */
+/** setTimeout's longest delay. A later deadline is reached in steps. */
 const MAX_DELAY = 2 ** 31 - 1;
 
-/** One open of an instance: what it holds until it closes. */
 interface Opened {
   readonly harness: Harness;
   readonly storage: Storage;
   readonly lease: Lease;
-  /** With `modelsFor`: this open's model access. */
   readonly models: ModelAccess | undefined;
-  /** Aborted when this open closes, which detaches its listeners from its lease and Harness. */
   readonly detach: AbortController;
-  /** The agent's tools as this open registered them, by name: what a session's tool selection names. */
   readonly tools: ReadonlyMap<string, ToolRegistration>;
-  /** The registry this open installed every extension in, and installs a refresh's in. */
   readonly registry: Registry;
-  /**
-   * The app's extensions as this open last resolved them, read at each use: by the gate, `decide`, each session's
-   * stream and rule, and the top-level sessions' selection. `refreshExtensions()` replaces `current` whole.
-   */
   readonly app: { current: AppExtensions };
-  /** The last refresh of the app's extensions: each waits for the one before it. */
   refreshing: Promise<void>;
-  /** The task that delivers an ask's reply, as this open registered it. */
   readonly courier: Courier;
-  /** The sessions record as this open last read it: what each session's stream reads its approval rule from. */
   sessions: SessionsState | undefined;
-  /** Its Harness failed (a storage error), so it reads nothing any more. */
   failed: boolean;
 }
 
-/** What an instance needs of the runtime that made it. */
 interface RuntimeCore {
   readonly options: AgentRuntimeOptions<unknown>;
   readonly clock: Clock;
-  /** How an ask's courier tries again; tests shorten it. */
   courier: CourierTiming;
-  /** The instance holds a lease, or acquires or releases one, or waits to reopen for a sleep: the runtime keeps it. */
   hold(instance: Instance): void;
-  /** It holds nothing any more. */
   letGo(instance: Instance): void;
 }
 
-/** The time every instance of a runtime runs on. */
 const systemClock: Clock = {
   now: () => Date.now(),
   timer(callback, ms, keepAlive) {
@@ -517,7 +504,10 @@ const systemClock: Clock = {
   },
 };
 
-/** Why `submit` refuses an input's `metadata`, if it does. */
+const ignore = (_error: unknown): void => undefined;
+
+const toollessAgent = (kind: string): AgentDefinition => defineAgent({ kind, instructions: "", tools: [] });
+
 function refusedMetadata({ metadata, replyTo }: SubmitInput): string | undefined {
   if (metadata === undefined) return undefined;
   if (replyTo !== undefined) return "An ask takes no `metadata`";
@@ -525,17 +515,24 @@ function refusedMetadata({ metadata, replyTo }: SubmitInput): string | undefined
   return object && isJsonValue(metadata) ? undefined : "`metadata` is not a JSON object";
 }
 
+function assertInstallable(registry: Registry, app: AppExtensions): void {
+  const trial = createRegistry();
+  for (const extension of [...registry.snapshot().installed(), ...app.installed]) trial.install(extension);
+}
+
+function makeCurrentThenInstall(opened: Opened, app: AppExtensions): void {
+  opened.app.current = app;
+  for (const extension of app.installed) opened.registry.install(extension);
+}
+
 class Instance implements AgentInstance {
   readonly scope: StorageScope;
   readonly agent: AgentDefinition;
-  /** The instance's agent and the sub-agents its delegates reach, by kind: what a session's record names. */
   readonly #agents: ReadonlyMap<string, AgentDefinition>;
   readonly #options: AgentRuntimeOptions<unknown>;
   readonly #courierTiming: () => CourierTiming;
   readonly #lifecycle: InstanceLifecycle<Opened>;
-  /** The streams of sessions someone needs now; each closes itself once idle and unread. */
   readonly #watches = new Map<ConversationId, SessionWatch>();
-  /** Calls under way that can start work (`#armedFor`): while one is, an alarm host is only ever armed `active`. */
   #starting = 0;
 
   constructor(agent: AgentDefinition, name: string, runtime: RuntimeCore) {
@@ -560,7 +557,6 @@ class Instance implements AgentInstance {
     });
   }
 
-  /** Ended: closed, its lease lost, or its storage failed. It never reopens. */
   get closed(): boolean {
     return this.#lifecycle.ended !== undefined;
   }
@@ -569,7 +565,6 @@ class Instance implements AgentInstance {
     return this.#lifecycle.state;
   }
 
-  /** What the runtime holds for it. Internal: `runtime.inspect()`. */
   inspection(): InstanceInspection {
     return this.#lifecycle.inspection();
   }
@@ -577,8 +572,8 @@ class Instance implements AgentInstance {
   #report(report: InstanceReport) {
     try {
       this.#options.onReport?.(report);
-    } catch {
-      // A host's report handler that throws must not fail the runtime.
+    } catch (appError) {
+      ignore(appError);
     }
   }
 
@@ -586,7 +581,6 @@ class Instance implements AgentInstance {
     this.#report({ source: "runtime", scope: this.scope, kind, error });
   }
 
-  /** The ports of one tool call: the runtime's, or what `portsFor` resolves for it. */
   #portsOf = (target: PortsTarget): unknown => {
     const { portsFor } = this.#options;
     return portsFor === undefined ? this.#options.ports : portsFor(target);
@@ -605,17 +599,12 @@ class Instance implements AgentInstance {
     });
   };
 
-  /**
-   * The agent session `conversationId` runs, from its record as this open last read it: the instance's, or a child
-   * session's sub-agent. A sub-agent the app no longer defines has no tools.
-   */
   #agentOf(opened: Opened, conversationId: ConversationId): AgentDefinition {
     const kind = opened.sessions?.sessions[String(conversationId)]?.agent;
     if (kind === undefined) return this.agent;
-    return this.#agents.get(kind) ?? defineAgent({ kind, instructions: "", tools: [] });
+    return this.#agents.get(kind) ?? toollessAgent(kind);
   }
 
-  /** What session `conversationId`'s stream knows of a tool: its rule is the one this open last read. */
   #toolInfo(opened: Opened, conversationId: ConversationId): (name: string) => ToolInfo {
     return (name) => {
       const agent = this.#agentOf(opened, conversationId);
@@ -628,8 +617,6 @@ class Instance implements AgentInstance {
     };
   }
 
-  // ─── Opening and closing ────────────────────────────────────────────────────
-
   async #open(): Promise<Opened> {
     const { host } = this.#options;
     const lease = await host.lease(this.scope);
@@ -637,73 +624,21 @@ class Instance implements AgentInstance {
     let storage: Storage | undefined;
     let harness: Harness | undefined;
     try {
-      if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
+      this.#throwIfLeaseLost(lease);
       storage = await host.storage(this.scope, lease);
-      // Resolved before anything runs, so work this open resumes runs on the scope's models of now.
-      const { modelsFor } = this.#options;
-      const models =
-        modelsFor === undefined
-          ? undefined
-          : new ModelAccess(this.scope, modelsFor, (error) => this.#runtimeReport("models_failed", error));
-      await models?.refresh();
-      // Resolved before the Harness opens: work it resumes runs with every extension it ran with.
+      const models = await this.#resolveModels();
       const app = { current: await this.#appExtensions() };
-      const registry = createRegistry();
-      const extensions = agentExtensions(this.#agents, {
-        scope: this.scope,
-        ports: this.#portsOf,
-        portsFailed: this.#portsFailed,
-        app: () => app.current,
-        nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
-      });
-      for (const extension of extensions.values()) registry.install(extension);
-      for (const extension of app.current.installed) registry.install(extension);
-      // Resolved by name, whichever extensions a conversation selects.
-      const { courier, extension: asks } = askCourier({
-        deliver: this.#options.deliverReply,
-        timing: this.#courierTiming,
-        failed: (failure) => this.#report({ source: "runtime", scope: this.scope, kind: "reply_failed", ...failure }),
-      });
-      registry.install(asks);
-      // SAFETY: an instance's agents include its own.
-      const own = extensions.get(this.agent.kind)!;
-      const tools = new Map((own.tools ?? []).map((tool) => [tool.name, tool]));
-      const appSettings = this.#options.settings;
-      const telemetry = this.#options.telemetryFor?.(this.scope);
-      const env = this.#options.envFor?.(this.scope);
-      const { wake } = host;
-      harness = await Harness.open(
-        storage,
-        {
-          ...(telemetry !== undefined && { telemetry }),
-          ...(env !== undefined && { env }),
-          // SAFETY: the options hold exactly one of `models` and `modelsFor`.
-          models: models?.get ?? (this.#options.models as HarnessOptions["models"]),
-          registry,
-          // A session that selects no extensions of its own, also one made before sub-agents were, runs its
-          // instance's agent, after the app's extensions that select it: no sub-agent's tools or instructions reach it.
-          settings: () => ({
-            ...(typeof appSettings === "function" ? appSettings() : appSettings),
-            extensions: app.current.selectionOf(this.agent.kind, own),
-          }),
-          onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
-          ...(wake.kind === "alarm" && {
-            onWake: (state) => {
-              // A closed open no longer speaks for the scope: an idle close armed the host itself.
-              if (detach.signal.aborted) return;
-              this.#arm(wake, state).catch((error: unknown) => this.#runtimeReport("arm_failed", error));
-            },
-          }),
-        },
-        context,
-      );
+      const { registry, own, courier } = this.#buildRegistry(app);
+      const selection = () => app.current.selectionOf(this.agent.kind, own);
+      harness = await this.#openHarness(storage, models.forHarness, registry, selection, detach.signal);
+      this.#throwIfEndedBeforeWriting();
       const opened: Opened = {
         harness,
         storage,
         lease,
-        models,
+        models: models.access,
         detach,
-        tools,
+        tools: new Map((own.tools ?? []).map((tool) => [tool.name, tool])),
         registry,
         app,
         refreshing: Promise.resolve(),
@@ -711,75 +646,11 @@ class Instance implements AgentInstance {
         sessions: undefined,
         failed: false,
       };
-      // Closed or lost while opening: this open must not write.
-      const ended = this.#lifecycle.ended;
-      if (ended !== undefined) throw new InstanceClosedError(this.scope, ended);
-      // Both listeners belong to this open: an idle close detaches them before it lets the lease go.
-      lease.signal.addEventListener("abort", () => void this.#lifecycle.end("lease_lost"), {
-        once: true,
-        signal: detach.signal,
-      });
-      void harness.closed.then((end) => {
-        if (end.kind !== "failed") return;
-        opened.failed = true;
-        if (!detach.signal.aborted) void this.#lifecycle.end("failed");
-      });
-      // A task no definition of this open can take, reported once: from the graph as it opens, which marks a sleeping
-      // task too (pi-durable commits no wake of one it cannot run), and from each change, such as a failed migration.
-      const blocked = new Set<TaskId>();
-      const reportBlocked = (graph: TaskGraph) => {
-        for (const task of Object.values(graph.tasks)) {
-          if (task.blocked === undefined || blocked.has(task.id)) continue;
-          blocked.add(task.id);
-          const report: InstanceReport = {
-            source: "runtime",
-            scope: this.scope,
-            kind: "task_blocked",
-            sessionId: String(task.conversationId),
-            taskKind: task.kind,
-            reason: task.blocked,
-          };
-          // An observer of the task graph only records: the app's handler runs once the graph's change is adopted.
-          queueMicrotask(() => this.#report(report));
-        }
-      };
-      const graph = await harness.observeTaskGraph(
-        {
-          advance: (call) => {
-            // Every change to the task graph is activity: idleness is measured from the last one.
-            this.#lifecycle.touch();
-            if (call.kind === "value") reportBlocked(call.value);
-          },
-          end: () => undefined,
-        },
-        context,
-      );
-      reportBlocked(graph.value);
-      // Follow the sessions that have unfinished work before any of it runs again, so their
-      // streams carry the resumed work from its first commit.
-      const { tasks } = await harness.inspect(context);
-      const holds: (() => void)[] = [];
-      try {
-        const unfinished = new Set(tasks.flatMap((task) => task.record.conversationId ?? []));
-        if (unfinished.size > 0) await this.#readSessions(opened);
-        for (const id of unfinished) {
-          const conversation = await harness.conversation(id, context);
-          if (!conversation) continue;
-          const watch = this.#watchOf(opened, conversation);
-          holds.push(watch.hold());
-          await watch.ready;
-        }
-        if (wake.kind === "alarm") await this.#arm(wake, harness.wake());
-        if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
-        // Carry on whatever the last writer of this scope left unfinished, and the sleeps now due.
-        harness.resume();
-      } finally {
-        // A session whose work is under way keeps its stream until the work is done.
-        for (const release of holds) release();
-      }
+      this.#endOnLostLeaseOrFailedHarness(opened);
+      await this.#observeTaskGraph(harness);
+      await this.#whileFollowingUnfinishedSessions(opened, () => this.#resumeWhatTheLastWriterLeft(opened));
       return opened;
     } catch (error) {
-      // Whatever was opened is closed before the lease goes, so no two writers ever overlap.
       detach.abort();
       this.#closeWatches();
       if (harness) await harness.close(context).catch(() => undefined);
@@ -789,23 +660,161 @@ class Instance implements AgentInstance {
     }
   }
 
-  /**
-   * Lets go of one open: its listeners, its streams, its Harness, then the deleted sessions the host
-   * can erase now that the storage is closed, then its lease, with what the Harness left to do.
-   */
+  #throwIfLeaseLost(lease: Lease): void {
+    if (lease.signal.aborted) throw new InstanceClosedError(this.scope, "lease_lost");
+  }
+
+  async #resolveModels(): Promise<{ readonly access?: ModelAccess; readonly forHarness: HarnessOptions["models"] }> {
+    const options = this.#options;
+    if (options.modelsFor === undefined) return { forHarness: options.models };
+    const access = new ModelAccess(this.scope, options.modelsFor, (error) =>
+      this.#runtimeReport("models_failed", error),
+    );
+    await access.refresh();
+    return { access, forHarness: access.get };
+  }
+
+  #buildRegistry(app: { readonly current: AppExtensions }): { registry: Registry; own: Extension; courier: Courier } {
+    const registry = createRegistry();
+    const { own, subAgents } = agentExtensions(this.agent, {
+      scope: this.scope,
+      ports: this.#portsOf,
+      portsFailed: this.#portsFailed,
+      app: () => app.current,
+      nestedApprovalTimeoutMs: nestedApprovalTimeoutOf(this.#options),
+    });
+    for (const extension of [own, ...subAgents, ...app.current.installed]) registry.install(extension);
+    const { courier, extension: asks } = askCourier({
+      deliver: this.#options.deliverReply,
+      timing: this.#courierTiming,
+      failed: (failure) => this.#report({ source: "runtime", scope: this.scope, kind: "reply_failed", ...failure }),
+    });
+    registry.install(asks);
+    return { registry, own, courier };
+  }
+
+  #openHarness(
+    storage: Storage,
+    models: HarnessOptions["models"],
+    registry: Registry,
+    selection: () => readonly Extension[],
+    detach: AbortSignal,
+  ): Promise<Harness> {
+    const { settings, host } = this.#options;
+    const telemetry = this.#options.telemetryFor?.(this.scope);
+    const env = this.#options.envFor?.(this.scope);
+    const { wake } = host;
+    return Harness.open(
+      storage,
+      {
+        ...(telemetry !== undefined && { telemetry }),
+        ...(env !== undefined && { env }),
+        models,
+        registry,
+        settings: () => ({
+          ...(typeof settings === "function" ? settings() : settings),
+          extensions: selection(),
+        }),
+        onReport: (report) => this.#report({ source: "pi", scope: this.scope, report }),
+        ...(wake.kind === "alarm" && {
+          onWake: (state) => {
+            if (detach.aborted) return;
+            this.#arm(wake, state).catch((error: unknown) => this.#runtimeReport("arm_failed", error));
+          },
+        }),
+      },
+      context,
+    );
+  }
+
+  #throwIfEndedBeforeWriting(): void {
+    const ended = this.#lifecycle.ended;
+    if (ended !== undefined) throw new InstanceClosedError(this.scope, ended);
+  }
+
+  #endOnLostLeaseOrFailedHarness(opened: Opened): void {
+    const { harness, lease, detach } = opened;
+    lease.signal.addEventListener("abort", () => void this.#lifecycle.end("lease_lost"), {
+      once: true,
+      signal: detach.signal,
+    });
+    void harness.closed.then((end) => {
+      if (end.kind !== "failed") return;
+      opened.failed = true;
+      if (!detach.signal.aborted) void this.#lifecycle.end("failed");
+    });
+  }
+
+  async #observeTaskGraph(harness: Harness): Promise<void> {
+    const blocked = new Set<TaskId>();
+    const reportBlocked = (graph: TaskGraph) => {
+      for (const task of Object.values(graph.tasks)) {
+        if (task.blocked === undefined || blocked.has(task.id)) continue;
+        blocked.add(task.id);
+        const report: InstanceReport = {
+          source: "runtime",
+          scope: this.scope,
+          kind: "task_blocked",
+          sessionId: String(task.conversationId),
+          taskKind: task.kind,
+          reason: task.blocked,
+        };
+        // An observer of the task graph only records, so the app's handler runs once the graph's change is adopted.
+        queueMicrotask(() => this.#report(report));
+      }
+    };
+    const graph = await harness.observeTaskGraph(
+      {
+        advance: (call) => {
+          this.#lifecycle.touch();
+          if (call.kind === "value") reportBlocked(call.value);
+        },
+        end: () => undefined,
+      },
+      context,
+    );
+    reportBlocked(graph.value);
+  }
+
+  async #whileFollowingUnfinishedSessions(opened: Opened, work: () => Promise<void>): Promise<void> {
+    const { harness } = opened;
+    const { tasks } = await harness.inspect(context);
+    const holds: (() => void)[] = [];
+    try {
+      const unfinished = new Set(tasks.flatMap((task) => task.record.conversationId ?? []));
+      if (unfinished.size > 0) await this.#readSessions(opened);
+      for (const id of unfinished) {
+        const conversation = await harness.conversation(id, context);
+        if (!conversation) continue;
+        const watch = this.#watchOf(opened, conversation);
+        holds.push(watch.hold());
+        await watch.ready;
+      }
+      await work();
+    } finally {
+      for (const release of holds) release();
+    }
+  }
+
+  async #resumeWhatTheLastWriterLeft({ harness, lease }: Opened): Promise<void> {
+    const { wake } = this.#options.host;
+    if (wake.kind === "alarm") await this.#arm(wake, harness.wake());
+    this.#throwIfLeaseLost(lease);
+    harness.resume();
+  }
+
   async #release(opened: Opened): Promise<void> {
     const { harness, lease, detach } = opened;
     detach.abort();
     this.#closeWatches();
     const erase = this.#options.host.erase;
-    // A failed Harness reads nothing; what it was asked to erase waits for a healthy close.
     const usable = !opened.failed && !lease.signal.aborted;
     const doomed = erase === undefined || !usable ? [] : await this.#toErase(harness);
     let wake: Wake | undefined;
     try {
       wake = harness.wake();
     } catch {
-      // A failed Harness throws (`SessionFailed`): released without a wake, the scope counts as unfinished.
+      // A failed Harness throws `SessionFailed`. Released without a wake, the scope counts as unfinished.
     }
     await harness.close(context).catch((error: unknown) => this.#runtimeReport("close_failed", error));
     if (doomed.length > 0 && erase !== undefined && !lease.signal.aborted) {
@@ -816,18 +825,13 @@ class Instance implements AgentInstance {
     await lease.release(wake).catch((error: unknown) => this.#runtimeReport("lease_release_failed", error));
   }
 
-  /**
-   * The deleted sessions still in storage. Those an earlier close erased leave the record here, in one commit, so
-   * the record holds only what is still to erase.
-   */
   async #toErase(harness: Harness): Promise<ConversationId[]> {
     try {
       const erasing = (await harness.snapshot(SessionsDoc, context))?.erasing ?? [];
       if (erasing.length === 0) return [];
       const left: ConversationId[] = [];
       for (const id of erasing) {
-        // SAFETY: the record holds ids of conversations the runtime created.
-        const conversation = await harness.conversation(id as ConversationId, context);
+        const conversation = await harness.conversation(idFromNumber<ConversationId>(id), context);
         if (conversation !== undefined) left.push(conversation.id);
       }
       if (left.length < erasing.length) {
@@ -859,15 +863,14 @@ class Instance implements AgentInstance {
   }
 
   /**
-   * Runs a call that can start work with an alarm host armed for it: `active` from before the call until it is done,
-   * so a process that dies while the call starts work is woken, and then with what is due, since pi-durable reports
-   * only a change to its wake and a call that started nothing changes none. Of calls that overlap, the last one done
-   * arms what is due. A failure to arm after the call is reported; the call stands.
+   * Runs a call that can start work with an alarm host armed for it. The alarm is `active` from before the call until
+   * it is done, so a process that dies while the call starts work is woken. Then it is armed with what is due, since
+   * pi-durable reports only a change to its wake, and a call that started nothing changes none. Of calls that overlap,
+   * the last one done arms what is due. A failure to arm after the call is reported, and the call stands.
    */
   async #armedFor<R>(harness: Harness, call: () => Promise<R>): Promise<R> {
     const { wake } = this.#options.host;
     if (wake.kind !== "alarm") return call();
-    // Counted from before its own arm, so nothing armed meanwhile can say idle.
     this.#starting += 1;
     let armed = false;
     try {
@@ -880,7 +883,7 @@ class Instance implements AgentInstance {
       try {
         due = armed ? harness.wake() : undefined;
       } catch {
-        // A failed Harness throws (`SessionFailed`): its scope stays armed active, so it is woken to recover.
+        // A failed Harness throws `SessionFailed`. Its scope stays armed active, so it is woken to recover.
       }
       if (due !== undefined) {
         await this.#arm(wake, due).catch((error: unknown) => this.#runtimeReport("arm_failed", error));
@@ -888,7 +891,6 @@ class Instance implements AgentInstance {
     }
   }
 
-  /** The session's stream, opened if nobody needed it until now. */
   #watchOf(opened: Opened, conversation: Conversation): SessionWatch {
     const existing = this.#watches.get(conversation.id);
     if (existing) return existing;
@@ -903,12 +905,10 @@ class Instance implements AgentInstance {
       },
     });
     this.#watches.set(conversation.id, watch);
-    // A failed start closes the watch; whoever awaits `ready` sees the error.
     watch.ready.catch(() => undefined);
     return watch;
   }
 
-  /** Runs `work` with the session's stream held open, so every commit `work` causes reaches it. */
   async #withWatch<T>(opened: Opened, conversation: Conversation, work: () => Promise<T>): Promise<T> {
     const watch = this.#watchOf(opened, conversation);
     const release = watch.hold();
@@ -920,7 +920,6 @@ class Instance implements AgentInstance {
     }
   }
 
-  /** What the instance holds for its sessions' streams. Internal: for the bounded-memory tests. */
   heldStreams(): { readonly sessions: number; readonly events: number; readonly readers: number } {
     let events = 0;
     let readers = 0;
@@ -931,43 +930,31 @@ class Instance implements AgentInstance {
     return { sessions: this.#watches.size, events, readers };
   }
 
-  /** The sessions record as it is now, kept on the open for the sessions' streams. */
   async #readSessions(opened: Opened): Promise<SessionsState | undefined> {
     opened.sessions = await opened.harness.snapshot(SessionsDoc, context);
     return opened.sessions;
   }
 
-  /**
-   * The conversation of a session the sessions record lists, a child session included: not one a task made that the
-   * runtime does not run as a session, nor one deleted.
-   */
   async #conversation(opened: Opened, sessionId: string): Promise<Conversation> {
     const sessions = await this.#readSessions(opened);
-    // SAFETY: the brand only marks pi-durable's ids; looking the id up checks that it names one.
     const conversation =
       SESSION_ID.test(sessionId) && sessions?.sessions[sessionId] !== undefined
-        ? await opened.harness.conversation(Number(sessionId) as ConversationId, context)
+        ? await opened.harness.conversation(idFromNumber<ConversationId>(Number(sessionId)), context)
         : undefined;
     if (!conversation) throw new SessionNotFoundError(sessionId);
     return conversation;
   }
 
-  /** Refuses what only a session of the app's may take: a child session is its delegate's call's to submit to. */
   #refuseOwned(opened: Opened, sessionId: string) {
     if (opened.sessions?.sessions[sessionId]?.parent !== undefined) throw new SessionOwnedError(sessionId);
   }
 
-  /**
-   * pi-durable's change of the agent's tools for the enabled `names` (`null`: all of them again): the agent's others
-   * removed, so the app's tools stay enabled.
-   */
   #toolsChange(opened: Opened, names: readonly string[] | null): Pick<AgentChange, "tools"> {
     if (names === null) return { tools: null };
     const enabled = new Set(names);
     return { tools: { remove: [...opened.tools.values()].filter((tool) => !enabled.has(tool.name)) } };
   }
 
-  /** `rule` as a session of the instance's agent stores it: tiers its app tools carry count, known once open. */
   #storedRule(opened: Opened, rule: ApprovalRule) {
     return storedRule(this.agent.kind, opened.app.current.catalog.tiers(this.agent.kind), rule);
   }
@@ -999,8 +986,6 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async (opened) => {
       const requiresApproval = options?.requiresApproval;
       const rule = requiresApproval === undefined ? undefined : this.#storedRule(opened, requiresApproval);
-      // One commit looks the request up and makes the session it does not find, so no retry, however it overlaps or
-      // whatever crash came before it, makes a second one.
       const session = await opened.harness.commit(async (tx): Promise<SessionInfo> => {
         const doc = await tx.doc(SessionsDoc);
         if (requestId !== undefined) {
@@ -1010,7 +995,7 @@ class Instance implements AgentInstance {
         }
         const createdAt = Date.now();
         const { id } = await tx.createConversation({ ownership: { kind: "ownerless" } });
-        // pi-durable refuses a `maxTurns` that is not an integer 1 or more with a `RangeError`, failing the commit.
+        // pi-durable refuses a `maxTurns` that is not an integer of 1 or more with a `RangeError` and fails the commit.
         await configure(tx, id, {
           model,
           ...(options?.thinkingLevel !== undefined && { thinkingLevel: options.thinkingLevel }),
@@ -1057,40 +1042,25 @@ class Instance implements AgentInstance {
     const { state } = this;
     if (state !== "open" && state !== "opening") return;
     await this.#lifecycle.run(async (opened) => {
-      // One at a time, in call order, so the extensions that stay are those the last call resolved.
       const refresh = opened.refreshing.then(() => this.#refreshExtensions(opened));
       opened.refreshing = refresh.catch(() => undefined);
       await refresh;
     });
   }
 
-  /** The app's extensions for this instance, as `extensionsFor` gives them now. */
   async #appExtensions(): Promise<AppExtensions> {
     return appExtensions(this.scope, this.#agents, (await this.#options.extensionsFor?.(this.scope)) ?? []);
   }
 
-  /**
-   * Installs the app's extensions as they are now in `opened`'s registry, and has everything read them, or changes
-   * nothing. Nothing is uninstalled: a session made earlier may still select an extension the app no longer lists, and
-   * a task it started still needs its definition.
-   */
   async #refreshExtensions(opened: Opened): Promise<void> {
     const app = await this.#appExtensions();
-    const { registry } = opened;
-    // pi-durable's own checks, such as a task name another installed extension has, refuse on a copy first.
-    const trial = createRegistry();
-    for (const extension of [...registry.snapshot().installed(), ...app.installed]) trial.install(extension);
-    // In one step: every change to the registry has pi-durable ask the calls waiting at the gate again, which reads
-    // the new catalog and selection.
-    opened.app.current = app;
-    for (const extension of app.installed) registry.install(extension);
+    assertInstallable(opened.registry, app);
+    makeCurrentThenInstall(opened, app);
   }
 
   async close(): Promise<void> {
     await this.#lifecycle.end("closed");
   }
-
-  // ─── Session operations ─────────────────────────────────────────────────────
 
   submit(sessionId: string, input: SubmitInput): Promise<SubmitResult> {
     const { replyTo } = input;
@@ -1101,7 +1071,6 @@ class Instance implements AgentInstance {
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
       return this.#withWatch(opened, conversation, async () => {
-        // The run this input starts uses the scope's models of now.
         await opened.models?.refresh();
         return this.#armedFor(harness, async () => {
           if (replyTo !== undefined) {
@@ -1112,7 +1081,7 @@ class Instance implements AgentInstance {
           }
           try {
             const entry = inputEntry(input.whenBusy === "steer", input.metadata);
-            // pi's `followUp`, its default, is what `queue` asks for; a steer to an idle session starts a run.
+            // pi's `followUp`, its default, is what `queue` asks for. A steer to an idle session starts a run.
             const submission = await conversation.submit(
               {
                 type: "input",
@@ -1139,7 +1108,6 @@ class Instance implements AgentInstance {
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
       return this.#withWatch(opened, conversation, async () => {
-        // The run this starts uses the scope's models of now.
         await opened.models?.refresh();
         return this.#armedFor(harness, async () => {
           try {
@@ -1148,7 +1116,6 @@ class Instance implements AgentInstance {
               // pi-durable throws `ReadAfterWrite` for a table read after the admission's writes.
               const known = await tx.submissionByRequest(conversation.id, requestId);
               const admitted = await conversation.submit(tx, { type: "continue", requestId });
-              // A run that takes inputs a failed run left waiting starts at the first of them, as any run does.
               const alone = (await tx.doc(LiveDoc, conversation.id)).run?.inputs.length === 1;
               if (known === undefined && alone) {
                 await tx.appendEntry(ContinueEntry, conversation.id, { data: { submissionId: admitted } });
@@ -1164,31 +1131,26 @@ class Instance implements AgentInstance {
     });
   }
 
-  /** Why `submit` refuses an ask, if it does. */
   #refusedAsk(input: SubmitInput): string | undefined {
     if (this.#options.deliverReply === undefined)
       return "This runtime cannot reply to an ask: it has no `deliverReply`";
     if (input.whenBusy === "reject") return 'An ask always queues: `replyTo` takes no `whenBusy: "reject"`';
-    // Its answer is the answer of a run of its own, which a steer, joining another's, never has.
     if (input.whenBusy === "steer") return 'An ask always queues: `replyTo` takes no `whenBusy: "steer"`';
     if (!replyAddressSchema.safeParse(input.replyTo).success) return "`replyTo` is not a reply address";
     return undefined;
   }
 
-  /** A reader keeps the instance open from its first step until it ends. */
   events(sessionId: string, options: EventsOptions | undefined): AsyncGenerator<StreamItem, void, undefined> {
     return this.#lifecycle.read((opened) => this.#stream(opened, sessionId, options));
   }
 
   async *#stream(opened: Opened, sessionId: string, options: EventsOptions | undefined) {
     const conversation = await this.#conversation(opened, sessionId);
-    // `read` holds the watch from its first step, which runs before anything here can await.
     yield* this.#watchOf(opened, conversation).read(options?.from, options?.signal);
   }
 
   approve(sessionId: string, decisions: readonly ApprovalDecision[]): Promise<ApprovalOutcome[]> {
     return this.#lifecycle.run(async (opened) => {
-      // A closed instance reopens here: the parked call is committed state, so the decision finds it.
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       return this.#withWatch(opened, conversation, async () => {
@@ -1203,8 +1165,6 @@ class Instance implements AgentInstance {
 
   reply(sessionId: string, input: ReplyInput): Promise<ReplyResult> {
     return this.#lifecycle.run(async (opened) => {
-      // A closed instance reopens here: the parked call is committed state, so the reply finds it. A child session's
-      // calls take replies too, since a sub-agent may make a deferred call.
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       return this.#withWatch(opened, conversation, () =>
@@ -1225,10 +1185,8 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async (opened) => {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
-      // A child's context is its delegate's call's work: the app compacts the sessions it made.
       this.#refuseOwned(opened, sessionId);
       await this.#withWatch(opened, conversation, async () => {
-        // The summary is a model request, made on the scope's models of now.
         await opened.models?.refresh();
         await this.#armedFor(harness, () => conversation.compact(options?.instructions, context));
       });
@@ -1240,8 +1198,7 @@ class Instance implements AgentInstance {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
-      // SAFETY: the brand only marks pi-durable's ids; reading the record checks that it names one of this session's.
-      const id = SUBMISSION_ID.test(submissionId) ? (Number(submissionId) as SubmissionId) : undefined;
+      const id = SUBMISSION_ID.test(submissionId) ? idFromNumber<SubmissionId>(Number(submissionId)) : undefined;
       const record = id === undefined ? undefined : await (await harness.submission(id, context))?.status(context);
       if (id === undefined || record?.type !== "input" || record.conversationId !== conversation.id) {
         throw new InvalidRequestError(`Session ${sessionId} has no input ${submissionId}`);
@@ -1249,7 +1206,6 @@ class Instance implements AgentInstance {
       if (record.notify !== undefined) {
         throw new InvalidRequestError(`Input ${submissionId} is an ask: its asker waits for its answer`);
       }
-      // Taking an input back starts no work, so nothing needs a wake-up; the stream shows it leave the queue.
       const outcome = await this.#withWatch(opened, conversation, () =>
         harness.abortSubmission(id, context, conversation.id),
       );
@@ -1268,7 +1224,6 @@ class Instance implements AgentInstance {
     let model: ModelRef | undefined;
     let tools: string[] | null | undefined;
     try {
-      // pi-durable's unset model would leave the session with none, so `null` puts back the one a new session gets.
       if (change.model !== undefined) model = this.#modelOf(change.model ?? undefined);
       if (change.tools !== undefined) tools = change.tools === null ? null : selectedTools(this.agent, change.tools);
     } catch (error) {
@@ -1291,7 +1246,7 @@ class Instance implements AgentInstance {
       };
       const agentChanges = Object.keys(agentChange).length > 0;
       if (!agentChanges && rule === undefined) return;
-      // One commit: pi-durable's `RangeError` for a bad `maxTurns` discards the whole change.
+      // One commit, so pi-durable's `RangeError` for a bad `maxTurns` discards the whole change.
       await harness.commit(async (tx) => {
         if (agentChanges) await configure(tx, conversation.id, agentChange);
         if (rule === undefined) return;
@@ -1308,7 +1263,6 @@ class Instance implements AgentInstance {
     return this.#lifecycle.run(async (opened) => {
       const conversation = await this.#conversation(opened, sessionId);
       const agent = await conversation.agent(context);
-      // Every session gets a model when it is made, and `configure` never takes it away.
       if (agent.model === undefined) throw new Error(`Session ${sessionId} has no model`);
       const offered = new Set(agent.tools.map((tool) => tool.name));
       const rule = ruleOf(opened.sessions, conversation.id);
@@ -1329,10 +1283,7 @@ class Instance implements AgentInstance {
       const { harness } = opened;
       const conversation = await this.#conversation(opened, sessionId);
       this.#refuseOwned(opened, sessionId);
-      // Stopping the run can run its abort handlers: work an alarm host must be woken for. It stops the session's
-      // delegate calls, and with them their child sessions' runs.
       await this.#armedFor(harness, () => conversation.abort(context, { background: true }));
-      // Its child sessions go with it, in the same commit.
       const deleted = await harness.commit(async (tx) => {
         const doc = await tx.doc(SessionsDoc);
         const ids = withChildren(doc.sessions, sessionId).map(Number);
@@ -1344,9 +1295,7 @@ class Instance implements AgentInstance {
         return ids;
       }, context);
       await this.#readSessions(opened);
-      // Their readers end; a reader that comes back finds no session.
-      // SAFETY: the record holds ids of conversations the runtime created.
-      for (const id of deleted) this.#watches.get(id as ConversationId)?.close();
+      for (const id of deleted) this.#watches.get(idFromNumber<ConversationId>(id))?.close();
     });
   }
 }
@@ -1407,15 +1356,17 @@ class Session implements AgentSession {
 
 const HOUR = 60 * 60 * 1000;
 
-/** How long a nested call waits at the gate for a decision under `options`. */
 const nestedApprovalTimeoutOf = (options: AgentRuntimeOptions<unknown>) => options.nestedApprovalTimeoutMs ?? HOUR;
 
+function assertOneDefinitionPerKind(roots: readonly AgentDefinition[]): void {
+  agentsOf(roots);
+}
+
 /**
- * The runtime: agent definitions bound to a host, model access and the app's ports. Each named
- * instance of an agent is one pi-durable Harness over the storage the host opens for its scope,
- * opened at first use and held under the host's single-writer lease until it closes: by `close()`,
- * a lost lease, a failed storage, or, with `closeIdleAfterMs`, once idle, after which its next call
- * opens it again.
+ * The runtime, which binds agent definitions to a host, model access and the app's ports. Each named instance of an
+ * agent is one pi-durable Harness over the storage the host opens for its scope. The instance opens at first use and
+ * is held under the host's single-writer lease until it closes. It closes on `close()`, a lost lease, a failed
+ * storage, or once idle with `closeIdleAfterMs`, and its next call opens it again.
  */
 export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): AgentRuntime {
   const agents = new Map<string, AgentDefinition>();
@@ -1423,8 +1374,7 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
     if (agents.has(agent.kind)) throw new TypeError(`Two agents of kind \`${agent.kind}\``);
     agents.set(agent.kind, agent);
   }
-  // One definition per kind across every agent and the sub-agents their delegates reach.
-  agentsOf(options.agents);
+  assertOneDefinitionPerKind(options.agents);
   if ((options.models === undefined) === (options.modelsFor === undefined)) {
     throw new TypeError("Pass exactly one of `models` and `modelsFor`");
   }
@@ -1440,8 +1390,6 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
     throw new TypeError("`nestedApprovalTimeoutMs` must be a positive number of milliseconds");
   }
   let closed = false;
-  // A handle the app holds stays the instance of its scope, also once closed for idleness; one
-  // nobody holds any more is collected. The runtime holds only those that hold something.
   const instances = new Map<string, WeakRef<Instance>>();
   const collected = new FinalizationRegistry<string>((key) => {
     if (instances.get(key)?.deref() === undefined) instances.delete(key);
@@ -1481,8 +1429,7 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
       }
       const result = { opened: [] as StorageScope[], held: [] as StorageScope[], unknown: [] as StorageScope[] };
       const failed: { scope: StorageScope; error: unknown }[] = [];
-      // Workers share one iterator: an async generator queues their calls of `next()`.
-      const scopes = host.unfinished()[Symbol.asyncIterator]();
+      const scopes = serialPulls(host.unfinished()[Symbol.asyncIterator]());
       const work = async () => {
         for (;;) {
           const next = await scopes.next();
@@ -1493,7 +1440,6 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
             continue;
           }
           try {
-            // Opening carries on what the scope left; an instance already open here has nothing to recover.
             await runtime.get(scope.kind, scope.name).open();
             result.opened.push(scope);
           } catch (error) {
@@ -1528,14 +1474,12 @@ export function createAgentRuntime<Ports>(options: AgentRuntimeOptions<Ports>): 
 
 const cores = new WeakMap<AgentRuntime, RuntimeCore>();
 
-/** Shortens how a runtime's ask couriers try again, so a test does not wait them out. Internal: not exported. */
 export function setCourierTimingForTests(runtime: AgentRuntime, timing: Partial<CourierTiming>): void {
   const core = cores.get(runtime);
   if (core === undefined) throw new TypeError("Not a runtime made by createAgentRuntime");
   core.courier = { ...core.courier, ...timing };
 }
 
-/** What an instance holds for its sessions' streams. Internal, not exported by the package: for tests. */
 export function heldStreams(instance: AgentInstance): ReturnType<Instance["heldStreams"]> {
   if (!(instance instanceof Instance)) throw new TypeError("Not an instance made by createAgentRuntime");
   return instance.heldStreams();

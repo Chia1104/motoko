@@ -1,4 +1,3 @@
-/** Waits until `condition` holds, checking every few milliseconds; fails after `timeoutMs`. */
 export async function eventually(condition: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
@@ -9,16 +8,13 @@ export async function eventually(condition: () => Promise<boolean>, timeoutMs = 
 
 export const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Runs `work` and returns every rejection no handler took meanwhile in this isolate, where the tests and the objects
- * they call both run. workerd reports one after the turn it happened in, so the watch lasts a moment past `work`.
- */
 export async function unhandledRejections(work: () => Promise<void>): Promise<unknown[]> {
   const unhandled: unknown[] = [];
   const listener = (event: PromiseRejectionEvent) => void unhandled.push(event.reason);
   addEventListener("unhandledrejection", listener);
   try {
     await work();
+    // workerd reports an unhandled rejection after the turn it happened in.
     await pause(100);
   } finally {
     removeEventListener("unhandledrejection", listener);

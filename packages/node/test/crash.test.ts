@@ -15,16 +15,12 @@ import type { AgentWireEvent, StreamItem } from "@chia1104/motoko-wire";
 
 import { nodeHost, sqliteStorage } from "../src/index.ts";
 
-import { crashAgent, crashState } from "./fixtures/crash-agent.ts";
+import { crashAgent, indexEnd, indexStarted } from "./fixtures/crash-agent.ts";
 import type { CrashPorts } from "./fixtures/crash-agent.ts";
 import { eventually, fold, follow, has, runEnds, settle } from "./helpers.ts";
 
 const CHILD = fileURLToPath(new URL("./fixtures/crash-child.ts", import.meta.url));
 
-/**
- * Runs the child until it reports READY, then kills it with SIGKILL: no close, no cleanup. Returns
- * the session and what the child's client had read, the last item's cursor being where it was cut.
- */
 async function crashAfterReady(
   directory: string,
   scenario: "tool" | "approval",
@@ -67,9 +63,9 @@ models.setProvider(faux.provider);
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "agent-runtime-crash-"));
   ports.log.length = 0;
-  crashState.finish = false;
-  delete crashState.release;
-  crashState.started = () => undefined;
+  indexEnd.finish = false;
+  delete indexEnd.release;
+  indexStarted.notify = () => undefined;
 });
 afterEach(async () => {
   await runtime?.close();
@@ -113,7 +109,7 @@ async function readFrom(
 describe("recovery after the process is killed", () => {
   it("reruns a replay-safe call the killed process was running, and completes the run", async () => {
     const { sessionId } = await crashAfterReady(directory, "tool");
-    crashState.finish = true;
+    indexEnd.finish = true;
     let sawResult: unknown;
     faux.setResponses([
       (request) => {
@@ -151,17 +147,14 @@ describe("recovery after the process is killed", () => {
 });
 
 describe("a cursor from the killed process", () => {
-  // The killed process's client was cut at its last item; it reconnects to a fresh runtime on the same
-  // SQLite file. A client connected to the fresh runtime from its start is the reference.
-
   it("resumes while the rerun call is running, without a full replay, into the same view", async () => {
     const { sessionId, items: before } = await crashAfterReady(directory, "tool");
     let release: () => void = () => undefined;
-    crashState.release = new Promise<void>((resolve) => {
+    indexEnd.release = new Promise<void>((resolve) => {
       release = resolve;
     });
     const started = new Promise<void>((resolve) => {
-      crashState.started = resolve;
+      indexStarted.notify = resolve;
     });
     faux.setResponses([fauxAssistantMessage("Indexed.")]);
     const session = reopen().session(sessionId);

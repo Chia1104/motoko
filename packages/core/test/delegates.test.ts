@@ -1,7 +1,4 @@
-// Delegation driven through the runtime, on the faux provider: a parent session's delegate call runs a sub-agent in
-// a child session and returns its answer. Each test expects what the README's "Delegates" says: the child
-// is followed, decided in and aborted like any session, only its delegate submits to it, it is not listed, it goes
-// with its parent, and a crash or a close at any point makes neither a second child nor a second submission.
+// Each test expects what the README's "Delegates" says.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, SystemMessage } from "@earendil-works/pi-ai";
@@ -111,7 +108,6 @@ afterEach(async () => {
   runtime = undefined;
 });
 
-/** The system messages of a request, replayed: its prompt and the names of the tools it offers. */
 function offered(messages: readonly Message[]) {
   const system = messages.filter((message): message is SystemMessage => message.role === "system");
   const tools = new Set<string>();
@@ -124,10 +120,6 @@ function offered(messages: readonly Message[]) {
 
 type Role = "parent" | "child";
 
-/**
- * The model, as the parent and the sub-agent see it: each request goes to its agent's script, told apart by the
- * instructions it carries. `requests` keeps every request each one made.
- */
 function script(faux: ReturnType<typeof fauxModels>["faux"], steps: Record<Role, FauxResponseStep[]>) {
   const requests: Record<Role, Message[][]> = { parent: [], child: [] };
   const respond: FauxResponseFactory = async (request, options, state, model) => {
@@ -141,7 +133,6 @@ function script(faux: ReturnType<typeof fauxModels>["faux"], steps: Record<Role,
   return requests;
 }
 
-/** What a session runs with when nothing chose otherwise: the runtime's default model, pi's thinking level. */
 const runsWith = { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" };
 
 const delegateCall = (task: string, id = "d-1") =>
@@ -150,7 +141,6 @@ const delegateCall = (task: string, id = "d-1") =>
 const toolCall = (name: string, id: string) =>
   fauxAssistantMessage(fauxToolCall(name, { key: "a" }, { id }), { stopReason: "toolUse" });
 
-/** A reply that waits until `release()`, or until its request is aborted; `started` resolves once it is asked. */
 function held(text: string) {
   let release!: () => void;
   let start!: () => void;
@@ -167,7 +157,6 @@ function held(text: string) {
   return { step, started, release };
 }
 
-/** The last message a request ends with: for the parent's second request, the delegate's result. */
 const lastOf = (requests: Message[][], index: number) => requests[index]?.at(-1);
 
 const fold = (items: readonly StreamItem[]): AgentSessionView => foldEvents(items.map((item) => item.event));
@@ -175,7 +164,6 @@ const fold = (items: readonly StreamItem[]): AgentSessionView => foldEvents(item
 const toolItem = (view: AgentSessionView, toolCallId: string) =>
   view.items.find((item): item is ToolItem => item.kind === "tool" && item.toolCallId === toolCallId);
 
-/** The parent's stream read until its delegate call `toolCallId` shows its child session, folded. */
 async function withChild(parent: AgentSession, toolCallId = "d-1"): Promise<AgentSessionView> {
   return fold(
     await readUntil(parent, (_event, read) => {
@@ -185,13 +173,11 @@ async function withChild(parent: AgentSession, toolCallId = "d-1"): Promise<Agen
   );
 }
 
-/** The child session of the parent's delegate call `toolCallId`. */
 const childOf = async (parent: AgentSession, toolCallId = "d-1") =>
   delegateOf(toolItem(await withChild(parent, toolCallId), toolCallId)!)!.sessionId;
 
 type Models = ReturnType<typeof fauxModels>;
 
-/** A runtime of the notes agent on `host`, its model the faux provider of `models`. */
 function start(host: AgentHost, models: Models, settings?: AgentRuntimeOptions<Ports>["settings"]) {
   const ports: Ports = { deleted: [] };
   runtime = createAgentRuntime({
@@ -232,13 +218,11 @@ describe("a delegate", () => {
     const delegate = delegateOf(call);
     expect(delegate).toEqual({ sessionId: expect.any(String), agent: "researcher" });
 
-    // The child is a session of its own: its stream holds the task and the sub-agent's answer.
     const child = instance.session(delegate!.sessionId);
     expect(fold(await readUntil(child, isRunEnd)).items).toMatchObject([
       { kind: "user", text: "Find a" },
       { kind: "assistant", text: "a is apples" },
     ]);
-    // It is not listed: the app's sessions are the ones it made.
     expect(await instance.listSessions()).toEqual([{ id: parent.id, createdAt: expect.any(Number) }]);
   });
 
@@ -252,7 +236,6 @@ describe("a delegate", () => {
       ...runsWith,
       tools: ["note", "research"],
     });
-    // A child does not take its parent's choice of tools: they are another agent's.
     const parent = instance.session((await instance.createSession({ tools: ["research"] })).id);
     expect(await parent.settings()).toEqual({ ...runsWith, tools: ["research"] });
     await parent.submit({ text: "What is a?", requestId: "1" });
@@ -316,7 +299,6 @@ describe("a delegate", () => {
     await parent.submit({ text: "What is a?", requestId: "1" });
     await answer.started;
 
-    // A reader that starts now catches up from committed state, the call parked on its child.
     const view = await withChild(parent);
     expect(view).toMatchObject({ status: "running", pendingApprovals: [] });
     const call = toolItem(view, "d-1")!;
@@ -368,7 +350,6 @@ describe("a delegate", () => {
     await readUntil(child, (event) => event.type === "approval:request");
     expect(ports.deleted).toEqual([]);
 
-    // The parent waits on its child, not for a decision: neither its call nor the child's is decided there.
     expect(await withChild(parent)).toMatchObject({ status: "running", pendingApprovals: [] });
     await expect(parent.approve([{ toolCallId: "d-1", approved: true }])).rejects.toBeInstanceOf(
       ApprovalNotPendingError,
@@ -406,7 +387,6 @@ describe("a delegate", () => {
     await readUntil(first.session(childId), (event) => event.type === "approval:request");
     await first.close();
 
-    // Both sessions are parked: the reopen runs nothing until the decision arrives.
     const again = runtime.get(notes, "alice");
     expect(fold(await readUntil(again.session(childId), (event) => event.type === "approval:request"))).toMatchObject({
       status: "awaiting_approval",
@@ -451,7 +431,6 @@ describe("a delegate", () => {
       parent: [
         delegateCall("Find a"),
         fauxAssistantMessage("a is apples."),
-        // Some providers number their calls per reply, so a later call of the session may carry the same id.
         fauxAssistantMessage(fauxToolCall("note", { text: "a" }, { id: "d-1" }), { stopReason: "toolUse" }),
         fauxAssistantMessage("Noted."),
       ],
@@ -530,7 +509,6 @@ describe("a delegate", () => {
     await following.until((items) => items.some((item) => item.event.type === "user"));
 
     await parent.delete();
-    // The child's reader ended by itself.
     await Promise.race([
       following.stop(),
       new Promise((_resolve, reject) => setTimeout(() => reject(new Error("still open")), 2_000)),
@@ -596,13 +574,11 @@ describe("an instance's agents", () => {
       new TypeError("Two agent definitions of kind `researcher`"),
     );
     expect(() => createAgentRuntime({ ...options, agents: [notes, impostor] })).toThrow(/`researcher`/);
-    // The same definition, reached twice, is one agent.
     const twice = defineAgent<Ports>({ kind: "twice", instructions: "", tools: [research] });
     expect(() => createAgentRuntime({ ...options, agents: [notes, twice, researcher] })).not.toThrow();
   });
 });
 
-/** A host on `place` whose `erase` records what it is asked to erase. */
 function erasingHost(place = memoryPlace()) {
   const asked: ConversationId[][] = [];
   const host: AgentHost = {
@@ -614,7 +590,6 @@ function erasingHost(place = memoryPlace()) {
   return { host, asked };
 }
 
-/** How many child conversations the scope stores, and how many submissions they hold: one each, exactly once. */
 async function stored(place: MemoryPlace, agent: { kind: string }, name: string) {
   const storage = place.storages.get(scopeKey({ kind: agent.kind, name }))!;
   const conversations = (await storage.scanConversations({}, 100, undefined, context)).items;
@@ -626,10 +601,6 @@ async function stored(place: MemoryPlace, agent: { kind: string }, name: string)
   return { children: children.length, submissions };
 }
 
-/**
- * A host on `place` that crashes once: its storage fails the first commit `crashes` picks, so the instance's Harness
- * fails there as a process that died would leave it, with what it committed before kept.
- */
 function crashingHost(place: MemoryPlace, crashes: (writes: readonly StorageWrite[]) => boolean): AgentHost {
   const base = durableMemoryHost(place);
   let crashed = false;
@@ -660,7 +631,6 @@ const makesChild = (writes: readonly StorageWrite[]) =>
   writes.some((write) => write.type === "conversation" && write.value.owner !== undefined);
 const submitsTask = (writes: readonly StorageWrite[]) =>
   writes.some((write) => write.type === "submission" && write.value.requestId?.startsWith("delegate:") === true);
-/** The first commit after the one `first` picks. */
 const after = (first: (writes: readonly StorageWrite[]) => boolean) => {
   let seen = false;
   return (writes: readonly StorageWrite[]) => {
@@ -692,7 +662,6 @@ describe("a delegate's call cut off by a crash", () => {
     await eventually(() => first.state === "failed");
     await runtime!.close();
 
-    // Another process takes the scope over and carries on what the dead one left.
     const again = start(durableMemoryHost(place), models, settings).instance;
     const view = fold(await readUntil(again.session(parentId), isRunEnd));
     expect(toolItem(view, "d-1")).toMatchObject({ status: "ok" });

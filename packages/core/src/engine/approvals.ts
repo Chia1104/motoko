@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
+import type { JsonValue as ModelJsonValue } from "@earendil-works/pi-ai";
 import { defineDoc, defineSignal, hook, LiveDoc, ToolTask } from "@earendil-works/pi-durable";
 import type { ConversationId, Harness, HookRegistration, JsonObject, TaskId } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
@@ -8,25 +9,18 @@ import type { AgentDefinition } from "../agent.ts";
 import { ApprovalNotPendingError } from "../errors.ts";
 
 import { callsOf, startedCall } from "./calls.ts";
+import type { EpochMs } from "./calls.ts";
 import { MODEL_ARGS } from "./extensions.ts";
 import type { GatedTool } from "./extensions.ts";
 import { SessionsDoc } from "./sessions.ts";
 import type { ApprovalRule } from "./sessions.ts";
-
-/**
- * The approval gate: a call of a tool whose tier the agent's policy gates waits for an operator's
- * decision before it runs. The signal decides the call; `ApprovalsDoc` records the decision, which is
- * what a transcript replays, since a signal is readable only while its task lives. `decide` commits
- * both in one transaction, so a decision is never delivered without its record, nor recorded without
- * being delivered. A session may carry its own rule (`SessionsDoc`); the gate reads it at each pass.
- */
 
 const context = BACKGROUND_CONTEXT;
 
 export interface ApprovalDecision {
   readonly toolCallId: string;
   readonly approved: boolean;
-  /** Returned to the model as the call's result when the call is declined. */
+  /** When the operator declines the call, the model reads this as the call's result. */
   readonly comment?: string;
 }
 
@@ -35,35 +29,24 @@ export interface ApprovalOutcome {
   readonly outcome: "applied" | "already_decided";
 }
 
-/**
- * The operator's decision on a gated call, delivered to the call's tool task under the call's id. It
- * is kept in the task record, so a decision survives a restart and a gate that reruns reads the same one.
- */
 const ApprovalSignal = defineSignal({
   name: "runtime.approval",
   version: 1,
   schema: obj({ approved: bool(), comment: opt(str()) }),
 });
 
-// A type alias, not an interface: the decisions document must be a pi `JsonObject`, and only an alias has the
-// implicit index signature that takes.
+// This is a type alias, not an interface, because the decisions document must be a pi `JsonObject`, and only an alias
+// has the implicit index signature that `JsonObject` takes.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type StoredDecision = {
   approved: boolean;
   comment?: string;
-  /**
-   * The arguments the gate saw when the call parked, which the call runs with: what the operator was asked about.
-   * Absent for a call decided before it parked, and in a decision an earlier Motoko recorded.
-   */
   args?: JsonObject;
-  /** Epoch ms the decision was committed. */
-  at: number;
+  at: EpochMs;
 };
 
-/** The decisions made in a conversation, by tool call id. */
 export type Decisions = Readonly<Record<string, StoredDecision>>;
 
-/** The record of a conversation's decisions. Internal: exported for the tests that commit one as `decide` does. */
 export const ApprovalsDoc = defineDoc<{ decisions: Record<string, StoredDecision> }>({
   kind: "runtime.approvals",
   version: 1,
@@ -74,10 +57,6 @@ export const ApprovalsDoc = defineDoc<{ decisions: Record<string, StoredDecision
   checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 64,
 });
 
-/**
- * Whether a call of `tool` in a session of `agent` needs approval: under the session's `rule` when it has one, else
- * under the agent's policy. A tool of unknown tier always does, whatever either says.
- */
 export function isGated(agent: AgentDefinition, tool: GatedTool, rule?: ApprovalRule): boolean {
   const { tier, name } = tool;
   if (tier === undefined) return true;
@@ -88,7 +67,6 @@ export function isGated(agent: AgentDefinition, tool: GatedTool, rule?: Approval
   return add?.includes(tier) === true || agent.policy.requiresApproval(tier, name);
 }
 
-/** The approval rule of session `conversationId`, if it has its own, from what `snapshot` reads of the sessions record. */
 export function ruleOf(
   sessions: Readonly<{ sessions: Readonly<Record<string, { readonly requiresApproval?: ApprovalRule }>> }> | undefined,
   conversationId: ConversationId,
@@ -97,37 +75,33 @@ export function ruleOf(
 }
 
 /**
- * The gate's memo of the arguments it saw when a call first parked. The gate runs last in the chain, after every app
- * hook, so these are the arguments the call runs with. A memo lives on the call's tool task while the task can run.
+ * pi-durable runs the whole `call` phase again at every wake, registry change and decision, and an app hook may rewrite
+ * the call anew on each pass.
  */
 const GATE_ARGS = "motoko.gate.args";
 
-/**
- * The gate's memo of a nested call's deadline, epoch ms, from when it first parked: it waits for a decision until then.
- * A nested call's wait holds the invocation of the call that made it, which awaits it, so it may not wait for ever.
- */
 const GATE_UNTIL = "motoko.gate.until";
 
-/** Why a nested call failed that no decision reached by its deadline: its caller reads it, and its question ends so. */
 export const NO_DECISION_IN_TIME = "No decision arrived in time.";
 
-const isObject = (value: JsonValue | undefined): value is JsonObject =>
+export const isObject = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Whether two JSON values are equal, whatever the order of their objects' keys (a JSON column may reorder them). */
-function sameJson(a: unknown, b: unknown): boolean {
+const isList = (value: ModelJsonValue): value is readonly ModelJsonValue[] => Array.isArray(value);
+
+/** Whether two JSON values are equal whatever the order of their objects' keys. A JSON column may reorder the keys. */
+function sameJson(a: ModelJsonValue | undefined, b: ModelJsonValue | undefined): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  // SAFETY: both are JSON objects or arrays, whose members `Object.keys` lists.
-  const [x, y] = [a as Record<string, unknown>, b as Record<string, unknown>];
-  const keys = Object.keys(x);
+  if (isList(a) || isList(b)) {
+    return isList(a) && isList(b) && a.length === b.length && a.every((item, index) => sameJson(item, b[index]));
+  }
+  const keys = Object.keys(a);
   return (
-    keys.length === Object.keys(y).length && keys.every((key) => Object.hasOwn(y, key) && sameJson(x[key], y[key]))
+    keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameJson(a[key], b[key]))
   );
 }
 
-/** The arguments the gate saw when call task `taskId` parked at it; undefined if it never parked, or once it ended. */
 export async function gateArgsOf(harness: Harness, taskId: TaskId): Promise<JsonObject | undefined> {
   const args = (await harness.getTask(taskId, context))?.memos?.[GATE_ARGS];
   return isObject(args) ? args : undefined;
@@ -139,27 +113,6 @@ function declineText(comment: string | undefined): string {
     : `The operator declined this call: ${comment}`;
 }
 
-/**
- * The gate, as the agent's extension installs it: a `beforeTool` hook that parks a gated call on
- * `ApprovalSignal` under the call's id. The park is the call's task state, so nothing waits in memory:
- * a restart, a registry change or the decision's arrival runs the gate again from the top, and it
- * passes, blocks, or parks again. A decision, once delivered, decides the call whatever the session's
- * rule says by then, so a rule changed while the call waited neither runs a declined call nor drops its
- * question. A declined call is blocked, and `afterTool` hands the model the operator's comment as the
- * call's result, or, for a nested call, the tool that made it, as the result's error. It judges every call of a session
- * of `agent`, the app's tools' too, and the calls they make, as `toolOf` knows them.
- *
- * A nested call waits `nestedTimeoutMs` at most, from when it first parked (`GATE_UNTIL`): the tool that made it awaits
- * it, and holds a process meanwhile. Its park's key expires then, so no decision reaches it any more; it is blocked,
- * and its caller reads `NO_DECISION_IN_TIME` as its error. A call of the model's waits until it is decided.
- *
- * When a call first parks, the gate memoizes the arguments it sees (`GATE_ARGS`): those the operator is asked about.
- * pi-durable runs the whole chain again at every wake, registry change and decision, and an app hook may rewrite the
- * call anew each time (with the time, say), or not at all; an approved call runs with the memo, whatever the hooks
- * before the gate give on that pass. A call that never parks has no memo, and runs with what the chain gives it. A
- * call decided before it parked has no memo either: the operator was asked about the model's arguments, so it is
- * blocked if an app hook rewrote them (`MODEL_ARGS`).
- */
 export function approvalGate(
   agent: AgentDefinition,
   toolOf: (name: string) => GatedTool,
@@ -195,7 +148,6 @@ export function approvalGate(
       if (state === undefined || "expired" in state) {
         const until = call.parent === undefined ? undefined : await api.memo<number>(GATE_UNTIL, context);
         if (until === undefined || api.now() < until) return undefined;
-        // As a declined nested call's: its caller reads the words alone, as its error.
         return {
           output: [{ type: "text", text: NO_DECISION_IN_TIME }],
           isError: true,
@@ -205,7 +157,7 @@ export function approvalGate(
       if (state.value.approved) return undefined;
       const text = declineText(state.value.comment);
       // The model reads the operator's words, not the harness's report of a blocked call. The tool that made a nested
-      // call reads no output of an error, only its error diagnostics, so there the words are one.
+      // call reads no output of an error, only its error diagnostics, so for a nested call the words are a diagnostic.
       return {
         output: [{ type: "text", text }],
         isError: true,
@@ -215,7 +167,6 @@ export function approvalGate(
   });
 }
 
-/** A decision `decide` refuses inside its transaction, which undoes the transaction's other decisions. */
 class Refused extends Error {
   readonly toolCallId: string;
   constructor(toolCallId: string) {
@@ -224,14 +175,6 @@ class Refused extends Error {
   }
 }
 
-/**
- * Decides calls of conversation `conversationId`, all in one transaction: every decision is delivered and recorded,
- * each with the arguments the gate saw when the call parked, or none is. A call a decision reached first is
- * `already_decided`. Rejects with `ApprovalNotPendingError`, committing nothing, if any call is not waiting at the gate:
- * neither parked there nor about to reach it, as `gated` judges a tool by name under the session's rule. A call that
- * sleeps after it started, such as a delegate's waiting for its child, is parked on its own work. A nested call, one a
- * tool made through `executeTool()`, is decided as a call of the model's is. A call named twice is a `TypeError`.
- */
 export async function decide(
   harness: Harness,
   conversationId: ConversationId,
@@ -262,8 +205,7 @@ export async function decide(
     return await harness.commit(async (tx) => {
       const outcomes: ApprovalOutcome[] = [];
       const doc = await tx.doc(ApprovalsDoc, conversationId);
-      // The memos go with their tasks, so the records keep what the operator was asked about. Read before any write:
-      // a transaction reads no table after its first write.
+      // Read before any write, because a transaction reads no table after its first write.
       const asked = await Promise.all(tasks.map(async (task) => (await tx.task(task))?.memos?.[GATE_ARGS]));
       for (const [index, decision] of decisions.entries()) {
         const comment = decision.comment;
@@ -289,13 +231,11 @@ export async function decide(
       return outcomes;
     }, context);
   } catch (error) {
-    // A callback that throws discards its transaction: none of the batch was delivered.
     if (error instanceof Refused) throw new ApprovalNotPendingError(error.toolCallId);
     throw error;
   }
 }
 
-/** The decisions recorded in conversation `conversationId`, by call id. */
 export async function decisionsOf(harness: Harness, conversationId: ConversationId): Promise<Decisions> {
   return (await harness.snapshot(ApprovalsDoc, conversationId, context))?.decisions ?? {};
 }

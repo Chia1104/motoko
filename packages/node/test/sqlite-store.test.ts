@@ -1,12 +1,10 @@
-// What `sqliteStore` adds to `sqliteStorage` on SQLite files: the scopes `runtime.recover()` opens, and
-// the deleted sessions it erases from their files.
-
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import * as z from "zod";
@@ -18,7 +16,6 @@ import { eraseSqliteConversations, nodeHost, scopeFile, sqliteScopes, sqliteStor
 
 import { eventually } from "./helpers.ts";
 
-/** While `blocking`, runs until its call is stopped: a long call a closing process cuts off. */
 let blocking = true;
 const wait = defineTool({
   name: "wait",
@@ -28,7 +25,6 @@ const wait = defineTool({
   parameters: z.object({}),
   async execute(_args, { signal }) {
     if (!blocking) return { text: "done" };
-    // A call that starts while its instance closes finds its signal aborted already.
     if (!signal.aborted) {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     }
@@ -77,7 +73,6 @@ describe("sqliteScopes", () => {
     const { runtime } = runtimeOn();
     for (const name of ["alice", "Bob/2", long]) await runtime.get(agent, name).open();
     await runtime.close();
-    // Not this layout's: another program's file, a file at the top, SQLite's own side files.
     await writeFile(join(directory, "chat", "notes.txt"), "");
     await writeFile(join(directory, "stray.sqlite"), "");
     await mkdir(join(directory, "chat", "nested.sqlite"));
@@ -139,7 +134,6 @@ describe("deleting a session on sqliteStore", () => {
     const bytes = await readFile(file);
     expect(bytes.includes("Secret question 7f3a")).toBe(false);
     expect(bytes.includes("Kept question")).toBe(true);
-    // Nor in SQLite's write-ahead log, which held the pages as they were.
     const log = await readFile(`${file}-wal`).catch(() => Buffer.alloc(0));
     expect(log.includes("Secret question 7f3a")).toBe(false);
     const database = await openNodeSqliteDatabase(file);
@@ -159,7 +153,8 @@ describe("deleting a session on sqliteStore", () => {
 
   it("erases nothing from a file that does not exist", async () => {
     await expect(eraseSqliteConversations(join(directory, "none.sqlite"), [])).resolves.toBeUndefined();
-    // SAFETY: the brand only marks pi-durable's ids.
-    await expect(eraseSqliteConversations(join(directory, "none.sqlite"), [2 as never])).resolves.toBeUndefined();
+    await expect(
+      eraseSqliteConversations(join(directory, "none.sqlite"), [2 as ConversationId]),
+    ).resolves.toBeUndefined();
   });
 });

@@ -10,25 +10,17 @@ import type { Pool, PoolConnection } from "mysql2/promise";
 import { createMysqlStore, migrate } from "../src/index.ts";
 import type { MysqlStore, MysqlStoreOptions } from "../src/index.ts";
 
-/** A MySQL server the tests may create databases on, such as `mysql://root:pw@127.0.0.1:53306`. */
 export const MYSQL_URL = process.env.TEST_MYSQL_URL;
 
 export const uniqueName = (prefix: string): string => `${prefix}_${randomBytes(6).toString("hex")}`;
 
-/** The text of a statement as mysql2's `query()` receives it: a string, or `{ sql }`. */
 const textOf = (first: unknown): string =>
   typeof first === "string" ? first : String((first as { sql?: unknown }).sql);
 
-/**
- * A view of a mysql2 pool that records the text of every statement sent through it, and through the connections a
- * transaction takes from it, and can fail one on demand. Drizzle sends each statement as one `query()` call: one round
- * trip.
- */
+/** Drizzle sends each statement as one `query()` call. */
 export class Recording {
   readonly statements: string[] = [];
-  /** Called before a statement runs; throw to fail it unsent. */
   before: ((sql: string) => void | Promise<void>) | undefined;
-  /** Called after a statement ran; throw to fail it after it took effect (an unknown outcome). */
   after: ((sql: string) => void | Promise<void>) | undefined;
   readonly client: Pool;
   constructor(inner: Pool) {
@@ -59,27 +51,19 @@ export class Recording {
   }
 }
 
-/** An app's own Drizzle instance over the same pool, for reading the runtime's tables through `/schema`. */
 export type AppDatabase = MySql2Database;
 
 export interface Backend {
   readonly name: "MySQL";
-  /** The store over the backend's pool. */
   readonly store: MysqlStore;
-  /** Another store over the same database, with its own options. */
   storeWith(options: MysqlStoreOptions): MysqlStore;
-  /** A store whose every statement is recorded. */
   recording(options?: MysqlStoreOptions): { store: MysqlStore; recording: Recording };
-  /** Rows of one raw statement, run outside the runtime. */
   query<Row extends Record<string, unknown>>(text: string, params?: unknown[]): Promise<Row[]>;
-  /** The app's Drizzle instance over the backend's pool. */
   readonly app: AppDatabase;
-  /** The URL of the backend's own database, for independent pools ("processes"). */
   readonly url: string;
   close(): Promise<void>;
 }
 
-/** A pool the store accepts: its own, with multi-statement queries. */
 export function newPool(url: string, max = 4, program?: string): Pool {
   return mysql.createPool({
     uri: url,
@@ -89,10 +73,6 @@ export function newPool(url: string, max = 4, program?: string): Pool {
   });
 }
 
-/**
- * A database of its own on the MySQL server at `url`, which `drop()` drops; existing databases are never touched. The
- * runtime's table names are fixed, so test files are isolated by database.
- */
 export async function temporaryDatabase(url: string): Promise<{ url: string; drop(): Promise<void> }> {
   const name = uniqueName("agent_runtime_test");
   const admin = await mysql.createConnection({ uri: url });
@@ -116,7 +96,6 @@ export async function temporaryDatabase(url: string): Promise<{ url: string; dro
   };
 }
 
-/** A temporary database on the MySQL server at `url`, migrated. */
 export async function mysqlBackend(url: string): Promise<Backend> {
   const database = await temporaryDatabase(url);
   const pool = newPool(database.url);
@@ -151,26 +130,21 @@ export async function mysqlBackend(url: string): Promise<Backend> {
   };
 }
 
-/** The backends a backend-generic test runs against: MySQL, skipped without TEST_MYSQL_URL. */
 export const backendFactories: readonly { name: string; open: () => Promise<Backend>; skip: boolean }[] = [
   { name: "MySQL", open: () => mysqlBackend(MYSQL_URL as string), skip: MYSQL_URL === undefined },
 ];
 
 export const connectionReset = (): Error => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
 
-/** The statements of one round trip's text: one, or a packet's several (`START TRANSACTION`, ..., `COMMIT`). */
 export const statementsOf = (text: string | undefined): string[] =>
   (text ?? "").split(";\n").map((statement) => statement.trim());
 
-/** The runtime's round trips, by how they start. */
 export const statements = {
   commitRead: /^SELECT s\.next_id/,
-  /** A commit's write: one transaction in one round trip, its guard first. */
   commitWrite: /^START TRANSACTION;\nUPDATE `agent_runtime_scopes` SET next_seq/,
   documentRead: /^SELECT d\.record/,
 } as const;
 
-/** The statements of a commit's write, by how they start. */
 const writeStatements = {
   guard: /^UPDATE `agent_runtime_scopes` SET next_seq/,
   insert: /^INSERT INTO `agent_runtime_([a-z_]+)`/,
@@ -178,12 +152,10 @@ const writeStatements = {
   outcome: /^SELECT CASE WHEN s\.scope_id IS NULL THEN 'deleted'/,
 } as const;
 
-/** What round trip `text` is, by `statements`. */
 export function kindOf(text: string): string | undefined {
   return Object.entries(statements).find(([, pattern]) => pattern.test(text))?.[0];
 }
 
-/** What a commit's write holds, by `writeStatements`, with the table an INSERT writes. */
 export function writeOf(text: string | undefined): (string | undefined)[] {
   const [first, ...inner] = statementsOf(text);
   const last = inner.pop();
@@ -195,7 +167,6 @@ export function writeOf(text: string | undefined): (string | undefined)[] {
   });
 }
 
-/** Expire a scope's lease now, as if its holder had stalled past the expiry. */
 export const forceExpire = (backend: Backend, scope: { kind: string; name: string }): Promise<unknown> =>
   backend.query(
     `UPDATE agent_runtime_scopes SET lease_expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND
@@ -203,10 +174,6 @@ export const forceExpire = (backend: Backend, scope: { kind: string; name: strin
     [scope.kind, scope.name],
   );
 
-/**
- * A TCP proxy in front of MySQL whose traffic can be frozen, as a network partition would: while frozen, bytes
- * either way are held back (no connection closes); `thaw()` delivers them late, in order.
- */
 export class FreezableProxy {
   readonly #server: Server;
   readonly #sockets = new Set<Socket>();
@@ -237,11 +204,9 @@ export class FreezableProxy {
       });
     });
   }
-  /** Holds all traffic both ways from now on, without closing any connection. */
   freeze(): void {
     this.#frozen = true;
   }
-  /** Delivers everything held, in order, and forwards again. */
   thaw(): void {
     this.#frozen = false;
     for (const deliver of this.#held.splice(0)) deliver();

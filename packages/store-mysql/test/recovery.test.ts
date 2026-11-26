@@ -1,6 +1,3 @@
-// `runtime.recover()` on the store: another runtime carries on the run a closed one left. What a release records,
-// what `unfinished()` lists and what `erase()` deletes are in the store suite (`conformance.test.ts`).
-
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -13,7 +10,6 @@ import { nodeHost } from "@chia1104/motoko-node";
 import { backendFactories, uniqueName, until } from "./helpers.ts";
 import type { Backend } from "./helpers.ts";
 
-/** While `blocking`, runs until its call is stopped: a long call a closing process cuts off. */
 let blocking = true;
 const wait = defineTool({
   name: "wait",
@@ -23,7 +19,6 @@ const wait = defineTool({
   parameters: z.object({}),
   async execute(_args, { signal }) {
     if (!blocking) return { text: "done" };
-    // A call that starts while its instance closes finds its signal aborted already.
     if (!signal.aborted) {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     }
@@ -89,12 +84,10 @@ for (const factory of backendFactories) {
         expect(result.opened).toContainEqual({ kind: agent.kind, name });
         expect(result.failed).toEqual([]);
         await until(() => second.faux.state.callCount === 1, 10_000);
-        // The run is over before the process closes, so its release leaves nothing to do.
         for await (const { event } of second.runtime.get(agent, name).session(id).events()) {
           if (event.type === "run:end") break;
         }
         await second.runtime.close();
-        // Done and released quiet: nothing left to recover.
         expect(has(await listed(backend), name)).toBe(false);
       } finally {
         blocking = true;

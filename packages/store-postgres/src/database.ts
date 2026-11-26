@@ -1,22 +1,26 @@
-// What the package runs on: a Drizzle Postgres database, whichever driver built it (node-postgres at the root
-// export, PGlite at `/pglite`). Query-builder statements return the same values on both; for `sql` statements the
-// rows come back as the driver parsed them, so integers go through `toNumber` and errors through `causes`.
-
 import type { SQL } from "drizzle-orm";
 import type { PgAsyncDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
-/** A Drizzle Postgres database over any async driver. Relations are unused: `any` is what Drizzle's migrator takes. */
-export type Database = PgAsyncDatabase<PgQueryResultHKT, any>; // oxlint-disable-line typescript/no-explicit-any
+export type Database = PgAsyncDatabase<PgQueryResultHKT>;
+
+declare const oneConnection: unique symbol;
+
+export type ConnectionDatabase = Database & { readonly [oneConnection]: true };
+
+export const asConnectionDatabase = (db: Database): ConnectionDatabase => db as ConnectionDatabase;
 
 /**
- * Runs one `sql` statement (one round trip) and returns its rows as objects, as the driver parsed them: int8 is a
- * `string` on node-postgres and a `number` on PGlite, json and arrays are parsed by both.
+ * Runs one `sql` statement, one round trip, and returns its rows as objects, as the driver parsed them. int8 is a
+ * `string` on node-postgres and a `number` on PGlite. Both drivers parse json and arrays.
  */
 export function rowsOf<Row extends Record<string, unknown>>(db: Database, query: SQL): Promise<Row[]> {
   return db.execute<Row>(query, "objects");
 }
 
-/** `error` and its `cause` chain: Drizzle wraps a driver's error in a `DrizzleQueryError` whose `cause` it is. */
+/**
+ * Returns `error` and its `cause` chain. Drizzle wraps a driver's error in a `DrizzleQueryError`, with the driver's
+ * error as its `cause`.
+ */
 export function causes(error: unknown): unknown[] {
   const chain: unknown[] = [];
   for (let current = error; current !== undefined && current !== null && chain.length < 8;) {
@@ -26,7 +30,6 @@ export function causes(error: unknown): unknown[] {
   return chain;
 }
 
-/** The first Postgres (or socket) error code in `error`'s cause chain. */
 export function errorCode(error: unknown): string | undefined {
   for (const link of causes(error)) {
     const code = typeof link === "object" && link !== null ? (link as { code?: unknown }).code : undefined;
@@ -34,6 +37,19 @@ export function errorCode(error: unknown): string | undefined {
   }
   return undefined;
 }
+
+export const UNDEFINED_TABLE = "42P01";
+export const INVALID_SCHEMA_NAME = "3F000";
+
+const ADMIN_SHUTDOWN = "57P01";
+const CRASH_SHUTDOWN = "57P02";
+const CANNOT_CONNECT_NOW = "57P03";
+const TOO_MANY_CONNECTIONS = "53300";
+const CONNECTION_EXCEPTION = "08000";
+const SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION = "08001";
+const CONNECTION_DOES_NOT_EXIST = "08003";
+const SQLSERVER_REJECTED_ESTABLISHMENT_OF_SQLCONNECTION = "08004";
+const CONNECTION_FAILURE = "08006";
 
 const TRANSIENT_CODES = new Set([
   "ECONNRESET",
@@ -43,26 +59,29 @@ const TRANSIENT_CODES = new Set([
   "EHOSTUNREACH",
   "ENETUNREACH",
   "EAI_AGAIN",
-  "57P01", // admin_shutdown
-  "57P02", // crash_shutdown
-  "57P03", // cannot_connect_now
-  "53300", // too_many_connections
-  "08000",
-  "08001",
-  "08003",
-  "08004",
-  "08006",
+  ADMIN_SHUTDOWN,
+  CRASH_SHUTDOWN,
+  CANNOT_CONNECT_NOW,
+  TOO_MANY_CONNECTIONS,
+  CONNECTION_EXCEPTION,
+  SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION,
+  CONNECTION_DOES_NOT_EXIST,
+  SQLSERVER_REJECTED_ESTABLISHMENT_OF_SQLCONNECTION,
+  CONNECTION_FAILURE,
 ]);
 
 const TRANSIENT_MESSAGE = /Connection terminated|connection error|Client was closed|terminating connection/i;
 
-/** A failure of the connection, not of the statement: the statement may be retried if it is idempotent. */
+/**
+ * True for a failure of the connection, not of the statement. The statement may then be retried if it is idempotent.
+ */
 export function isTransientError(error: unknown): boolean {
   for (const link of causes(error)) {
     if (typeof link !== "object" || link === null) continue;
     const { code, message, name } = link as { code?: unknown; message?: unknown; name?: unknown };
     if (typeof code === "string" && TRANSIENT_CODES.has(code)) return true;
-    // A DrizzleQueryError's message is the failed statement's text, not the failure: only its cause tells.
+    // A DrizzleQueryError's message is the failed statement's text, not the failure. Only its cause describes the
+    // failure.
     if (name !== "DrizzleQueryError" && typeof message === "string" && TRANSIENT_MESSAGE.test(message)) return true;
   }
   return false;

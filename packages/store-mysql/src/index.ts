@@ -1,19 +1,3 @@
-/**
- * `@chia1104/motoko-store-mysql`: Motoko's store on MySQL 8.0.24 or later, through Drizzle (mysql2). Many agent instances
- * (scopes) share one fixed set of `agent_runtime_*` tables in the pool's database; each gets a pi-durable `Storage`
- * fenced by a single-writer row lease.
- *
- * ```ts
- * const pool = mysql.createPool({ uri: connectionString });
- * await migrate(pool); // or the `motoko-store-mysql` CLI at deploy time
- * const store = createMysqlStore(pool);
- * // `nodeHost` of `@chia1104/motoko-node` makes the store the host of a long-lived process.
- * const runtime = createAgentRuntime({ agents, host: nodeHost(store), models, ports });
- * ```
- *
- * The Drizzle tables are at `@chia1104/motoko-store-mysql/schema`.
- */
-
 import { drizzle } from "drizzle-orm/mysql2";
 import type { Pool } from "mysql2/promise";
 
@@ -30,7 +14,6 @@ export {
   SchemaVersionError,
   supportedMigrations,
 } from "./migrations.ts";
-// The shared-database store's errors are the core's, so `instanceof` holds across every such store.
 export {
   ConcurrentCommitError,
   LeaseHeldError,
@@ -44,13 +27,13 @@ export type { MysqlStorage } from "./storage.ts";
 export type { MysqlLease, MysqlStore, MysqlStoreOptions } from "./store.ts";
 
 /**
- * The store over `pool` (mysql2's promise pool; a callback pool's `.promise()`): the runtime's store on the runtime's
- * tables (`nodeHost(store)` is its host), and `store.deleteScope` of any scope. The store does not own the pool. The
- * database must be migrated (`migrate()` or the CLI); every lease, storage open and delete checks it
- * (`SchemaVersionError`).
+ * Creates the store over `pool`, which is mysql2's promise pool or a callback pool's `.promise()`. It is the runtime's
+ * store on the runtime's tables, whose host is `nodeHost(store)`, and it serves `store.deleteScope` for any scope. The
+ * store does not own the pool. The database must be migrated by `migrate()` or the CLI. Every lease, storage open and
+ * delete checks that, and throws `SchemaVersionError` when it is not.
  *
- * The pool must be created with `multipleStatements: true`, or this throws a `TypeError`: the store sends each of its
- * transactions as one multi-statement query. Give the store a pool of its own (see the README).
+ * The pool must be created with `multipleStatements: true`, or this throws a `TypeError`, because the store sends each
+ * of its transactions as one multi-statement query. Give the store a pool of its own, as the README says.
  */
 export function createMysqlStore(pool: Pool, options?: MysqlStoreOptions): MysqlStore {
   // mysql2 keeps the options it resolved on the core pool, which its typings do not show.
@@ -64,10 +47,10 @@ export function createMysqlStore(pool: Pool, options?: MysqlStoreOptions): Mysql
 }
 
 /**
- * Creates or upgrades the runtime's tables with the migrations this package ships, on one connection of `pool` that a
- * named lock (`GET_LOCK`) serializes against concurrent `migrate()` calls on the same database. MySQL commits each
- * DDL statement by itself: a migration that fails part way leaves its earlier statements applied. Refuses
- * (`SchemaVersionError`, nothing changed) a database a newer release migrated.
+ * Creates or upgrades the runtime's tables with the migrations this package ships, on one connection of `pool`. A named
+ * lock, `GET_LOCK`, on that connection serializes concurrent `migrate()` calls on the same database. MySQL commits each
+ * DDL statement by itself, so a migration that fails part way leaves its earlier statements applied. Throws
+ * `SchemaVersionError` for a database a newer release migrated, and changes nothing.
  */
 export async function migrate(pool: Pool): Promise<MigrateResult> {
   const connection = await pool.getConnection();
@@ -76,13 +59,17 @@ export async function migrate(pool: Pool): Promise<MigrateResult> {
     connection.release();
     return result;
   } catch (error) {
-    // The connection may still hold the named lock (its release failed): destroy it rather than pool it.
+    // If its release failed, the connection may still hold the named lock, so it is destroyed, not returned to the
+    // pool.
     connection.destroy();
     throw error;
   }
 }
 
-/** Throws `SchemaVersionError` unless the database is migrated to exactly this package's migrations. One round trip. */
+/**
+ * Throws `SchemaVersionError` unless the database is migrated to exactly this package's migrations. It costs one round
+ * trip.
+ */
 export function checkSchema(pool: Pool): Promise<void> {
   return checkSchemaOf(drizzle({ client: pool }));
 }

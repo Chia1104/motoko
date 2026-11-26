@@ -1,6 +1,4 @@
-// An input's metadata, as the README's "Input metadata" says: `submit` stores it on the input's entry, an app hook reads
-// the run's inputs back with `runInputs` and finds their messages with `locateInputs`, and a run resumed after a restart
-// reads the same. The stream is the one an input without metadata gives.
+// Each test expects what the README's "Input metadata" says.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
@@ -38,7 +36,6 @@ import type { MemoryPlace } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-/** While `holding`, runs until its call is stopped, as a long call that a closing process cuts off. */
 let holding = true;
 const hold = defineTool({
   name: "hold",
@@ -57,17 +54,14 @@ const hold = defineTool({
 
 const agent = defineAgent({ kind: "writer", instructions: "You write.", tools: [hold] });
 
-/** What the app's hook saw at each request: the run's inputs, as `runInputs` read them. */
 let seen: (readonly RunInput[])[] = [];
 
-/** A user message, as a request holds one. */
 const userMessage = (text: string, timestamp: number): UserMessage => ({
   role: "user",
   content: [{ type: "text", text }],
   timestamp,
 });
 
-/** The app's extension: its `beforeRequest` puts each input's context after it, in every request of the run. */
 const volatile = defineExtension({
   name: "volatile",
   hooks: [
@@ -76,7 +70,6 @@ const volatile = defineExtension({
         const inputs = await runInputs(api, hookContext);
         seen.push(inputs);
         const next = [...messages];
-        // From the last, so each insert leaves the places before it as they are.
         for (const { index, at, metadata } of locateInputs(messages, inputs).toReversed()) {
           const text = metadata?.context;
           if (index !== undefined && typeof text === "string") next.splice(index + 1, 0, userMessage(text, at));
@@ -108,7 +101,6 @@ function start(place: MemoryPlace) {
   return { faux: models.faux, runtime, instance: runtime.get(agent, "alice") };
 }
 
-/** The session's stored inputs: each entry's kind, data and text. */
 async function storedInputs(place: MemoryPlace, session: AgentSession) {
   const storage = place.storages.get(scopeKey({ kind: agent.kind, name: "alice" }))!;
   const query = { conversationId: Number(session.id) as ConversationId, order: "ascending" as const };
@@ -129,7 +121,6 @@ function textOf(message: Message): string {
 const users = (items: readonly StreamItem[]) =>
   items.flatMap((item) => (item.event.type === "user" ? [{ text: item.event.text, steer: item.event.steer }] : []));
 
-/** A request's messages as text, by role: what the model read and where. */
 const read = (messages: readonly Message[]) =>
   messages.filter((message) => message.role !== "system").map((message) => `${message.role}: ${textOf(message)}`);
 
@@ -157,7 +148,6 @@ describe("an input's metadata", () => {
       whenBusy: "steer",
       metadata: { context: "drafts: A@4, B@1" },
     });
-    // The process goes down while the tool runs, before the steer is placed and the second request is sent.
     await first.runtime.close();
     expect(first.faux.state.callCount).toBe(1);
 
@@ -173,7 +163,6 @@ describe("an input's metadata", () => {
     const live = follow(reopened);
     const items = await live.until((reached) => runEnds(reached) === 1);
 
-    // Each request has every input of the run, each followed by its context.
     expect(requests.map(read)).toEqual([
       ["user: Write it", "user: drafts: A@3"],
       [
@@ -185,7 +174,6 @@ describe("an input's metadata", () => {
         "user: drafts: A@4, B@1",
       ],
     ]);
-    // What the first request sent, the request after the restart sends as is: the provider's cache holds.
     expect(requests[1]!.slice(0, requests[0]!.length)).toEqual(requests[0]);
 
     const [entry, steer] = seen.at(-1)!;
@@ -197,13 +185,11 @@ describe("an input's metadata", () => {
       ],
     ]);
 
-    // The stored entries hold each input with its metadata, and none of the context the hook put in.
     expect(await storedInputs(place, reopened)).toEqual([
       { kind: "motoko.input", data: { metadata: { context: "drafts: A@3" } }, text: "Write it" },
       { kind: "motoko.steer", data: { metadata: { context: "drafts: A@4, B@1" } }, text: "Use B too" },
     ]);
 
-    // The stream is an input's without metadata: a steer joined the run, and no event carries the context.
     expect(users(items)).toEqual([
       { text: "Write it", steer: undefined },
       { text: "Use B too", steer: true },
@@ -232,12 +218,10 @@ describe("an input's metadata", () => {
 
     await session.submit({ text: "A", requestId: "a" });
     await eventually(() => faux.state.callCount === 1);
-    // Both wait for the first run's answer, and the boundary after it places both, so they start the next run.
     await session.submit({ text: "B", requestId: "b", metadata: { n: "b" } });
     await session.submit({ text: "C", requestId: "c", whenBusy: "steer", metadata: { n: "c" } });
     answer();
     await live.until((items) => runEnds(items) === 2);
-    // A steer to an idle session starts a run.
     await session.submit({ text: "D", requestId: "d", whenBusy: "steer" });
     const items = await live.until((reached) => runEnds(reached) === 3);
 
@@ -247,7 +231,6 @@ describe("an input's metadata", () => {
       { kind: "motoko.steer", data: { metadata: { n: "c" } }, text: "C" },
       { kind: "motoko.steer", data: undefined, text: "D" },
     ]);
-    // The transcriber reads `motoko.input` as an input, and marks no steer that started a run.
     expect(users(items)).toEqual([
       { text: "A", steer: undefined },
       { text: "B", steer: undefined },
@@ -255,7 +238,6 @@ describe("an input's metadata", () => {
       { text: "D", steer: undefined },
     ]);
 
-    // Each run's inputs alone, in entry order; the two one boundary placed share its time.
     const [[a], [b, c], [d]] = seen as [RunInput[], RunInput[], RunInput[]];
     expect(seen).toEqual([
       [{ entryId: a!.entryId, at: a!.at, steer: false }],
@@ -293,7 +275,6 @@ describe("an input's metadata", () => {
     const session = instance.session((await instance.createSession()).id);
     const refused: unknown[] = [null, [], "drafts", 1, { at: new Date(0) }, { n: Number.NaN }, { missing: undefined }];
     for (const metadata of refused) {
-      // SAFETY: what a caller outside TypeScript may pass.
       const input = { text: "Hi", requestId: "1", metadata } as unknown as SubmitInput;
       await expect(session.submit(input), JSON.stringify(metadata)).rejects.toBeInstanceOf(InvalidRequestError);
     }
@@ -326,7 +307,6 @@ describe("locateInputs", () => {
   });
 
   it("gives an input whose message the request does not hold no index, and finds the inputs before it", () => {
-    // An earlier hook dropped B's message.
     const messages = [userMessage("A", 1), answer, userMessage("C", 3)];
     const inputs: RunInput[] = [
       { entryId: 1, at: 1, steer: false },

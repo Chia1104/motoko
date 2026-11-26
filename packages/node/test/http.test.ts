@@ -81,7 +81,6 @@ function handlerOf(runtime: AgentRuntime, options: Partial<MotokoHandlerOptions<
 
 type Handler = ReturnType<typeof handlerOf>;
 
-/** One call through `handler`, as a client sends it. */
 async function call(handler: Handler, method: string, params: unknown = {}) {
   const response = await handler(
     new Request("http://app.test/motoko/call", {
@@ -98,7 +97,6 @@ async function createSession(handler: Handler): Promise<string> {
   return (body.result as { id: string }).id;
 }
 
-/** `handler` on a real Node server; the base URL of its routes. */
 async function listen(handler: Handler): Promise<string> {
   const server = createServer(nodeListener(handler));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -109,7 +107,6 @@ async function listen(handler: Handler): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}/motoko`;
 }
 
-/** One server-sent event as EventSource reads it, or a comment line. */
 interface Frame {
   readonly id?: string;
   readonly event?: string;
@@ -135,7 +132,6 @@ async function* framesOf(body: ReadableStream<Uint8Array>): AsyncGenerator<Frame
   }
 }
 
-/** A client following a session over SSE, as a browser's EventSource connects. */
 async function openFollow(base: string, sessionId: string, options: { lastEventId?: string; from?: string } = {}) {
   const url = new URL(`${base}/sessions/${sessionId}/events`);
   if (options.from !== undefined) url.searchParams.set("from", options.from);
@@ -154,7 +150,6 @@ interface Received {
   readonly event: AgentWireEvent;
 }
 
-/** Reads wire events, skipping heartbeats, until one `until` holds of; anything else ends the test. */
 async function readUntil(frames: AsyncGenerator<Frame>, until: (event: AgentWireEvent) => boolean) {
   const received: Received[] = [];
   for (;;) {
@@ -172,7 +167,6 @@ const isRunEnd = (event: AgentWireEvent) => event.type === "run:end";
 const readersOf = (runtime: AgentRuntime) => runtime.inspect().instances.reduce((sum, { readers }) => sum + readers, 0);
 const items = (received: readonly Received[]) => received.map(({ cursor, event }) => ({ cursor, event }));
 
-/** A model reply that waits for `release()`. */
 function gatedReply(text: string) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
@@ -265,7 +259,6 @@ describe("calls", () => {
     ).toMatchObject({ status: 409, body: { error: { code: "session_busy" } } });
     release();
 
-    // Another runtime on the same leases: this one holds the instance, so the other cannot open it.
     const other = handlerOf(runtimeOf({ leases }));
     expect(await call(other, "listSessions")).toMatchObject({ status: 503, body: { error: { code: "lease_held" } } });
     const follow = await other(new Request(`http://app.test/motoko/sessions/${id}/events`));
@@ -283,7 +276,6 @@ describe("calls", () => {
   });
 
   it("answers an error that is not the runtime's as internal, with no detail, and reports it", async () => {
-    // No model anywhere: a new session fails, with an error that is not one of the runtime's.
     const runtime = createAgentRuntime({
       agents: [agent],
       host: nodeHost({ storage: sqliteStorage({ directory }) }),
@@ -336,7 +328,6 @@ describe("a call's body", () => {
     const handler = handlerOf(runtimeOf(), { maxBodyBytes: 1024 });
     let pulled = 0;
     let cancelled = false;
-    // JSON's whitespace, without end and without a declared length.
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
         pulled += 100;
@@ -377,7 +368,6 @@ describe("a call's body", () => {
 
   it("is refused with 413, unread, when the length it declares is past maxBodyBytes", async () => {
     const handler = handlerOf(runtimeOf(), { maxBodyBytes: 1024 });
-    // A call the handler would answer, had it read it.
     const response = await handler(
       new Request("http://app.test/motoko/call", {
         method: "POST",
@@ -392,7 +382,6 @@ describe("a call's body", () => {
 
   it("is answered 413 over Node's http while the client still sends, declared too long or not", async () => {
     const base = await listen(handlerOf(runtimeOf(), { maxBodyBytes: 1024 }));
-    /** Sends spaces until the server answers, as a client that does not wait for one before sending does. */
     const send = (headers: Record<string, string>) =>
       new Promise<{ status: number; code: string; sent: number }>((resolve, reject) => {
         const request = httpRequest(`${base}/call`, { method: "POST", headers: { ...json, ...headers } });
@@ -426,11 +415,9 @@ describe("a call's body", () => {
         write();
       });
 
-    // Chunked, with no length: refused once it streamed past the cap, and read no further.
     const streamed = await send({});
     expect(streamed).toMatchObject({ status: 413, code: "invalid_request" });
     expect(streamed.sent).toBeLessThan(64 * 1024 * 1024);
-    // A length past the cap: refused before any of it is read.
     expect(await send({ "content-length": String(64 * 1024 * 1024) })).toMatchObject({
       status: 413,
       code: "invalid_request",
@@ -487,7 +474,6 @@ describe("following a session over SSE", () => {
     const sse = await openFollow(base, id);
     expect(sse.response.status).toBe(200);
     expect(sse.response.headers.get("content-type")).toBe("text/event-stream");
-    // Both readers are on the session's live stream before the run starts, so both see the same events.
     await eventually(() => readersOf(runtime) === 2);
 
     faux.setResponses([fauxAssistantMessage("Hello there, and welcome.")]);
@@ -515,7 +501,6 @@ describe("following a session over SSE", () => {
     const before = await readUntil(first.frames, (event) => event.type === "user");
     first.disconnect();
     await eventually(() => readersOf(runtime) === 1);
-    // The reply comes while the client is away.
     release();
     const all = await readUntil(stayed.frames, isRunEnd);
 
@@ -603,7 +588,6 @@ describe("following a session over SSE", () => {
     await runtime.get(agent, "a").close();
     expect(await sse.frames.next()).toEqual({ done: true, value: undefined });
 
-    // As EventSource reconnects: a fresh instance serves it, after the last event it had.
     const resumed = await openFollow(base, id, { lastEventId: first.at(-1)!.id! });
     expect(resumed.response.status).toBe(200);
     await call(handler, "submit", { sessionId: id, text: "Two", requestId: "r2" });
@@ -646,7 +630,6 @@ describe("following a session over SSE", () => {
     const id = await createSession(handler);
     const sse = await openFollow(base, id);
     await eventually(() => readersOf(runtime) === 1);
-    // A connected reader holds the instance open, idle or not.
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(instance.state).toBe("open");
 

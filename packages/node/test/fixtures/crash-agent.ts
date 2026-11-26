@@ -7,14 +7,9 @@ export interface CrashPorts {
   readonly log: string[];
 }
 
-/**
- * In the child, `started` tells the parent the call is running; it then never finishes there. In the
- * parent, `finish` lets a rerun complete at once, and `release`, when set, holds it until it resolves.
- */
-export const crashState: { started: () => void; finish: boolean; release?: Promise<void> } = {
-  started: () => undefined,
-  finish: false,
-};
+export const indexStarted: { notify: () => void } = { notify: () => undefined };
+
+export const indexEnd: { finish: boolean; release?: Promise<void> } = { finish: false };
 
 const indexFiles = defineTool({
   name: "index_files",
@@ -23,9 +18,9 @@ const indexFiles = defineTool({
   replay: "safe",
   parameters: z.object({ path: z.string() }),
   async execute({ path }, { ports, signal }: ToolContext<CrashPorts>) {
-    crashState.started();
-    if (crashState.release) await crashState.release;
-    else if (!crashState.finish)
+    indexStarted.notify();
+    if (indexEnd.release) await indexEnd.release;
+    else if (!indexEnd.finish)
       await new Promise((_, reject) => signal.addEventListener("abort", reject, { once: true }));
     ports.log.push(`indexed ${path}`);
     return { text: `indexed ${path}` };

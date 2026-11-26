@@ -1,9 +1,3 @@
-/**
- * `@chia1104/motoko-core/testing`: the host contract as a suite that every `AgentHost` adapter runs against itself. It takes the
- * adapter's own test runner as `{ describe, expect, it }`, the shape pi-durable's `registerStorageConformance` takes,
- * so the core depends on no test framework and the suite runs wherever a host's tests run.
- */
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -16,12 +10,12 @@ import type { AgentHost, StorageScope } from "./host.ts";
 import { createAgentRuntime } from "./runtime.ts";
 import type { InstanceReport } from "./runtime.ts";
 
-/** Calls `use` once with a host, then cleans up whatever the host holds (a directory, a database). */
+/** Calls `use` once with a host, then cleans up whatever the host holds, such as a directory or a database. */
 export type HostConformanceProvider = (use: (host: AgentHost) => Promise<void>) => Promise<void>;
 
 /**
- * Calls `use` once with a fresh host that serves one scope alone and with that scope, then cleans up. A scope no
- * earlier case used, as a fresh Durable Object's is.
+ * Calls `use` once with a fresh host that serves one scope alone and with that scope, then cleans up. The scope is one
+ * no earlier case used, as a fresh Durable Object's is.
  */
 export type SingleScopeHostConformanceProvider = (
   use: (host: AgentHost, scope: StorageScope) => Promise<void>,
@@ -29,13 +23,8 @@ export type SingleScopeHostConformanceProvider = (
 
 const context = BACKGROUND_CONTEXT;
 
-/**
- * A scope no earlier case used. Cases may share one host's leases and storage (a process-wide lease table, one
- * database), and a case that fails can leave its lease held, so no two cases ever touch the same scope.
- */
 const freshScope = (): StorageScope => ({ kind: "conformance", name: crypto.randomUUID() });
 
-/** What `operation` rejects or throws with, or `undefined` when it settles without one. */
 async function failureOf(operation: () => Promise<unknown>): Promise<unknown> {
   try {
     await operation();
@@ -45,7 +34,6 @@ async function failureOf(operation: () => Promise<unknown>): Promise<unknown> {
   return undefined;
 }
 
-/** Every scope `unfinished()` lists. */
 async function listed(host: AgentHost): Promise<StorageScope[]> {
   const scopes: StorageScope[] = [];
   for await (const scope of host.unfinished!()) scopes.push(scope);
@@ -54,10 +42,8 @@ async function listed(host: AgentHost): Promise<StorageScope[]> {
 
 const sameScope = (a: StorageScope) => (b: StorageScope) => a.kind === b.kind && a.name === b.name;
 
-/** One case of the host contract: `fresh()` is a scope no earlier case used, or the one scope a host serves. */
 type HostCase = (host: AgentHost, fresh: () => StorageScope) => Promise<void>;
 
-/** The cases of the host contract, for a host that serves every scope or, with `single`, one alone. */
 function hostCases(runner: StorageConformanceRunner, single: boolean): Record<string, HostCase> {
   const assert = createExpectAssertions(runner.expect);
   const assertHeld = (error: unknown) =>
@@ -215,7 +201,6 @@ function hostCases(runner: StorageConformanceRunner, single: boolean): Record<st
         keptId = kept.id;
         const doomed = await instance.createSession();
         await instance.session(doomed.id).delete();
-        // The runtime hands the host the deleted session once the storage is closed.
         await instance.close();
         assert.deepEqual(reports, []);
         assert.deepEqual(await runtime.get(agent, name).listSessions(), [kept]);
@@ -240,10 +225,11 @@ function hostCases(runner: StorageConformanceRunner, single: boolean): Record<st
 }
 
 /**
- * Registers the cases of the host contract (`AgentHost` and `Lease` in `host.ts`) under `name`: the single-writer
- * lease, its release, scope validation and storage opened under a held lease, and, for a host that has them,
- * `unfinished()` and `erase()`. Only what every host must do; an adapter's own guarantees (expiry, other processes,
- * fencing) stay in its own tests. Each case runs on scopes of its own, so one host may serve every case.
+ * Registers the cases of the host contract under `name`. The contract is `AgentHost` and `Lease` in `host.ts`. The
+ * cases cover the single-writer lease, its release, scope validation, storage opened under a held lease, and
+ * `unfinished()` and `erase()` for a host that has them. They test only what every host must do. An adapter's own
+ * guarantees, such as expiry, other processes and fencing, stay in its own tests. Each case runs on scopes of its own,
+ * so one host may serve every case.
  */
 export function registerHostConformance(
   runner: StorageConformanceRunner,
@@ -257,9 +243,9 @@ export function registerHostConformance(
 }
 
 /**
- * Registers the same cases for a host that serves one scope alone, as a Durable Object's serves the object's own:
- * every case runs on a fresh host and its scope, and the host must refuse every other scope with a `TypeError` in
- * place of keeping two scopes apart.
+ * Registers the same cases for a host that serves one scope alone, as a Durable Object's host serves the object's own.
+ * Every case runs on a fresh host and its scope. The host must refuse every other scope with a `TypeError` in place of
+ * keeping two scopes apart.
  */
 export function registerSingleScopeHostConformance(
   runner: StorageConformanceRunner,

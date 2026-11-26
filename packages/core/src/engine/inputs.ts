@@ -3,6 +3,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { AssistantEntry, LiveDoc } from "@earendil-works/pi-durable";
 import type { Cursor, EntryRecord, HookApi, InputEntry, JsonObject } from "@earendil-works/pi-durable";
 
+import { isObject } from "./approvals.ts";
 import { INPUT_ENTRY, isInput, joinsRun, STEER_ENTRY } from "./transcriber.ts";
 
 /** An input of the run going on, as `runInputs` reads it back. */
@@ -18,26 +19,30 @@ export interface RunInput {
 
 /** An input of the run going on, with where `locateInputs` found its user message. */
 export interface LocatedInput extends RunInput {
-  /** Its user message's position in the messages; undefined when they do not hold it: compacted, or dropped by a hook. */
+  /**
+   * Its user message's position in the messages, or undefined when they do not hold it because it was compacted or a
+   * hook dropped it.
+   */
   readonly index: number | undefined;
 }
 
-/**
- * The entry `submit` places an input as: a steer as `motoko.steer`, any other input with metadata as `motoko.input`,
- * either holding `{ metadata }`; undefined for pi-durable's `pi.user`.
- */
 export function inputEntry(steer: boolean, metadata: JsonObject | undefined): InputEntry | undefined {
   const data = metadata === undefined ? undefined : { metadata };
   if (steer) return { kind: STEER_ENTRY, ...(data !== undefined && { data }) };
   return data === undefined ? undefined : { kind: INPUT_ENTRY, data };
 }
 
+function metadataOf(entry: EntryRecord): JsonObject | undefined {
+  const metadata = isObject(entry.data) ? entry.data.metadata : undefined;
+  return isObject(metadata) ? metadata : undefined;
+}
+
 const PAGE = 200;
 
 /**
- * The inputs of the run going on, in entry order, from `pi.live`'s `run.first`: for a continue, the failed run's it
- * carries on. For an app hook, such as `beforeRequest`, which reads them from committed entries, so a run resumed
- * after a restart reads the same. Empty with no run going.
+ * The inputs of the run going on, in entry order, from `pi.live`'s `run.first`. For a continue, `run.first` belongs to
+ * the failed run it carries on. It is for an app hook such as `beforeRequest`. It reads committed entries, so a run
+ * resumed after a restart reads the same inputs. Empty with no run going.
  */
 export async function runInputs(api: HookApi, context: Context): Promise<readonly RunInput[]> {
   const first = (await api.snapshot(LiveDoc, api.conversationId, context))?.run?.first;
@@ -54,8 +59,7 @@ export async function runInputs(api: HookApi, context: Context): Promise<readonl
       if (isInput(entry) && message?.role === "user") {
         const joined = entry.id === first ? undefined : joinsRun(entry, previous, reply);
         steered = joined === "steer" || (joined === "with" && steered);
-        // SAFETY: an input's entry holds what `inputEntry` placed: `{ metadata }`, or no data.
-        const metadata = (entry.data as { readonly metadata?: JsonObject } | undefined)?.metadata;
+        const metadata = metadataOf(entry);
         inputs.push({
           entryId: entry.id,
           at: message.timestamp,
@@ -72,14 +76,13 @@ export async function runInputs(api: HookApi, context: Context): Promise<readonl
 }
 
 /**
- * Where each of the run's inputs has its user message in `messages`, such as `beforeRequest`'s: the user message with
- * its time. It matches from the end, as the run's inputs are the newest user messages, so an earlier run's message of
- * the same time is not taken; inputs that share a time take that time's messages in entry order. The inputs come back
- * in the order given.
+ * Where each of the run's inputs has its user message in `messages`, such as `beforeRequest`'s. An input's user
+ * message is the user message with its time. It matches from the end, because the run's inputs are the newest user
+ * messages, so it never takes an earlier run's message of the same time. Inputs that share a time take that time's
+ * messages in entry order. The inputs come back in the order given.
  */
 export function locateInputs(messages: readonly Message[], inputs: readonly RunInput[]): readonly LocatedInput[] {
   const located: LocatedInput[] = [];
-  // Each input's message comes before the message of the input after it.
   let end = messages.length;
   for (const input of inputs.toReversed()) {
     const index = messages.findLastIndex(

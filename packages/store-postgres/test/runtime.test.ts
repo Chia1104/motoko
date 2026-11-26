@@ -1,7 +1,3 @@
-// The runtime on Postgres: `createAgentRuntime` over `nodeHost(store)`, as a Node server would wire it. Runs an approval-gated tool
-// call to an answer, then a second runtime on the same database (another "process") takes the scope over and replays the
-// same transcript.
-
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -94,7 +90,6 @@ for (const factory of backendFactories) {
       if (request?.type !== "approval:request") throw new Error("No approval request");
       expect(sent).toEqual([]);
 
-      // The scope's lease row is held: another runtime on the same database is refused, with the runtime's own error.
       const intruder = openRuntime();
       const refused = await intruder
         .get(agent, "team")
@@ -112,7 +107,6 @@ for (const factory of backendFactories) {
       expect(view.items.map((item) => item.kind)).toEqual(["user", "assistant", "tool", "assistant"]);
       await first.close();
 
-      // The lease is released with the runtime: the next one opens the scope and reads the same transcript.
       const second = openRuntime();
       const reopened = second.get(agent, "team");
       expect(await reopened.listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);

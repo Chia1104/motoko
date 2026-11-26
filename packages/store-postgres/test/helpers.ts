@@ -16,15 +16,10 @@ export const DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 export const uniqueName = (prefix: string): string => `${prefix}_${randomBytes(6).toString("hex")}`;
 
-/**
- * A view of a driver client (a `pg` Pool or a PGlite instance) that records the text of every statement sent through
- * it, and can fail one on demand. Drizzle sends each statement as one `query()` call: one round trip.
- */
+/** Drizzle sends each statement as one `query()` call. */
 export class Recording<C extends object> {
   readonly statements: string[] = [];
-  /** Called before a statement runs; throw to fail it unsent. */
   before: ((sql: string) => void | Promise<void>) | undefined;
-  /** Called after a statement ran; throw to fail it after it took effect (an unknown outcome). */
   after: ((sql: string) => void | Promise<void>) | undefined;
   readonly client: C;
   constructor(inner: C) {
@@ -50,27 +45,19 @@ export class Recording<C extends object> {
   }
 }
 
-/** An app's own Drizzle database over the same client, for reading the runtime's tables through `/schema`. */
-export type AppDatabase = PgAsyncDatabase<PgQueryResultHKT, any>; // oxlint-disable-line typescript/no-explicit-any -- any schema, as an app's database has
+export type AppDatabase = PgAsyncDatabase<PgQueryResultHKT>;
 
 export interface Backend {
   readonly name: "PGlite" | "Postgres";
-  /** The store over the backend's client. */
   readonly store: PostgresStore;
-  /** Another store over the same database, with its own options. */
   storeWith(options: PostgresStoreOptions): PostgresStore;
-  /** A store whose every statement is recorded. */
   recording(options?: PostgresStoreOptions): { store: PostgresStore; recording: Recording<object> };
-  /** Rows of one raw statement, run outside the runtime. */
   query<Row extends Record<string, unknown>>(text: string, params?: unknown[]): Promise<Row[]>;
-  /** The app's Drizzle instance over the backend's client. */
   readonly app: AppDatabase;
-  /** Real Postgres only: the URL of the backend's own database, for independent pools ("processes"). */
   readonly url?: string;
   close(): Promise<void>;
 }
 
-/** A fresh in-memory PGlite, migrated. */
 export async function pgliteBackend(): Promise<Backend> {
   const pglite = await PGlite.create();
   await migratePGlite(pglite);
@@ -96,15 +83,11 @@ export function newPool(url: string, max = 4, applicationName?: string): pg.Pool
     max,
     ...(applicationName === undefined ? {} : { application_name: applicationName }),
   });
-  // An idle client whose connection dies emits `error` on the pool; without a listener Node exits.
+  // An idle client whose connection dies emits `error` on the pool. Without a listener, Node exits.
   pool.on("error", () => undefined);
   return pool;
 }
 
-/**
- * A database of its own on the Postgres at `url`, which `close()` drops; existing databases are never touched. The
- * runtime's schema name is fixed, so test files are isolated by database.
- */
 export async function temporaryDatabase(url: string): Promise<{ url: string; drop(): Promise<void> }> {
   const name = uniqueName("agent_runtime_test");
   const admin = new pg.Client({ connectionString: url });
@@ -130,7 +113,6 @@ export async function temporaryDatabase(url: string): Promise<{ url: string; dro
   };
 }
 
-/** A real Postgres: a temporary database, migrated. */
 export async function postgresBackend(url: string): Promise<Backend> {
   const database = await temporaryDatabase(url);
   const pool = newPool(database.url);
@@ -164,7 +146,6 @@ export async function postgresBackend(url: string): Promise<Backend> {
   };
 }
 
-/** The backends a backend-generic test runs against: PGlite always, Postgres with TEST_DATABASE_URL. */
 export const backendFactories: readonly { name: string; open: () => Promise<Backend> }[] = [
   { name: "PGlite", open: () => pgliteBackend() },
   ...(DATABASE_URL === undefined ? [] : [{ name: "Postgres", open: () => postgresBackend(DATABASE_URL) }]),
@@ -172,7 +153,6 @@ export const backendFactories: readonly { name: string; open: () => Promise<Back
 
 export const connectionReset = (): Error => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
 
-/** The runtime's statements, by how they start. */
 export const statements = {
   commitRead: /^SELECT "s"\."next_id"/,
   commitWrite: /^WITH guard AS/,
@@ -180,17 +160,12 @@ export const statements = {
   guardDiagnosis: /^select "lease_token", "lease_expires_at" > clock_timestamp\(\)/,
 } as const;
 
-/** Expire a scope's lease now, as if its holder had stalled past the expiry. */
 export const forceExpire = (backend: Backend, scope: { kind: string; name: string }): Promise<unknown> =>
   backend.query(
     `UPDATE agent_runtime.scopes SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE kind = $1 AND name = $2`,
     [scope.kind, scope.name],
   );
 
-/**
- * A TCP proxy in front of Postgres whose traffic can be frozen, as a network partition would: while frozen, bytes
- * either way are held back (no connection closes); `thaw()` delivers them late, in order.
- */
 export class FreezableProxy {
   readonly #server: Server;
   readonly #sockets = new Set<Socket>();
@@ -221,11 +196,9 @@ export class FreezableProxy {
       });
     });
   }
-  /** Holds all traffic both ways from now on, without closing any connection. */
   freeze(): void {
     this.#frozen = true;
   }
-  /** Delivers everything held, in order, and forwards again. */
   thaw(): void {
     this.#frozen = false;
     for (const deliver of this.#held.splice(0)) deliver();

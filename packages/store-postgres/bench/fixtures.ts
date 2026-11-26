@@ -1,6 +1,3 @@
-// The agent, its tools and the scripted models the benchmark runs: pi-ai's faux provider, offline. Two providers:
-// `bench-paced` streams at a set rate (the turns users wait for), `bench-fast` streams at once (building history).
-
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -38,14 +35,12 @@ export const agent = defineAgent({
   policy: { requiresApproval: ["write"] },
 });
 
-/** When each streamed text chunk left the model: per response, the text so far and its time. */
 export interface Emission {
   readonly requestedAt: number;
   text: string;
   readonly marks: [chars: number, at: number][];
 }
 
-/** A faux provider whose streams are tapped: the benchmark knows when every chunk was produced. */
 function tappedProvider(id: string, options: { tokensPerSecond?: number }) {
   const core = createFauxCore({
     provider: id,
@@ -102,7 +97,7 @@ export function benchModels(tokensPerSecond: number) {
 
 let tagCounter = 0;
 
-/** About `tokens` tokens of text (4 characters each, as the faux provider counts), starting with a unique tag. */
+/** pi-ai's faux provider counts 4 characters as one token. */
 export function answer(tokens: number): AssistantMessage {
   const tag = `[r${++tagCounter}] `;
   const words = ["lorem ", "ipsum ", "dolor ", "sitam ", "conse ", "ctetu ", "adipi ", "scing "];
@@ -129,7 +124,6 @@ export interface Arrival {
   readonly item: StreamItem;
 }
 
-/** A client reading a session's stream in the background, as a browser tab holding an SSE connection does. */
 export class Reader {
   readonly arrivals: Arrival[] = [];
   readonly #controller = new AbortController();
@@ -155,7 +149,6 @@ export class Reader {
     })();
   }
 
-  /** The first arrival at or after index `from` whose event matches. */
   async waitFor(
     from: number,
     match: (event: AgentWireEvent) => boolean,
@@ -196,10 +189,6 @@ export class Reader {
   }
 }
 
-/**
- * Streaming as the reader saw it, from arrival `from` on: when each delta arrived, the gaps between deltas of one
- * message, and each delta's lag behind the model producing its last character.
- */
 export function deltaTimings(arrivals: readonly Arrival[], from: number, emissions: readonly Emission[]) {
   const times: number[] = [];
   const gaps: number[] = [];

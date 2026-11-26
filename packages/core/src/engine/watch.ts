@@ -24,19 +24,13 @@ import type { Endings, History, Position, RunEnding, ToolInfo, Transcribed } fro
 
 const context = BACKGROUND_CONTEXT;
 const PAGE = 200;
-/**
- * The observer's window. The watch reads history from storage, so it needs only what each commit
- * appends; a commit that appends more than the window holds leaves a gap the transcriber reads instead.
- */
 const WINDOW: ConversationWindow = { min: 1, max: 32 };
 
-/** Whether work is under way or waiting: a run (answering, parked, or past its answer), or queued input. */
 const busy = (view: ConversationView) => liveOf(view)?.run !== undefined || (inboxOf(view)?.items.length ?? 0) > 0;
 
 // SAFETY: entry ids are numbers under pi-durable's brand; these bound scans of real ids.
 const entryId = (id: number) => id as EntryId;
 
-/** The conversation's entries from `min` (default: its first) through `max`, oldest first, a page at a time. */
 async function* pages(
   conversation: Conversation,
   min: number | undefined,
@@ -61,14 +55,8 @@ async function entryAt(conversation: Conversation, id: number): Promise<EntryRec
   return page.items[0];
 }
 
-/**
- * The entry at or before `at` that started the run going on at `at`, if one did: the newest continue's marker, or input
- * that joined no run (`joinsRun`), told from the entry before it and the newest reply before it, read backwards a page
- * at a time.
- */
 async function runStartBefore(conversation: Conversation, at: number): Promise<number | undefined> {
   if (at < 1) return undefined;
-  /** What was read, newest first, and the index of the next entry to decide on. */
   const read: EntryRecord[] = [];
   let next = 0;
   let cursor: PiCursor | undefined;
@@ -80,7 +68,6 @@ async function runStartBefore(conversation: Conversation, at: number): Promise<n
       if (!isInput(entry)) continue;
       const previous = read[next + 1];
       const reply = read.slice(next + 1).find((before) => AssistantEntry.is(before));
-      // What decides an input may lie in a page not read yet.
       if (!done && (previous === undefined || reply === undefined)) break;
       if (joinsRun(entry, previous, reply) === undefined) return entry.id;
     }
@@ -96,10 +83,8 @@ async function runStartBefore(conversation: Conversation, at: number): Promise<n
 const ORPHANED = new Set(["missing_task", "task_too_old", "migration_failed"]);
 
 /**
- * How each run of the conversation that ended without an answer ended, by its input or its continue:
- * their settlement, which pi-durable commits with the run's end and keeps, whereas `pi.live` keeps
- * only the newest run's. pi-durable scans submissions only on the Storage, so this reads the
- * instance's Storage (committed records; the Harness stores a run's end before it is shown).
+ * pi-durable commits each run's settlement with the run's end and keeps it, whereas `pi.live` keeps only the newest
+ * run's. pi-durable scans submissions only on the Storage, so this reads the instance's Storage.
  */
 async function endingsOf(storage: Storage, conversation: Conversation): Promise<Endings> {
   const inputs = new Map<number, RunEnding>();
@@ -126,7 +111,6 @@ async function endingsOf(storage: Storage, conversation: Conversation): Promise<
   return { inputs, continues };
 }
 
-/** A session's history as its transcribers read it: its conversation's entries, its Harness's documents, its Storage. */
 export function historyOf({
   harness,
   storage,
@@ -148,7 +132,6 @@ interface Logged {
   readonly position: Position;
 }
 
-/** A reader following the log: the sequence number of the last item it read, and where that left it. */
 interface Reader {
   seq: number;
   position: Position;
@@ -160,43 +143,21 @@ export interface SessionWatchOptions {
   readonly storage: Storage;
   readonly conversation: Conversation;
   readonly info: (toolName: string) => ToolInfo;
-  /** A commit the watch could not turn into events. */
   readonly report: (error: unknown) => void;
-  /** Called once, when the watch closes: idle, or its Harness closed. */
   readonly onClose: (watch: SessionWatch) => void;
 }
 
-/**
- * One session's event stream while someone needs it: a reader, an operation under way, or work in
- * the session (a run, or queued input). Idle and unread, it closes and holds nothing.
- *
- * It follows the conversation with a synchronous pi-durable observer and turns each commit into
- * events with one shared `Transcriber`, into a log of the current run: everything since the run's
- * `run:start`, plus the previous run's events while a reader attached here has not read them. Each
- * logged event's cursor names the committed position (the newest entry whose events all went out
- * and the run) and its place in the log (`epoch`, `seq`).
- *
- * A reader resumes from a cursor of this log exactly. Any other cursor (an earlier process's,
- * another process's, or one whose run left the log) is honoured from committed state: the entries
- * of its run up to its position are read silently to rebuild what the client knows, the entries
- * after it are sent, then the current in-flight state, and the reader joins the log where the shared
- * transcriber is. That last step runs in the commit chain, so nothing lands between the catch-up
- * and the log.
- */
 export class SessionWatch {
   readonly epoch: string = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
   readonly ready: Promise<void>;
   readonly #options: SessionWatchOptions;
   readonly #session: string;
   readonly #history: History;
-  /** The shared transcriber: it reads every commit, and the log holds what it sends. */
   readonly #transcriber: Transcriber;
   #observation: Observation<ConversationView> | undefined;
   #view: ConversationView | undefined;
   #log: Logged[] = [];
-  /** The sequence number just before `#log[0]`. */
   #base = 0;
-  /** Sequence numbers just before the current run's start and the previous run's. */
   #currentRun = 0;
   #previousRun = 0;
   readonly #readers = new Set<Reader>();
@@ -219,7 +180,6 @@ export class SessionWatch {
     return this.#closed;
   }
 
-  /** What the watch holds, for the bounded-memory guarantee and its tests. */
   get held(): { readonly events: number; readonly readers: number } {
     return { events: this.#log.length, readers: this.#readers.size };
   }
@@ -228,12 +188,10 @@ export class SessionWatch {
     return this.#base + this.#log.length;
   }
 
-  /** The newest entry the shared transcriber has read. */
   get #newest(): number {
     return this.#transcriber.position.entry;
   }
 
-  /** Keeps the watch open while an operation is under way; call the returned function when done. */
   hold(): () => void {
     this.#holds += 1;
     let released = false;
@@ -256,7 +214,6 @@ export class SessionWatch {
     this.#options.onClose(this);
   }
 
-  /** Closes the watch once nobody needs it: no hold, no reader, no commit to read, no work. */
   #settle() {
     if (this.#closed || !this.#built || this.#holds > 0 || this.#queued > 0) return;
     if (this.#view !== undefined && busy(this.#view)) return;
@@ -273,19 +230,16 @@ export class SessionWatch {
     return encodeCursor(at);
   }
 
-  // ─── Following the conversation ─────────────────────────────────────────────
-
   async #start(): Promise<void> {
     const { harness, conversation } = this.#options;
     const waiting: ConversationView[] = [];
     let take = (view: ConversationView) => {
       waiting.push(view);
     };
-    // Attached first, so no commit is missed: a change that lands while the history is read waits.
     const observation = await harness.observeConversation(
       conversation.id,
       {
-        // Called as pi-durable adopts a commit, where nothing may wait or throw: only record it.
+        // pi-durable calls this as it adopts a commit, where nothing may wait or throw, so this only records the view.
         advance(call) {
           if (call.kind === "value") take(call.value);
         },
@@ -312,7 +266,6 @@ export class SessionWatch {
     this.#settle();
   }
 
-  /** Runs `task` in the commit chain, after every commit adopted before it. */
   #enqueue(task: () => Promise<void>) {
     this.#queued += 1;
     this.#chain = this.#chain
@@ -357,10 +310,6 @@ export class SessionWatch {
     this.#wake();
   }
 
-  /**
-   * Drops what no one can need from the log: everything before the current run, except the
-   * previous run's events an attached reader has not read yet.
-   */
   #trim() {
     let keep = this.#currentRun;
     for (const reader of this.#readers) keep = Math.min(keep, reader.seq);
@@ -386,21 +335,14 @@ export class SessionWatch {
     });
   }
 
-  // ─── Reading ────────────────────────────────────────────────────────────────
-
   #parse(from: Cursor | string | undefined): CursorPosition | undefined {
     if (from === undefined) return undefined;
     const position = decodeCursor(from);
     if (position === undefined || position.session !== this.#session) throw new InvalidCursorError(from);
-    // A position this log never reached was not handed out by it.
     if (position.log?.epoch === this.epoch && position.log.seq > this.#end) throw new InvalidCursorError(from);
     return position;
   }
 
-  /**
-   * The stream from `from` (default: the session's start), then live until the watch closes or
-   * `signal` aborts.
-   */
   async *read(
     from: Cursor | string | undefined,
     signal: AbortSignal | undefined,
@@ -429,7 +371,6 @@ export class SessionWatch {
           if (reader.seq > this.#currentRun && this.#base < this.#currentRun) this.#trim();
         }
         if (reader.seq < this.#base) {
-          // The log moved on without this reader: carry on from where it is, from committed state.
           this.#readers.delete(reader);
           position = reader.position;
           reader = undefined;
@@ -444,10 +385,6 @@ export class SessionWatch {
     }
   }
 
-  /**
-   * Brings a client from `from` to where the shared transcriber is, from committed state, and
-   * attaches it to the log there. Returns undefined if the watch closed meanwhile.
-   */
   async *#catchUp(from: Position | undefined): AsyncGenerator<StreamItem, Reader | undefined, undefined> {
     const { info } = this.#options;
     let transcriber = new Transcriber(this.#history, info);
@@ -459,26 +396,20 @@ export class SessionWatch {
     };
     try {
       if (from !== undefined && !(await transcriber.restore(from))) {
-        // The cursor names a place this storage does not hold: start over, and say so.
         transcriber = new Transcriber(this.#history, info);
         yield { cursor: this.#cursor({ entry: 0 }), event: { type: "stream:reset" } };
       }
-      // The queue and the compaction state first; the end of the catch-up states them again if they changed meanwhile.
       hold(transcriber.standing(this.#view));
-      // History, a page at a time, outside the commit chain: live readers wait for none of it.
       for await (const page of transcriber.replay(this.#newest)) {
         hold(page);
-        // The newest event waits for the join below, which gives its cursor the log's place.
         for (const { item } of held.splice(0, held.length - 1)) yield item;
       }
-      // The last stretch and the in-flight state, in the commit chain, so nothing lands in between.
       const reader = await this.#inChain(async (): Promise<Reader | undefined> => {
         if (this.#closed || !this.#view) return undefined;
         hold(await transcriber.catchUp(this.#newest, this.#view));
         if (this.#closed) return undefined;
         const joined: Reader = { seq: this.#end, position: transcriber.position };
         this.#readers.add(joined);
-        // The last event of the catch-up is where the log continues: a cursor of it resumes exactly.
         const last = held.at(-1);
         if (last) {
           held[held.length - 1] = {
@@ -491,7 +422,6 @@ export class SessionWatch {
       for (const { item } of held.splice(0)) yield item;
       return reader;
     } catch (error) {
-      // The Harness closed under the catch-up: the stream ends, as it does for a live reader.
       if (this.#closed) return undefined;
       throw error;
     }

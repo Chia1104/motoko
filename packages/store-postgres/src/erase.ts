@@ -7,14 +7,9 @@ import { rowsOf } from "./database.ts";
 import type { Database } from "./database.ts";
 import { conversations, documentRevisions, documents, entries, scopes, submissions, tasks } from "./schema.ts";
 
-/**
- * Erases conversation `id` of `lease`'s scope, the conversations its tasks made, and everything they own, in one
- * statement fenced by the lease as a commit is: it locks the scope's row and requires the lease's token to be current
- * and unexpired. Skips the conversation, erasing nothing, while any of them has unfinished work or another
- * conversation forks from one of them. `record_ids` keeps the ids, which hold no content, so none is handed out twice.
- * Resolves whether the lease held.
- */
-export async function eraseConversation(db: Database, lease: LeaseRow, id: ConversationId): Promise<boolean> {
+export type EraseResult = "lease-held" | "lease-lost";
+
+export async function eraseConversation(db: Database, lease: LeaseRow, id: ConversationId): Promise<EraseResult> {
   const scope = sql`${lease.scopeId}::bigint`;
   const rows = await rowsOf<{ fenced: unknown }>(
     db,
@@ -28,15 +23,18 @@ export async function eraseConversation(db: Database, lease: LeaseRow, id: Conve
         UNION
         SELECT c.id FROM ${conversations} c JOIN owned o ON c.owner_conversation_id = o.id WHERE c.scope_id = ${scope}
       ),
-      blocked AS (
+      unfinished_tasks AS (
         SELECT 1 FROM ${tasks} t WHERE t.scope_id = ${scope}
           AND t.conversation_id IN (SELECT id FROM owned) AND t.status <> 'terminal'
-        UNION ALL
-        -- A fork reads its parent's entries, so the parent must outlive it.
+      ),
+      orphaned_forks AS (
         SELECT 1 FROM ${conversations} c WHERE c.scope_id = ${scope}
           AND c.parent_conversation_id IN (SELECT id FROM owned) AND c.id NOT IN (SELECT id FROM owned)
       ),
-      doomed AS (SELECT id FROM owned WHERE NOT EXISTS (SELECT 1 FROM blocked)),
+      doomed AS (
+        SELECT id FROM owned
+          WHERE NOT EXISTS (SELECT 1 FROM unfinished_tasks) AND NOT EXISTS (SELECT 1 FROM orphaned_forks)
+      ),
       doomed_tasks AS (
         SELECT t.id FROM ${tasks} t WHERE t.scope_id = ${scope} AND t.conversation_id IN (SELECT id FROM doomed)
       ),
@@ -58,5 +56,5 @@ export async function eraseConversation(db: Database, lease: LeaseRow, id: Conve
         WHERE scope_id = ${scope} AND id IN (SELECT id FROM doomed))
       SELECT (SELECT count(*) FROM fence) AS fenced`,
   );
-  return Number(rows[0]?.fenced ?? 0) > 0;
+  return Number(rows[0]?.fenced ?? 0) > 0 ? "lease-held" : "lease-lost";
 }

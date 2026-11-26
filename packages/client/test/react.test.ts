@@ -8,8 +8,6 @@ import type { MotokoSessionHandle } from "../src/react.ts";
 
 import { FakeSocket } from "./fake-socket.ts";
 
-// A light test, as the hook is thin: rendered once, it shows the client's state of the session and makes its calls.
-// Following and folding are the client's, tested against a fake transport in client.test.ts.
 describe("useMotokoSession", () => {
   it("renders the session as the client holds it, and makes the session's calls", () => {
     const socket = new FakeSocket();

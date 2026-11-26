@@ -1,18 +1,17 @@
-// How Durable's records map to columns, for every SQL dialect. Ported from pi-durable 1.6.0 `storage/sqlite/rows.js`.
-//
-// Records are stored as JSON text. `JSON.stringify` escapes lone surrogates, so the text is well-formed UTF-8 that any
-// text column accepts and returns byte for byte.
+import type { DocumentAddress, DocumentRecord, Seq } from "@earendil-works/pi-durable";
 
-import type { DocumentAddress, DocumentRecord, Id, Seq } from "@earendil-works/pi-durable";
+export { idFromNumber } from "../ids.ts";
 
 export const parseJson = <T>(value: string): T => JSON.parse(value) as T;
+// Records are stored as JSON text. `JSON.stringify` escapes lone surrogates, so the text is well-formed UTF-8 that any
+// text column accepts and returns byte for byte.
 export const encodeJson = (value: unknown): string => JSON.stringify(value);
 /** Indexed string columns hold the JSON encoding of the string, so lone surrogates survive the UTF-8 round trip. */
 export const encodeIndexedString = (value: string): string => JSON.stringify(value);
 
 /**
- * Drivers return a 64-bit integer as `string`, `number` or `bigint`. Every stored integer is at most 2^53: IDs are
- * safe integers, and a scope's `next_id` reaches 2^53 once `Number.MAX_SAFE_INTEGER` is stored.
+ * Drivers return a 64-bit integer as `string`, `number` or `bigint`. Every stored integer is at most 2^53, because IDs
+ * are safe integers and a scope's `next_id` reaches 2^53 once `Number.MAX_SAFE_INTEGER` is stored.
  */
 export function toNumber(value: unknown): number {
   const number = typeof value === "number" ? value : Number(value);
@@ -22,7 +21,6 @@ export function toNumber(value: unknown): number {
   return number;
 }
 
-export const idFromNumber = <I extends Id<string>>(value: number): I => value as I;
 export const seqFromNumber = (value: number): Seq => value as Seq;
 
 export type ScopeKind = "session" | "conversation" | "task";
@@ -63,6 +61,6 @@ export const partsKey = (parts: AddressParts): string =>
 
 export const addressKey = (address: DocumentAddress | DocumentRecord): string => partsKey(addressParts(address));
 
-/** Whether a document keeps only its current state: its revisions go at each new base and at retirement. */
+/** Whether a document keeps only its current state, so its revisions are deleted at each new base and at retirement. */
 export const isCurrentOnly = (record: DocumentRecord): boolean =>
   record.scope.kind !== "conversation" || record.history === "latest";

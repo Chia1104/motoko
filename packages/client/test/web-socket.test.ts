@@ -9,7 +9,6 @@ import type { MotokoSessionState, MotokoSocket } from "../src/index.ts";
 import { FakeSocket } from "./fake-socket.ts";
 import { uncaughtErrors } from "./uncaught.ts";
 
-/** The socket's client, as a browser makes it. */
 const clientOf = (socket: MotokoSocket) => motokoClient(webSocketTransport(socket));
 
 const run: readonly (readonly [string, AgentWireEvent])[] = [
@@ -19,7 +18,6 @@ const run: readonly (readonly [string, AgentWireEvent])[] = [
   ["7.2.-", { type: "run:end", reason: "done" }],
 ];
 
-/** A client on an open fake socket following session 7, its follow confirmed, and the states it heard. */
 function following() {
   const socket = new FakeSocket();
   socket.open();
@@ -51,12 +49,10 @@ describe("webSocketTransport", () => {
       method: "subscribe",
       params: { sessionId: "7" },
     });
-    // An event before the result is an earlier follow's: dropped.
     socket.event("7", "7.9.-", { type: "user", messageId: "9", text: "Stale" });
     socket.reply(subscribe);
     expect(client.sessionState("7").status).toBe("live");
     for (const [cursor, event] of run) socket.event("7", cursor, event);
-    // Another session's events and the app's own frames are not this follow's.
     socket.event("8", "8.1.1", { type: "user", messageId: "1", text: "Elsewhere" });
     socket.receive({ type: "echoed", text: "mine" });
     socket.receive("not json");
@@ -75,7 +71,6 @@ describe("webSocketTransport", () => {
     socket.close();
     expect(client.sessionState("7").status).toBe("connecting");
     await expect(cutOff).rejects.toMatchObject({ code: "connection_closed" });
-    // Made while closed: sent once the socket opens again.
     const queued = client.listSessions();
     const sentBefore = socket.sent.length;
 
@@ -101,7 +96,6 @@ describe("webSocketTransport", () => {
     const cutOff = socket.last("subscribe");
 
     socket.close();
-    // The reply to the earlier connection's subscribe, were it to come, is not this follow's.
     socket.reply(cutOff);
     expect(client.sessionState("7").status).toBe("connecting");
     socket.open();

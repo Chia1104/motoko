@@ -1,6 +1,3 @@
-// Ports and models resolved per caller: `modelsFor` per instance from its scope, `portsFor` per tool
-// call from its scope and session.
-
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -31,7 +28,6 @@ import {
 
 interface UserPorts {
   readonly user: string;
-  /** Granted per session, for some runs only. */
   readonly web?: { search(query: string): string };
 }
 
@@ -73,7 +69,6 @@ const toolEnds = (items: readonly StreamItem[]) =>
 const answers = (items: readonly StreamItem[]) =>
   items.flatMap((item) => (item.event.type === "assistant:end" ? [item.event.text] : []));
 
-/** A model turn that calls a tool, then one that answers with the key it was sent and the result it read. */
 function callThenEcho(tool: string, args: Parameters<typeof fauxToolCall>[1], id: string): FauxResponseFactory[] {
   return [
     () => fauxAssistantMessage(fauxToolCall(tool, args, { id }), { stopReason: "toolUse" }),
@@ -121,13 +116,11 @@ describe("per-instance models and per-call ports", () => {
       expect(answer).toContain(`key=key-${user}`);
       expect(answer).toContain(`acting for ${user}`);
       expect(answer).not.toContain(other);
-      // Each instance's tool calls were resolved for its own scope and session alone.
       const mine = resolvedPorts.filter((target) => target.scope.name === user);
       expect(mine.map(({ sessionId, toolCallId, toolName }) => ({ sessionId, toolCallId, toolName }))).toEqual([
         { sessionId: id, toolCallId: `who-${user}`, toolName: "whoami" },
       ]);
     }
-    // Each caller's provider answered only its own instance.
     expect(callers.get("alice")!.faux.state.callCount).toBe(2);
     expect(callers.get("bob")!.faux.state.callCount).toBe(2);
     expect(new Set(resolvedModels)).toEqual(new Set(["alice", "bob"]));
@@ -144,7 +137,6 @@ describe("per-instance models and per-call ports", () => {
     const items = await readUntil(instance.session(id), isRunEnd);
     expect(textOf(answers(items).at(-1))).toContain("key=house-key");
     expect(textOf(answers(items).at(-1))).toContain("acting for everyone");
-    // `refreshModels()` has nothing to do with a static Models.
     await instance.refreshModels();
   });
 
@@ -168,7 +160,6 @@ describe("a grant withdrawn between two runs", () => {
       agents: [agent],
       host: memoryHost(),
       models,
-      // Granted per session, looked up at each call: a database read in an app.
       portsFor: async ({ scope, sessionId }) => ({
         user: scope.name,
         ...(granted.has(sessionId) && { web: { search: (query: string) => `results for ${query}` } }),
@@ -190,7 +181,6 @@ describe("a grant withdrawn between two runs", () => {
     await session.submit({ text: "Search again", requestId: "2" });
     const items = await readUntil(session, (_event, read) => runEnds(read) === 2);
 
-    // Each run's answer echoes what its call read.
     const [first, second] = answers(items).filter((text) => text.startsWith("key="));
     expect(first).toContain("results for pi");
     expect(second).toContain("no web access");
@@ -216,7 +206,6 @@ describe("a resolver that fails", () => {
     runtimes.push(runtime);
     let sawResults: unknown;
     faux.setResponses([
-      // One round with two calls: the one whose ports fail, and one whose ports resolve.
       () =>
         fauxAssistantMessage(
           [fauxToolCall("search", { query: "x" }, { id: "bad" }), fauxToolCall("whoami", {}, { id: "good" })],
@@ -240,7 +229,6 @@ describe("a resolver that fails", () => {
     const ends = toolEnds(items);
     expect(ends.find((end) => end.toolCallId === "bad")).toMatchObject({ status: "error" });
     expect(ends.find((end) => end.toolCallId === "good")).toMatchObject({ status: "ok" });
-    // The model read a clear error for that call alone, without the cause's internals.
     const bad = (sawResults as { toolCallId: string; isError: boolean; content: unknown }[]).find(
       (m) => m.toolCallId === "bad",
     );
@@ -260,7 +248,6 @@ describe("a resolver that fails", () => {
     ]);
     expect(new PortsUnavailableError("search", undefined).message).toContain("could not run");
 
-    // The instance carries on: the next call resolves again.
     failing = false;
     await session.submit({ text: "Again", requestId: "2" });
     const next = await readUntil(session, (_event, read) => runEnds(read) === 2);
@@ -287,7 +274,6 @@ describe("a resolver that fails", () => {
     runtimes.push(runtime);
     faux.setResponses([fauxAssistantMessage("Back.")]);
     const instance = runtime.get(agent, "alice");
-    // Fails at open and again before the submit: reads and sessions still work.
     const { id } = await instance.createSession();
     expect(await instance.listSessions()).toEqual([{ id, createdAt: expect.any(Number) }]);
     const session = instance.session(id);
@@ -314,10 +300,8 @@ describe("a resolver that fails", () => {
         error: expect.objectContaining({ message: "keys table unreachable" }),
       },
     ]);
-    // pi-durable reports the generation it faulted, with the runtime's error and its cause.
     expect(reports.some((report) => report.source === "pi" && report.report.kind === "task_faulted")).toBe(true);
 
-    // The next submit resolves again, and succeeds.
     await session.submit({ text: "Again", requestId: "2" });
     const items = await readUntil(session, (_event, read) => runEnds(read) === 2);
     expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
@@ -350,7 +334,6 @@ describe("a user's key changing while the instance is open", () => {
     key = "rotated-key";
     await session.submit({ text: "2", requestId: "2" });
     await readUntil(session, (_event, read) => runEnds(read) === 2);
-    // Removed: the request finds no credential and the run ends with `no_credentials`, live and in history.
     key = undefined;
     const live = follow(session);
     await live.until((read) => runEnds(read) === 2);
@@ -386,7 +369,6 @@ describe("a user's key changing while the instance is open", () => {
     await live.until((read) => runEnds(read) === 1);
     expect(live.items.at(-1)?.event).toMatchObject({ type: "run:end", code: "no_credentials" });
 
-    // The app asks the user for the key, holds it again, and the client continues the run.
     key = "returned-key";
     let read: string[] = [];
     faux.setResponses([
@@ -399,7 +381,6 @@ describe("a user's key changing while the instance is open", () => {
     await live.until((items) => runEnds(items) === 2);
     await live.stop();
 
-    // The failed reply is not in the context: the model answers the user's message.
     expect(read).toEqual(["user"]);
     expect(answers(live.items).at(-1)).toBe("a is apples, on returned-key");
     expect(live.items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
@@ -422,11 +403,10 @@ describe("a user's key changing while the instance is open", () => {
     });
     runtimes.push(runtime);
     const instance = runtime.get(agent, "alice");
-    await instance.refreshModels(); // not open yet: nothing to do
+    await instance.refreshModels();
     expect(built).toEqual([]);
     const { id } = await instance.createSession();
     current = "new";
-    // Resolved now, not at the next submit: a run already going gets it at its next request.
     await instance.refreshModels();
     expect(built).toEqual(["old", "new"]);
     await instance.session(id).submit({ text: "Hi", requestId: "1" });
@@ -489,7 +469,6 @@ describe("a run resumed after a restart", () => {
     });
     await instance.session(id).submit({ text: "Work", requestId: "r" });
     await running;
-    // The process stops mid-call; nothing of its resolvers is left.
     await first.runtime.close();
 
     finishing = true;
@@ -516,8 +495,6 @@ describe("a run resumed after a restart", () => {
     expect(answers(items).at(-1)).toContain("answered with second-key");
     expect(answers(items).at(-1)).toContain("done for w1@second");
     expect(items.at(-1)?.event).toEqual({ type: "run:end", reason: "done" });
-    // The first process resolved them for its own run (at open and at the submit), the second
-    // again, at its open, for the run it resumed.
     expect(before.models).toEqual([
       { kind: "worker", name: "w1" },
       { kind: "worker", name: "w1" },
@@ -541,7 +518,6 @@ describe("a run resumed after a restart whose credentials cannot be resolved", (
     const answeringNow = new Promise<void>((resolve) => {
       answering = resolve;
     });
-    // The first process dies while the model is answering: a request cut off by a close is sent again.
     first.faux.setResponses([
       async () => {
         answering();
@@ -582,7 +558,6 @@ describe("a run resumed after a restart whose credentials cannot be resolved", (
       items.filter((item) => item.event.type === "user").map((item) => item.event.type === "user" && item.event.text),
     ).toEqual(["Hello"]);
     expect(reports.some((report) => report.source === "runtime" && report.kind === "models_failed")).toBe(true);
-    // The first process's provider answered once, when it was cut off, and never again.
     expect(first.faux.state.callCount).toBe(1);
   });
 });

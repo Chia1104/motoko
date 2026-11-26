@@ -1,8 +1,3 @@
-// pi-durable `Storage` on MySQL, one scope of the shared tables. Ported from pi-durable 1.6.0's SQLite storage
-// (`storage/sqlite/storage.js`) as store-postgres ports it: every query restricted to the scope's `scope_id`,
-// multi-query reads folded into single statements (a recursive CTE walks a fork's ancestry, a LATERAL derived table
-// reads each segment), and commits through the shared commit protocol. What is not SQL is core's `StorageShell`.
-
 import type { JsonValue } from "@earendil-works/chord/json";
 import { StorageRequestError } from "@earendil-works/pi-durable";
 import type {
@@ -53,7 +48,7 @@ import type { DocumentRows, FencedLease } from "@chia1104/motoko-core/store";
 import { commitPort } from "./commit.ts";
 import { MAX_BIGINT, rowsOf, UNBOUNDED } from "./database.ts";
 import type { PoolDatabase } from "./database.ts";
-import { journalCheck, withJournal } from "./migrations.ts";
+import { journalCheck, missingOrOlderSchemaAsVersionError } from "./migrations.ts";
 import { conversations, documentRevisions, documents, entries, scopes, submissions, tasks } from "./schema.ts";
 
 type Context = Parameters<Storage["close"]>[0];
@@ -99,7 +94,6 @@ const page = <T extends { readonly id: number }>(
   return { items, next: { after: (items.at(-1) as T).id, order } };
 };
 
-/** The id range and order of a scan over `id`. */
 const scanBy = (column: MySqlColumn, start: { order: ScanOrder; after: number | undefined }) => ({
   where:
     start.after === undefined
@@ -110,80 +104,53 @@ const scanBy = (column: MySqlColumn, start: { order: ScanOrder; after: number | 
   orderBy: start.order === "ascending" ? asc(column) : desc(column),
 });
 
-// A type alias, not an interface: Drizzle's `execute` rows must satisfy `Record<string, unknown>`, and only an alias
-// has the implicit index signature that takes.
+// A type alias, not an interface, because Drizzle's `execute` rows must satisfy `Record<string, unknown>`. Only an
+// alias has the implicit index signature that this needs.
 // oxlint-disable-next-line typescript/consistent-type-definitions
 type RevisionRow = { record: string; kind: string | null; version: unknown; content: string | null };
 
-/** A document read's rows, the base first and its tail after it, as the shell's `DocumentRows`. */
-const documentRowsOf = (rows: readonly RevisionRow[]): DocumentRows => {
-  const [base, ...tail] = rows.filter((row) => row.kind !== null);
-  return {
-    record: rows[0]?.record,
-    base: base === undefined ? undefined : { version: toNumber(base.version), content: base.content as string },
-    tail: tail.map((row) => ({
-      kind: row.kind as string,
-      version: toNumber(row.version),
-      content: row.content as string,
-    })),
-  };
-};
+export async function openStorage(db: PoolDatabase, lease: FencedLease, attempts: number): Promise<MysqlStorage> {
+  if (lease.signal.aborted) throw lease.signal.reason;
+  const [row] = await missingOrOlderSchemaAsVersionError(db, () =>
+    rowsOf<{ applied: unknown; next_id: unknown }>(
+      db,
+      sql`SELECT ${journalCheck.applied} AS applied, s.next_id
+        FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_id = ${lease.scopeId}`,
+    ),
+  );
+  journalCheck.assertCurrent(row?.applied);
+  if (row === undefined || row.next_id === null) {
+    lease.lose("deleted");
+    throw lease.signal.reason;
+  }
+  return new MysqlStorage(db, lease, toNumber(row.next_id), attempts);
+}
 
 /**
- * pi-durable Storage over one scope of the shared tables, fenced by the scope's lease. Open it with
- * `store.storage()`. It does not own the database: `close()` waits for its own calls to settle and leaves the pool
- * open.
+ * pi-durable Storage over one scope of the shared tables, fenced by the scope's lease. Open it with `store.storage()`.
+ * It does not own the database. `close()` waits for its own calls to settle and leaves the pool open.
  */
-export class MysqlStorage implements Storage {
+class MysqlStorage implements Storage {
   readonly scope: StorageScope;
   readonly scopeId: number;
   readonly #db: PoolDatabase;
   readonly #shell: StorageShell;
 
-  private constructor(
-    db: PoolDatabase,
-    scope: StorageScope,
-    scopeId: number,
-    nextId: number,
-    lease: FencedLease,
-    attempts: number,
-  ) {
+  constructor(db: PoolDatabase, lease: FencedLease, nextId: number, attempts: number) {
     this.#db = db;
-    this.scope = scope;
-    this.scopeId = scopeId;
-    const port = commitPort(db, scopeId, (source) =>
+    this.scope = lease.scope;
+    this.scopeId = lease.scopeId;
+    const port = commitPort(db, lease.scopeId, (source) =>
       this.#documentRows(source.id, source.at).then((rows) => () => materializeDocument(rows, source.id, source.at)),
     );
     this.#shell = new StorageShell({ name: "MysqlStorage", lease, attempts, port, nextId });
   }
 
   /**
-   * @internal Use `store.storage()`. One round trip: the schema check and the scope row's counters, read together.
-   * The lease created the row; a row that is gone means the scope was deleted since the lease was acquired (a scope
-   * created again has another `scope_id`).
-   */
-  static async open(db: PoolDatabase, lease: FencedLease, attempts: number): Promise<MysqlStorage> {
-    if (lease.signal.aborted) throw lease.signal.reason;
-    const [row] = await withJournal(db, () =>
-      rowsOf<{ applied: unknown; next_id: unknown }>(
-        db,
-        sql`SELECT ${journalCheck.applied} AS applied, s.next_id
-          FROM (SELECT 1) AS one LEFT JOIN ${scopes} AS s ON s.scope_id = ${lease.scopeId}`,
-      ),
-    );
-    journalCheck.assertCurrent(row?.applied);
-    if (row === undefined || row.next_id === null) {
-      lease.lose("deleted");
-      throw lease.signal.reason;
-    }
-    return new MysqlStorage(db, lease.scope, lease.scopeId, toNumber(row.next_id), lease, attempts);
-  }
-
-  /**
    * Store `batches` in two round trips: one statement reads the scope's counters and everything the checks need, the
    * checks run in memory, and one transaction sent as one multi-statement query writes every accepted batch, its guard
-   * first (see `commit.ts`). A batch with a document copy writes the batches before it and reads the copy's source
-   * first: two more round trips.
+   * first. See `commit.ts`. A batch with a document copy writes the batches before it and reads the copy's source
+   * first, which costs two more round trips.
    */
   commit(
     batches: readonly (readonly StorageWrite[])[],
@@ -193,7 +160,7 @@ export class MysqlStorage implements Storage {
     return this.#shell.commit(batches, receive);
   }
 
-  /** In memory: see `StorageShell.mintId`. */
+  /** Runs in memory. See `StorageShell.mintId`. */
   mintId<I extends Id<string>>(): Promise<I> {
     return this.#shell.mintId<I>();
   }
@@ -269,7 +236,7 @@ export class MysqlStorage implements Storage {
         sql`${this.#chain(conversationId, undefined)}
           SELECT ${UNBOUNDED} EXISTS (SELECT 1 FROM chain) AS found, e.record, e.commit_seq,
             EXISTS (SELECT 1 FROM chain AS s WHERE s.conversation_id = e.conversation_id
-              AND e.id <= COALESCE(s.upper, ${MAX_BIGINT})) AS visible
+              AND e.id <= COALESCE(s.max_entry_id, ${MAX_BIGINT})) AS visible
           FROM (SELECT 1) AS one
             LEFT JOIN ${entries} AS e ON e.scope_id = ${this.scopeId} AND e.id = ${idOrContext}`,
       );
@@ -282,10 +249,10 @@ export class MysqlStorage implements Storage {
   }
 
   /**
-   * One statement: per segment of the fork chain, its latest head marker at or below the segment's cap (one index
-   * lookup each), and the first segment's that has one. A correlated subquery, not a LATERAL join: MySQL 8.4 plans
-   * `chain JOIN LATERAL (... LIMIT 1) ORDER BY ord LIMIT 1` by keeping one chain row before the join, so a marker
-   * beyond the first segment is never found.
+   * One statement finds, per segment of the fork chain, its latest head marker at or below the segment's cap, one index
+   * lookup each, and returns the marker of the first segment that has one. It uses a correlated subquery, not a LATERAL
+   * join. MySQL 8.4 plans `chain JOIN LATERAL (... LIMIT 1) ORDER BY ord LIMIT 1` by keeping one chain row before the
+   * join, so it never finds a marker beyond the first segment.
    */
   findLatestHeadMarker(
     conversationId: ConversationId,
@@ -298,13 +265,13 @@ export class MysqlStorage implements Storage {
         sql`${this.#chain(conversationId, atOrBeforeEntryId)}
           SELECT ${UNBOUNDED} EXISTS (SELECT 1 FROM chain) AS found, (
             SELECT m.record FROM (
-              SELECT s.ord, (
+              SELECT s.distance, (
                 SELECT x.record FROM ${entries} AS x
                   WHERE x.scope_id = ${this.scopeId} AND x.conversation_id = s.conversation_id
-                    AND x.marker_id <= COALESCE(s.upper, ${MAX_BIGINT})
+                    AND x.marker_id <= COALESCE(s.max_entry_id, ${MAX_BIGINT})
                   ORDER BY x.marker_id DESC LIMIT 1
               ) AS record FROM chain AS s
-            ) AS m WHERE m.record IS NOT NULL ORDER BY m.ord LIMIT 1
+            ) AS m WHERE m.record IS NOT NULL ORDER BY m.distance LIMIT 1
           ) AS record`,
       );
       if (row === undefined || Number(row.found) !== 1) {
@@ -315,10 +282,11 @@ export class MysqlStorage implements Storage {
   }
 
   /**
-   * One statement: the fork chain (recursive CTE) and, per segment, its entries in index order up to the limit
-   * (`LATERAL ... LIMIT`), concatenated in segment order: the child first for a descending scan, the root first for
-   * an ascending one, exactly as upstream's SQLite storage walks them query by query. The page's ORDER BY names the
-   * entry's id beside the segment, so MySQL sorts after the join (see `findLatestHeadMarker`).
+   * One statement reads the fork chain with a recursive CTE and, per segment, its entries in index order up to the
+   * limit with `LATERAL ... LIMIT`. It concatenates the segments in order, the child first for a descending scan and
+   * the root first for an ascending one. Upstream's SQLite storage walks them in the same order, one query per segment.
+   * The page's ORDER BY names the entry's id beside the segment, so MySQL sorts after the join. See
+   * `findLatestHeadMarker`.
    */
   scanEntries(
     query: EntryQuery,
@@ -344,15 +312,15 @@ export class MysqlStorage implements Storage {
         sql`${this.#chain(query.conversationId, upper, min)}
           SELECT ${UNBOUNDED} f.found, p.record
           FROM (SELECT EXISTS (SELECT 1 FROM chain) AS found) AS f LEFT JOIN (
-            SELECT s.ord, e.id, e.record FROM chain AS s JOIN LATERAL (
+            SELECT s.distance, e.id, e.record FROM chain AS s JOIN LATERAL (
               SELECT x.id, x.record FROM ${entries} AS x
                 WHERE x.scope_id = ${this.scopeId} AND x.conversation_id = s.conversation_id
-                  AND x.id <= COALESCE(s.upper, ${MAX_BIGINT})${bound}
+                  AND x.id <= COALESCE(s.max_entry_id, ${MAX_BIGINT})${bound}
                 ORDER BY x.id ${direction} LIMIT ${limit + 1}
             ) AS e ON TRUE
-            ORDER BY s.ord ${segments}, e.id ${direction} LIMIT ${limit + 1}
+            ORDER BY s.distance ${segments}, e.id ${direction} LIMIT ${limit + 1}
           ) AS p ON TRUE
-          ORDER BY p.ord ${segments}, p.id ${direction}`,
+          ORDER BY p.distance ${segments}, p.id ${direction}`,
       );
       if (rows[0] === undefined || Number(rows[0].found) !== 1) {
         throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
@@ -471,14 +439,14 @@ export class MysqlStorage implements Storage {
   }
 
   /**
-   * One statement: the document's record and, beside it, its content at the same point (as `document()` reads it),
-   * which the shell keeps for the `document()` call that usually follows. A current address found empty costs nothing
-   * again until the next commit.
+   * One statement reads the document's record and its content at the same point, as `document()` reads it. The shell
+   * keeps the content for the `document()` call that usually follows. A current address found empty is not read again
+   * until the next commit.
    */
   findDocument(address: DocumentAddress, at: DocumentPoint, _context: Context): Promise<DocumentRecord | undefined> {
-    return this.#shell.findDocument(address, at, async () => {
+    return this.#shell.findDocument(address, at, () => {
       const parts = addressParts(address);
-      const rows = await this.#revisionRows(
+      return this.#documentAt(
         sql`SELECT ${documents.id}, ${documents.record} FROM ${documents}
           WHERE ${and(
             eq(documents.scopeId, this.scopeId),
@@ -492,13 +460,12 @@ export class MysqlStorage implements Storage {
           ORDER BY ${documents.createdAt} DESC LIMIT 1`,
         at,
       );
-      return rows.length === 0 ? undefined : documentRowsOf(rows);
     });
   }
 
   /**
-   * One statement, or none right after `findDocument` read the same document at the same point with nothing committed
-   * since.
+   * Costs one statement, or none when `findDocument` just read the same document at the same point and nothing was
+   * committed since.
    */
   document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
     return this.#shell.document(id, at, () => this.#documentRows(id, at));
@@ -540,41 +507,34 @@ export class MysqlStorage implements Storage {
   }
 
   /**
-   * The fork chain of `conversation` as the CTE `chain(ord, conversation_id, upper, ...)`: the conversation itself
-   * (`ord` 0) capped at `upper`, then each ancestor capped at the lowest fork point below it. With `min`, the walk
-   * stops at the first ancestor whose cap falls below it, as upstream's scans do. MySQL's `LEAST` is NULL when any
-   * argument is, so an uncapped segment's cap is its fork point alone.
+   * MySQL's `LEAST` is NULL when any argument is, so a parent's `max_entry_id` is the fork point alone when its child
+   * has none.
    */
-  #chain(conversation: number, upper: number | undefined, min?: number): SQL {
-    const cap = sql`LEAST(COALESCE(ch.upper, ch.parent_at), ch.parent_at)`;
-    return sql`WITH RECURSIVE chain (ord, conversation_id, upper, parent_conversation_id, parent_at) AS (
-        SELECT 0, c.id, CAST(${upper ?? null} AS SIGNED), c.parent_conversation_id, c.parent_at
+  #chain(conversation: number, maxEntryId: number | undefined, minEntryId?: number): SQL {
+    const parentMax = sql`LEAST(COALESCE(ch.max_entry_id, ch.parent_at), ch.parent_at)`;
+    const reachesMin = minEntryId === undefined ? sql`` : sql`WHERE ${parentMax} >= ${minEntryId}`;
+    return sql`WITH RECURSIVE chain (distance, conversation_id, max_entry_id, parent_conversation_id, parent_at) AS (
+        SELECT 0, c.id, CAST(${maxEntryId ?? null} AS SIGNED), c.parent_conversation_id, c.parent_at
           FROM ${conversations} AS c WHERE c.scope_id = ${this.scopeId} AND c.id = ${conversation}
         UNION ALL
-        SELECT ch.ord + 1, c.id, ${cap}, c.parent_conversation_id, c.parent_at
+        SELECT ch.distance + 1, c.id, ${parentMax}, c.parent_conversation_id, c.parent_at
           FROM chain AS ch JOIN ${conversations} AS c ON c.scope_id = ${this.scopeId} AND c.id = ch.parent_conversation_id
-          ${min === undefined ? sql`` : sql`WHERE ${cap} >= ${min}`}
+          ${reachesMin}
       )`;
   }
 
-  /** A document's record, newest base at or before `at`, and the deltas after it, in one statement (one snapshot). */
   async #documentRows(id: number, at: DocumentPoint): Promise<DocumentRows> {
-    const rows = await this.#revisionRows(
+    const document = await this.#documentAt(
       sql`SELECT ${documents.id}, ${documents.record} FROM ${documents}
         WHERE ${and(eq(documents.scopeId, this.scopeId), eq(documents.id, id))}`,
       at,
     );
-    return documentRowsOf(rows);
+    return document ?? { record: undefined, base: undefined, tail: [] };
   }
 
-  /**
-   * One row per revision the content of the document `selected` finds (a derived table of its `id` and `record`) is
-   * built from at `at`: its newest base at or before `at`, then the deltas after it, each beside the record. One row
-   * with no revision when it has no base; none when there is no such document.
-   */
-  #revisionRows(selected: SQL, at: DocumentPoint): Promise<RevisionRow[]> {
+  async #documentAt(selected: SQL, at: DocumentPoint): Promise<DocumentRows | undefined> {
     const upTo = at === "current" ? MAX_BIGINT : sql`${at}`;
-    return rowsOf<RevisionRow>(
+    const rows = await rowsOf<RevisionRow>(
       this.#db,
       sql`SELECT d.record, r.kind, r.version, r.content
         FROM (${selected}) AS d
@@ -587,11 +547,24 @@ export class MysqlStorage implements Storage {
             ON r.scope_id = ${this.scopeId} AND r.document_id = d.id AND r.seq >= base.seq AND r.seq <= ${upTo}
         ORDER BY r.seq`,
     );
+    const [first] = rows;
+    if (first === undefined) return undefined;
+    const [base, ...tail] = rows.filter((row) => row.kind !== null);
+    return {
+      record: first.record,
+      base: base === undefined ? undefined : { version: toNumber(base.version), content: base.content as string },
+      tail: tail.map((row) => ({
+        kind: row.kind as string,
+        version: toNumber(row.version),
+        content: row.content as string,
+      })),
+    };
   }
 }
 
-/** Alive at `at`: current (not retired), or created at or before the seq and not yet retired at it. */
 function aliveAt(at: DocumentPoint): SQL | undefined {
   if (at === "current") return isNull(documents.retiredAt);
   return and(lte(documents.createdAt, at), or(isNull(documents.retiredAt), gt(documents.retiredAt, at)));
 }
+
+export type { MysqlStorage };
